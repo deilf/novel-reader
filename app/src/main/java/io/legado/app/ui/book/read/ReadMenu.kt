@@ -183,6 +183,7 @@ class ReadMenu @JvmOverloads constructor(
         // 延迟清理状态（等待动画结束）
         postDelayed({
             this.visibility = INVISIBLE
+            callBack.onMenuHidden()
             canShowMenu = false
             isMenuOutAnimating = false
             onMenuOutEnd?.invoke()
@@ -206,6 +207,8 @@ class ReadMenu @JvmOverloads constructor(
 
     fun upBookView() {
         val currentBook = ReadBook.book
+        directReader = callBack.isEpubCoreBook()
+        replaceRulesSupported = callBack.supportsReplaceRules()
         currentBookName = currentBook?.name
         if (callBack.isEpubCoreBook()) {
             currentChapterUrl = callBack.epubCoreChapterUrl()
@@ -302,6 +305,8 @@ class ReadMenu @JvmOverloads constructor(
     private var showCloudIcon by mutableStateOf(false)
     private var autoPageActive by mutableStateOf(false)
     private var buttonLayout by mutableStateOf(ReadMenuButtonConfig.defaultLayout())
+    private var directReader by mutableStateOf(false)
+    private var replaceRulesSupported by mutableStateOf(false)
     private var customButtonMetadata by mutableStateOf(emptyMap<Long, ReadMenuCustomButton>())
     private var bottomMenuBounds by mutableStateOf<RectF?>(null)
     private var colorTick by mutableIntStateOf(0)
@@ -385,7 +390,8 @@ class ReadMenu @JvmOverloads constructor(
                         state = ReadMenuTitleBarState(
                             bookName = currentBookName,
                             isLocalBook = ReadBook.isLocalBook,
-                            isEpub = callBack.isEpubCoreBook()
+                            isEpub = directReader,
+                            supportsReplaceRules = replaceRulesSupported
                         ),
                         actions = ReadMenuTitleBarActions(
                             onBackClick = { callBack.returnToBookshelf() },
@@ -409,6 +415,7 @@ class ReadMenu @JvmOverloads constructor(
                             onImageStyleClick = { callBack.showImageStyle() },
                             onUpdateTocClick = { callBack.updateToc() },
                             onParagraphRuleClick = { callBack.showParagraphRuleManage() },
+                            onHighlightRuleClick = { callBack.showHighlightRuleManage() },
                             onEffectiveReplacesClick = { callBack.showEffectiveReplaces() },
                             onLogClick = { callBack.showLog() },
                             onHelpClick = { callBack.showHelp() }
@@ -478,7 +485,11 @@ class ReadMenu @JvmOverloads constructor(
 
     @Composable
     private fun ReadMenuBottomPanel(style: AppDialogStyle) {
-        val layout = buttonLayout
+        val layout = if (directReader) {
+            ReadMenuButtonConfig.forDirectReader(buttonLayout, allowReplaceRules = replaceRulesSupported)
+        } else {
+            buttonLayout
+        }
         val hasButtons = layout.firstRow.isNotEmpty() || layout.secondRow.isNotEmpty()
         val showBrightness = showBrightnessView && hasButtons
         val navigationBarBottom = WindowInsets.navigationBars
@@ -620,6 +631,12 @@ class ReadMenu @JvmOverloads constructor(
     }
 
     private fun handleMenuButtonClick(ref: ReadMenuButtonConfig.ButtonRef) {
+        if (callBack.isEpubCoreBook() &&
+            !ReadMenuButtonConfig.supportsDirectReader(
+                ref,
+                allowReplaceRules = callBack.supportsReplaceRules()
+            )
+        ) return
         when (ref.type) {
             ReadMenuButtonConfig.TYPE_BUILTIN -> handleBuiltinButtonClick(ref.id)
             ReadMenuButtonConfig.TYPE_CUSTOM -> ref.id.toLongOrNull()?.let {
@@ -791,10 +808,13 @@ class ReadMenu @JvmOverloads constructor(
         fun skipToChapter(index: Int)
         fun onMenuShow()
         fun onMenuHide()
+        /** Called after the menu exit animation has made the host view invisible. */
+        fun onMenuHidden() = Unit
         fun epubCorePageCount(): Int = 0
         fun epubCorePageIndex(): Int = 0
         fun skipToEpubCorePage(index: Int): Boolean = false
         fun isEpubCoreBook(): Boolean = false
+        fun supportsReplaceRules(): Boolean = !isEpubCoreBook()
         fun epubCoreChapterTitle(): String? = null
         fun epubCoreChapterUrl(): String? = null
         fun openPreviousEpubCoreChapter() = Unit
@@ -826,6 +846,7 @@ class ReadMenu @JvmOverloads constructor(
         fun showReSegment()
         fun showSameTitleRemoved()
         fun showImageStyle()
+        fun showHighlightRuleManage()
         fun showParagraphRuleManage()
         fun showEffectiveReplaces()
         fun showLog()

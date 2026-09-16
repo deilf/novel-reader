@@ -67,7 +67,9 @@ object BubblePackageManager {
         var dayEmphasisColor: String? = null,
         var nightNormalColor: String? = null,
         var nightEmphasisColor: String? = null,
-        var updatedAt: Long = System.currentTimeMillis()
+        var updatedAt: Long = System.currentTimeMillis(),
+        var formatVersion: Int = 1,
+        var resources: List<PackageResource> = emptyList()
     )
 
     data class Entry(
@@ -127,7 +129,7 @@ object BubblePackageManager {
         val entry = if (dirName == BUILTIN_DIR_NAME) {
             builtinEntry()
         } else {
-            readEntry(localDir(dirName)) ?: builtinEntry()
+            runCatching { readEntry(localDir(dirName)) }.getOrNull() ?: builtinEntry()
         }
         cachedDirName = dirName
         cachedEntry = entry
@@ -199,15 +201,30 @@ object BubblePackageManager {
                 .ifBlank { "bubble_${System.currentTimeMillis()}" }
             uniqueDirName(baseDirName)
         }
-        val dir = localDir(dirName).apply { mkdirs() }
+        val dir = localDir(dirName)
+        val createdDirectory = !dir.exists()
+        check(dir.mkdirs() || dir.isDirectory) { "failed to create bubble package directory" }
         val next = normalized.copy(
             name = name,
             dirName = dirName,
             updatedAt = System.currentTimeMillis()
         )
-        File(dir, packageFileName).writeText(GSON.toJson(next))
-        invalidateCurrentEntry()
-        return Entry(next, Source.LOCAL, dirName, localDir = dir)
+        return try {
+            val validated = validateImportedConfig(next, dir)
+            val manifest = File(dir, packageFileName)
+            val json = GSON.toJson(validated)
+            AtomicTextFileStore(manifest).writeVerified(json) { storedJson ->
+                runCatching {
+                    val stored = GSON.fromJsonObject<Config>(storedJson).getOrThrow()
+                    validateImportedConfig(stored, dir).dirName == dirName
+                }.getOrDefault(false)
+            }
+            invalidateCurrentEntry()
+            Entry(validated, Source.LOCAL, dirName, localDir = dir)
+        } catch (error: Throwable) {
+            if (createdDirectory) deletePathBestEffort(dir)
+            throw error
+        }
     }
 
     fun deleteLocal(entry: Entry) {
@@ -262,7 +279,7 @@ object BubblePackageManager {
         try {
             val extracted = BubblePackageArchive.extract(zipFile, unzipDir)
             val packageFile = extracted.manifestFile
-            val config = readImportedConfig(packageFile)
+            val config = readImportedConfig(packageFile, packageFile.parentFile)
             val baseDirName = safeImportedDirName(config)
             val dirName = if (overwrite) baseDirName else uniqueDirName(baseDirName)
             val parentDir = rootDir.apply { mkdirs() }.canonicalFile
@@ -281,7 +298,7 @@ object BubblePackageManager {
                     updatedAt = if (remoteUpdatedAt > 0L) config.updatedAt else System.currentTimeMillis()
                 )
                 File(stagingDir, packageFileName).writeText(GSON.toJson(next))
-                val verified = readImportedConfig(File(stagingDir, packageFileName))
+                val verified = readImportedConfig(File(stagingDir, packageFileName), stagingDir)
                 require(verified.dirName == dirName) { "staged bubble package identity mismatch" }
 
                 val installed = BubbleDirectoryTransaction().install(
@@ -289,7 +306,7 @@ object BubblePackageManager {
                     stagingDir,
                     backupDir
                 ) { installedDir ->
-                    val installedConfig = readImportedConfig(File(installedDir, packageFileName))
+                    val installedConfig = readImportedConfig(File(installedDir, packageFileName), installedDir)
                     require(installedConfig.dirName == dirName) { "installed bubble package identity mismatch" }
                     Entry(
                         installedConfig,
@@ -309,25 +326,58 @@ object BubblePackageManager {
         }
     }
 
-    private fun readImportedConfig(file: File): Config {
+    private fun readImportedConfig(file: File, resourceRoot: File? = null): Config {
         require(file.isFile) { "bubble package manifest is missing" }
         require(file.length() in 1..512L * 1024L) { "bubble package manifest is empty or too large" }
         val raw = GSON.fromJsonObject<Config>(file.readText()).getOrThrow()
-        return validateImportedConfig(raw)
+        return validateImportedConfig(raw, resourceRoot)
     }
 
-    private fun validateImportedConfig(config: Config): Config {
+    private fun validateImportedConfig(config: Config, resourceRoot: File? = null): Config {
         val normalized = normalizeConfig(config)
         require(normalized.name.length <= 200) { "bubble package name is too long" }
         require(normalized.svgTemplate.length <= 512 * 1024) { "bubble SVG template is too large" }
         BubbleSvgPolicy.validate(normalized.svgTemplate)
-        return normalized
+        if (resourceRoot == null) return normalized
+        val resources = PackageResourcePolicy.validateFiles(resourceRoot, normalized.resources)
+        BubbleSvgPolicy.packageReferences(normalized.svgTemplate).forEach { reference ->
+            val image = runCatching {
+                PackageResourcePolicy.resolve(
+                    resourceRoot,
+                    resources,
+                    reference,
+                    PackageResourcePolicy.TYPE_IMAGE
+                )
+            }.getOrNull()
+            val font = if (image == null) runCatching {
+                PackageResourcePolicy.resolve(
+                    resourceRoot,
+                    resources,
+                    reference,
+                    PackageResourcePolicy.TYPE_FONT
+                )
+            }.getOrNull() else null
+            val file = image ?: font
+            requireNotNull(file) { "bubble package resource is missing: $reference" }
+            PackageResourcePolicy.validateResolvedFile(
+                file,
+                if (image != null) PackageResourcePolicy.TYPE_IMAGE else PackageResourcePolicy.TYPE_FONT,
+                reference
+            )
+        }
+        val hasPackageResources = resources.isNotEmpty() ||
+            BubbleSvgPolicy.packageReferences(normalized.svgTemplate).isNotEmpty()
+        return normalized.copy(
+            formatVersion = if (hasPackageResources) 2 else normalized.formatVersion.coerceIn(1, 2),
+            resources = resources
+        )
     }
 
     private fun safeImportedDirName(config: Config): String {
         val requested = config.dirName.trim()
         if (requested.isNotEmpty()) {
             require(requested != "." && requested != "..") { "invalid bubble directory" }
+            require(!requested.startsWith('.')) { "bubble directory must not be hidden" }
             require(!File(requested).isAbsolute && '/' !in requested && '\\' !in requested) {
                 "bubble directory must be a single path segment"
             }
@@ -347,7 +397,11 @@ object BubblePackageManager {
     private fun loadLocal(): List<Entry> {
         if (!rootDir.exists()) return emptyList()
         return rootDir.listFiles()
-            ?.filter { it.isDirectory && it.name !in setOf("temp", "remote_cache", BUILTIN_DIR_NAME) }
+            ?.filter {
+                it.isDirectory &&
+                    !it.name.startsWith('.') &&
+                    it.name !in setOf("temp", "remote_cache", BUILTIN_DIR_NAME)
+            }
             ?.mapNotNull(::readEntry)
             .orEmpty()
     }
@@ -418,20 +472,34 @@ object BubblePackageManager {
     }
 
     private fun readEntry(dir: File): Entry? {
-        val file = File(dir, packageFileName)
-        if (!file.exists()) return null
-        val config = GSON.fromJsonObject<Config>(file.readText()).getOrNull()
-            ?.let(::normalizeConfig)
-            ?: return null
-        val dirName = config.dirName.ifBlank { dir.name }
-        return Entry(config.copy(dirName = dirName), Source.LOCAL, dirName, localDir = dir)
+        val parent = rootDir.apply { mkdirs() }.canonicalFile
+        val canonicalDir = dir.canonicalFile
+        if (canonicalDir.parentFile != parent || canonicalDir.name.startsWith('.')) return null
+        val file = File(canonicalDir, packageFileName)
+        return runCatching {
+            AtomicTextFileStore(file).recoverInterruptedCommit()
+            if (!file.exists()) return@runCatching null
+            val config = readImportedConfig(file, canonicalDir)
+            val dirName = canonicalDir.name
+            Entry(
+                config.copy(dirName = dirName),
+                Source.LOCAL,
+                dirName,
+                localDir = canonicalDir
+            )
+        }.getOrNull()
     }
 
     private fun normalizeConfig(config: Config): Config {
+        val version = config.formatVersion.takeIf { it > 0 } ?: 1
+        require(version in 1..2) { "unsupported bubble package version" }
         val size = config.sizeScale.takeIf { it.isFinite() } ?: 1f
+        val resources = PackageResourcePolicy.normalize(config.resources.orEmpty())
         return config.copy(
             name = config.name.trim().ifBlank { "段评气泡" },
             svgTemplate = config.svgTemplate.ifBlank { defaultSvgTemplate() },
+            formatVersion = version,
+            resources = resources,
             sizeScale = size.coerceIn(MIN_SIZE_SCALE, MAX_SIZE_SCALE),
             dayNormalColor = normalizeColorOrBlank(config.dayNormalColor),
             dayEmphasisColor = normalizeColorOrBlank(config.dayEmphasisColor),
@@ -439,6 +507,8 @@ object BubblePackageManager {
             nightEmphasisColor = normalizeColorOrBlank(config.nightEmphasisColor)
         )
     }
+
+    internal fun normalizeStoredConfig(config: Config): Config = normalizeConfig(config)
 
     private fun normalizeColorOrBlank(value: String?): String? {
         val color = value?.trim().orEmpty()
@@ -456,7 +526,14 @@ object BubblePackageManager {
         return "${clean}_${System.currentTimeMillis()}"
     }
 
-    private fun localDir(dirName: String): File = rootDir.getFile(dirName)
+    private fun localDir(dirName: String): File {
+        val parent = rootDir.apply { mkdirs() }.canonicalFile
+        val directory = File(parent, dirName).canonicalFile
+        require(directory.parentFile == parent && !directory.name.startsWith('.')) {
+            "bubble directory escapes package root"
+        }
+        return directory
+    }
 
     private fun defaultSvgTemplate(): String {
         return """

@@ -21,6 +21,8 @@ import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.ReadManga
+import io.legado.app.model.inheritNotShelfStateFrom
+import io.legado.app.model.resolveStoredBookshelfState
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.mapParallelSafe
@@ -47,13 +49,14 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
      */
     fun initData(intent: Intent, success: (() -> Unit)? = null) {
         execute {
-            ReadManga.inBookshelf = intent.getBooleanExtra("inBookshelf", true)
             ReadManga.chapterChanged = intent.getBooleanExtra("chapterChanged", false)
             val bookUrl = intent.getStringExtra("bookUrl")
-            val book = when {
+            val storedBook = when {
                 bookUrl.isNullOrEmpty() -> appDb.bookDao.lastReadBook
                 else -> appDb.bookDao.getBook(bookUrl)
-            } ?: ReadManga.book
+            }
+            val book = storedBook ?: ReadManga.book
+            ReadManga.inBookshelf = resolveStoredBookshelfState(storedBook)
             when {
                 book != null -> initManga(book)
                 else -> {
@@ -241,9 +244,11 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
         changeSourceCoroutine?.cancel()
         changeSourceCoroutine = execute {
             //换源中
-            ReadManga.book?.migrateTo(book, toc)
+            val oldBook = ReadManga.book
+            oldBook?.migrateTo(book, toc)
+            book.inheritNotShelfStateFrom(oldBook)
             book.removeType(BookType.updateError)
-            ReadManga.book?.delete()
+            oldBook?.delete()
             appDb.bookDao.insert(book)
             appDb.bookChapterDao.insert(*toc.toTypedArray())
             ReadManga.resetData(book)
@@ -275,10 +280,12 @@ class ReadMangaViewModel(application: Application) : BaseViewModel(application) 
     }
 
     fun removeFromBookshelf(success: (() -> Unit)?) {
-        val book = ReadManga.book
+        val bookUrl = ReadManga.book?.bookUrl
         Coroutine.async {
-            book?.delete()
-        }.onSuccess {
+            bookUrl?.let(appDb.bookDao::deleteIfNotShelf)
+        }.onError {
+            AppLog.put("删除临时漫画失败: bookUrl=$bookUrl", it)
+        }.onFinally {
             success?.invoke()
         }
     }

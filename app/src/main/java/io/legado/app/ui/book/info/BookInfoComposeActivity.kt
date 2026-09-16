@@ -36,6 +36,7 @@ import io.legado.app.help.WebCacheManager
 import io.legado.app.help.ai.AiImageGalleryManager
 import io.legado.app.help.book.BookCloudEntryMode
 import io.legado.app.help.book.BookCloudEntryModeStore
+import io.legado.app.help.book.BookTagHelper
 import io.legado.app.help.book.addType
 import io.legado.app.help.book.isAudio
 import io.legado.app.help.book.isImage
@@ -52,6 +53,7 @@ import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.model.SourceCallBack
+import io.legado.app.model.localBook.epubcore.facade.EpubChapterMetadata
 import io.legado.app.model.remote.RemoteBookWebDav
 import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.ui.book.cache.CacheManageActivity
@@ -62,6 +64,7 @@ import io.legado.app.ui.book.info.compose.BookInfoActions
 import io.legado.app.ui.book.info.compose.BookInfoChapterUi
 import io.legado.app.ui.book.info.compose.BookInfoComposeRoute
 import io.legado.app.ui.book.info.compose.BookInfoUiState
+import io.legado.app.ui.autoTask.showBookAutoTaskDialog
 import io.legado.app.ui.book.info.edit.BookInfoEditActivity
 import io.legado.app.ui.book.manga.ReadMangaActivity
 import io.legado.app.ui.book.read.ReadBookActivity
@@ -388,6 +391,13 @@ class BookInfoComposeActivity :
                     updateUiState()
                 }
             },
+            onBookAutoTask = {
+                viewModel.getBook(false)?.let { book ->
+                    showBookAutoTaskDialog(book) {
+                        updateUiState()
+                    }
+                }
+            },
             onAllowUpdateChanged = ::setBookCanUpdate,
             onSetSourceVariable = ::setSourceVariable,
             onSetBookVariable = ::setBookVariable,
@@ -395,6 +405,15 @@ class BookInfoComposeActivity :
             onCopyTocUrl = ::copyTocUrl,
             onClearCache = ::clearBookCache,
             onSetupWebIntro = ::setupWebIntro,
+            onIntroButtonClick = { name, click ->
+                viewModel.onButtonClick(this@BookInfoComposeActivity, "info button $name", click)
+            },
+            onIntroImageClick = { click ->
+                viewModel.onButtonClick(this@BookInfoComposeActivity, "info image", click)
+            },
+            onIntroImageLongClick = { source ->
+                showDialogFragment(PhotoDialog(source, viewModel.bookSource?.bookSourceUrl))
+            },
             onRefreshEnabledChanged = { enabled ->
                 if (::refreshLayout.isInitialized) {
                     refreshLayout.isEnabled = enabled
@@ -512,7 +531,9 @@ class BookInfoComposeActivity :
             chapterList.isEmpty() -> getString(R.string.toc_s, getString(R.string.error_load_toc))
             else -> getString(R.string.toc_s, book.durChapterTitle)
         }
-        val readableChapters = chapterList.filter { !it.isVolume }
+        val readableChapters = chapterList.filter {
+            !it.isVolume && !EpubChapterMetadata.isHiddenFromToc(it)
+        }
         val currentChapterPosition = readableChapters
             .indexOfFirst { it.index == book.durChapterIndex }
             .takeIf { it >= 0 } ?: 0
@@ -532,6 +553,7 @@ class BookInfoComposeActivity :
             coverPath = coverPath,
             intro = intro,
             kinds = book.getKindList(),
+            customTags = BookTagHelper.parse(book.customTag),
             groupText = groupText,
             tocText = tocText,
             chapterCount = readableChapters.size,

@@ -1,5 +1,6 @@
 package io.legado.app.ui.config
 
+import io.legado.app.help.http.dns.DnsScope
 import android.net.Uri
 import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
@@ -7,7 +8,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient as okHttpClient
 import io.legado.app.model.BookCover
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.ui.config.compose.ComposeSettingFragment
@@ -202,7 +203,7 @@ class WelcomeConfigFragment : ComposeSettingFragment() {
             lifecycleScope.launch {
                 kotlin.runCatching {
                     appCtx.toastOnUi("下载图片中...")
-                    val analyzeUrl = AnalyzeUrl(uri.toString())
+                    val analyzeUrl = AnalyzeUrl(uri.toString(), dnsScope = DnsScope.IMAGE)
                     val url = analyzeUrl.urlNoQuery
                     var file = requireContext().externalFiles
                     val res = okHttpClient.newCallResponse(0) {

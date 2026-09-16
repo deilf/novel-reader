@@ -135,6 +135,7 @@ class ConfigActivity : VMBaseActivity<ViewBinding, ConfigViewModel>() {
         }
         when (val configTag = intent.getStringExtra("configTag")) {
             ConfigTag.OTHER_CONFIG -> replaceFragment(configTag, OtherConfigFragment::class.java)
+            ConfigTag.NETWORK_DNS_CONFIG -> replaceFragment(configTag, NetworkDnsConfigFragment::class.java)
             ConfigTag.THEME_CONFIG -> replaceFragment(configTag, ThemeConfigFragment::class.java)
             ConfigTag.BACKUP_CONFIG -> replaceFragment(configTag, BackupConfigFragment::class.java)
             ConfigTag.AI_CONFIG -> replaceFragment(configTag, AiConfigFragment::class.java)

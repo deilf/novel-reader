@@ -152,7 +152,7 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                                 defaultValue = false
                             ),
                             switch(
-                                key = PreferKey.textFullJustify,
+                                key = ReadBookConfig.layoutPreferenceKey(PreferKey.textFullJustify),
                                 title = getString(R.string.text_full_justify),
                                 defaultValue = true
                             ),
@@ -275,7 +275,10 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                                 title = getString(R.string.show_read_title_addition),
                                 defaultValue = true
                             )
-                        )
+                        ).filterNot { ReadBookConfig.usingEpubLayout && it.key in setOf(
+                            PreferKey.doublePageHorizontal, PreferKey.useZhLayout, PreferKey.textBottomJustify,
+                            PreferKey.adaptSpecialStyle, PreferKey.optimizeRender
+                        ) }
                     )
                 )
             )
@@ -301,6 +304,7 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                 }
 
                 PreferKey.textFullJustify,
+                "epubLayout.textFullJustify",
                 PreferKey.textBottomJustify,
                 PreferKey.useZhLayout,
                 PreferKey.adaptSpecialStyle-> {

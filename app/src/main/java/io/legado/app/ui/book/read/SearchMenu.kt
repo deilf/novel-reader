@@ -133,6 +133,7 @@ class SearchMenu @JvmOverloads constructor(
 
 
     fun runMenuIn() {
+        callBack.onMenuShow()
         this.visible()
         binding.llBottomMenu.visible()
         binding.vwMenuBg.visible()
@@ -140,13 +141,12 @@ class SearchMenu @JvmOverloads constructor(
     }
 
     fun runMenuOut(onMenuOutEnd: (() -> Unit)? = null) {
-        if (isMenuOutAnimating) {
+        if (isMenuOutAnimating || !isVisible) {
             return
         }
         this.onMenuOutEnd = onMenuOutEnd
-        if (this.isVisible) {
-            binding.llBottomMenu.startAnimation(menuBottomOut)
-        }
+        callBack.onMenuHide()
+        binding.llBottomMenu.startAnimation(menuBottomOut)
     }
 
     @SuppressLint("SetTextI18n")
@@ -252,8 +252,10 @@ class SearchMenu @JvmOverloads constructor(
                 isMenuOutAnimating = false
                 binding.llBottomMenu.invisible()
                 binding.vwMenuBg.invisible()
+                this@SearchMenu.invisible()
                 binding.vwMenuBg.setOnClickListener { runMenuOut() }
 
+                callBack.onMenuHidden()
                 onMenuOutEnd?.invoke()
                 callBack.upSystemUiVisibility()
             }
@@ -272,6 +274,8 @@ class SearchMenu @JvmOverloads constructor(
         fun navigateToSearch(searchResult: SearchResult, index: Int)
         fun onMenuShow()
         fun onMenuHide()
+        /** Called after the exit animation has made the complete menu invisible. */
+        fun onMenuHidden() = Unit
         fun cancelSelect()
     }
 

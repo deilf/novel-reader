@@ -1,5 +1,6 @@
 package io.legado.app.help.glide
 
+import io.legado.app.help.http.dns.DnsScope
 import com.bumptech.glide.Priority
 import com.bumptech.glide.load.DataSource
 import com.bumptech.glide.load.HttpException
@@ -12,7 +13,7 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.http.addHeaders
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient as okHttpClient
 import io.legado.app.help.http.okHttpClientManga
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.model.ReadManga
@@ -70,6 +71,7 @@ class OkHttpStreamFetcher(
 
         analyzedUrl = AnalyzeUrl(
             url.toString(),
+            dnsScope = DnsScope.IMAGE,
             source = source,
             coroutineContext = coroutineContext
         ).getGlideUrl()

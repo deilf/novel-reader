@@ -82,6 +82,24 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     private val pageFactory get() = callBack.pageFactory
     private val pageDelegate get() = callBack.pageDelegate
     private var pageOffset = 0
+
+    /** Current scroll offset of the first page (0 .. -height). Used by overlay Lottie. */
+    fun getPageOffset(): Int = pageOffset
+
+    /** Scroll-mode page at relative index (0=current, 1=next, 2=next+1). */
+    fun scrollRelativePage(relativePos: Int): TextPage = relativePage(relativePos)
+
+    /** Viewport Y of the top edge of a scroll-mode relative page. */
+    fun scrollRelativeOffset(relativePos: Int): Float = relativeOffset(relativePos)
+
+    fun hasScrollRelativePage(relativePos: Int): Boolean {
+        return when (relativePos) {
+            0 -> true
+            1 -> pageFactory.hasNext()
+            2 -> pageFactory.hasNextPlus()
+            else -> false
+        }
+    }
     private var backgroundScrollOffset = 0
     private var scrollFollowBackgroundDrawable: ScrollFollowBackgroundDrawable? = null
     private var autoPager: AutoPager? = null
@@ -127,6 +145,15 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
             postInvalidate()
         } else {
             invalidate()
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (isMainView) {
+            // A fresh round of sizing starts here; the size left over from the previous
+            // visit must not decide how this one is laid out.
+            ChapterProvider.markViewSizeUnsettled()
         }
     }
 
@@ -309,10 +336,21 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                 while (true) {
                     val snapshot = pendingRenderSnapshot.getAndSet(null) ?: break
                     var invalidate = false
-                    for (page in snapshot.pages) {
-                        if (snapshot.generation != renderGeneration.get()) break
-                        invalidate = page.render(this) || invalidate
-                        if (snapshot.generation != renderGeneration.get()) break
+                    try {
+                        for (page in snapshot.pages) {
+                            if (snapshot.generation != renderGeneration.get()) break
+                            invalidate = page.render(this) || invalidate
+                            if (snapshot.generation != renderGeneration.get()) break
+                        }
+                    } catch (error: Throwable) {
+                        pendingRenderSnapshot.set(null)
+                        renderGeneration.incrementAndGet()
+                        AppConfig.disableOptimizeRender(error)
+                        post {
+                            invalidate()
+                            pageDelegate?.postInvalidate()
+                        }
+                        break
                     }
                     if (invalidate && snapshot.generation == renderGeneration.get()) {
                         post {
@@ -345,7 +383,7 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
 
     fun setScrollFollowBackground(bitmap: Bitmap?, alpha: Int) {
         scrollFollowBackgroundDrawable = bitmap?.takeUnless { it.isRecycled }?.let {
-            ScrollFollowBackgroundDrawable(it) { getBackgroundOffset() }.apply {
+            ScrollFollowBackgroundDrawable(it, offsetProvider = { getBackgroundOffset() }).apply {
                 setAlpha(alpha)
             }
         }
@@ -992,31 +1030,6 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         return false
     }
 
-    private fun selectNativeText(x: Float, y: Float): String? {
-        val last = lastRelativePageIndex()
-        for (relativePos in 0..last) {
-            val page = relativePage(relativePos)
-            if (!page.isNativeEpubPage()) continue
-            if (!isInRelativePage(x, relativePos)) continue
-            val offset = relativeOffset(relativePos)
-            val localY = y - offset
-            val localX = x - pageHorizontalOffset(relativePos)
-            val selection = page.findNativeTextSelectionAt(localX, localY) ?: continue
-            val hitRect = RectF(
-                pageHorizontalOffset(relativePos) + selection.rect.left + page.epubDrawOffsetX,
-                selection.rect.top + page.epubDrawOffsetY + offset,
-                pageHorizontalOffset(relativePos) + selection.rect.right + page.epubDrawOffsetX,
-                selection.rect.bottom + page.epubDrawOffsetY + offset
-            )
-            nativeSelectedText = selection.expandedText ?: selection.text
-            nativeSelectionRect = hitRect
-            postInvalidate()
-            upSelectedStart(hitRect.left, hitRect.bottom, hitRect.top)
-            upSelectedEnd(hitRect.right, hitRect.bottom)
-            return selection.text
-        }
-        return null
-    }
 
     fun createBookmark(): Bookmark? {
         val page = relativePage(selectStart.relativePagePos)
@@ -1068,7 +1081,12 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     fun relativePage(relativePos: Int): TextPage {
-        if (!callBack.isScroll && relativePos == 1 && ChapterProvider.doublePage) {
+        // Order matters: callBack reaches the activity's lazily-inflated binding, and this
+        // method runs during that inflation (page setup -> advanced title collection).
+        // Touching it there re-enters the initializer and inflates the whole reader again,
+        // recursively. The paired-page case only exists in double-page mode, so test the
+        // cheap local conditions first and never consult the activity outside it.
+        if (relativePos == 1 && ChapterProvider.doublePage && !callBack.isScroll) {
             return pairedTextPage ?: TextPage().format()
         }
         return when (relativePos) {

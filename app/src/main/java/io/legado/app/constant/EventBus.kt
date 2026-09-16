@@ -58,4 +58,5 @@ object EventBus {
     const val REFRESH_BOOK_TOC = "refreshBookToc"
     const val LIBRARY_CONTAINER_CHANGED = "libraryContainerChanged"
     const val UP_VIDEO_INFO = "upVideoInfo"
+    const val AUTO_TASK_SERVICE = "autoTaskService"
 }

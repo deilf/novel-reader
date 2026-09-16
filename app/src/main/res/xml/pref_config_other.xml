@@ -71,7 +71,7 @@
             app:iconSpaceReserved="false" />
 
         <io.legado.app.lib.prefs.NameListPreference
-            android:defaultValue="text"
+            android:defaultValue="core"
             android:key="epubReadEngine"
             android:title="@string/epub_read_engine"
             android:summary="@string/epub_read_engine_summary"
@@ -91,9 +91,9 @@
             android:title="@string/user_agent" />
 
         <io.legado.app.lib.prefs.Preference
-            android:key="customHosts"
-            android:summary="@string/custom_hosts_summary"
-            android:title="@string/custom_hosts" />
+            android:key="networkDns"
+            android:summary="@string/network_dns_summary"
+            android:title="@string/network_dns_title" />
 
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="false"
@@ -118,12 +118,6 @@
             android:key="uploadRule"
             android:summary="@string/direct_link_upload_rule_summary"
             android:title="@string/direct_link_upload_rule" />
-
-        <io.legado.app.lib.prefs.SwitchPreference
-            android:defaultValue="false"
-            android:key="Cronet"
-            android:summary="@string/pref_cronet_summary"
-            android:title="Cronet" />
 
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="false"

@@ -154,6 +154,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/menu_highlight_rule_manage"
+        android:title="@string/highlight_rule_manage"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/menu_effective_replaces"
         android:title="@string/effective_replaces"
         app:showAsAction="never" />

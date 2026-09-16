@@ -3,6 +3,9 @@ package io.legado.app.help.config
 import java.util.Locale
 
 internal object BubbleSvgPolicy {
+    fun escapeText(value: String): String = value.replace("&", "&amp;")
+        .replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
+
     private val eventHandlerPattern = Regex("""\son[a-z]+\s*=""", RegexOption.IGNORE_CASE)
     private val hrefPattern = Regex(
         """(?:href|xlink:href)\s*=\s*(["'])(.*?)\1""",
@@ -28,9 +31,32 @@ internal object BubbleSvgPolicy {
         }
     }
 
+    fun packageReferences(svg: String): Set<String> {
+        return buildSet {
+            hrefPattern.findAll(svg).forEach { match ->
+                match.groupValues[2].trim().takeIf(::isPackageReference)?.let(::add)
+            }
+            urlPattern.findAll(svg).forEach { match ->
+                match.groupValues[1].trim().trim('"', '\'')
+                    .takeIf(::isPackageReference)
+                    ?.let(::add)
+            }
+        }
+    }
+
     private fun requireSafeReference(value: String, description: String) {
-        require(value.startsWith("#") || value.startsWith("data:image/", ignoreCase = true)) {
+        require(
+            value.startsWith("#") ||
+                value.startsWith("data:image/", ignoreCase = true) ||
+                PackageResourcePolicy.isSafeReference(value)
+        ) {
             "bubble SVG contains an $description"
         }
+    }
+
+    private fun isPackageReference(value: String): Boolean {
+        return !value.startsWith("#") &&
+            !value.startsWith("data:image/", ignoreCase = true) &&
+            PackageResourcePolicy.isSafeReference(value)
     }
 }

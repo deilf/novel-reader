@@ -24,7 +24,7 @@ import io.legado.app.databinding.ActivityThemeManageBinding
 import io.legado.app.databinding.DialogEditTextBinding
 import io.legado.app.databinding.ItemThemePackageBinding
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.UiCorner

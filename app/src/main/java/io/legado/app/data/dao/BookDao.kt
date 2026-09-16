@@ -290,6 +290,7 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE name = :name and author = :author")
     fun getBook(name: String, author: String): Book?
 
+
     @Query("""select distinct bs.* from books, book_sources bs 
         where origin == bookSourceUrl and origin not like '${BookType.localTag}%' 
         and origin not like '${BookType.webDavTag}%'""")
@@ -374,6 +375,27 @@ interface BookDao {
     @Delete
     fun delete(vararg book: Book)
 
+    @Query("delete from books where bookUrl = :bookUrl and type & ${BookType.notShelf} > 0")
+    fun deleteIfNotShelf(bookUrl: String): Int
+
+    /**
+     * Drop the temporary rows for one book identity within a single source.
+     *
+     * A source may derive an unstable [Book.bookUrl], so the row written when the reader
+     * opened the book is not always the row [deleteIfNotShelf] targets on exit; the
+     * leftover then surfaces as a book the reader never added. Scoping to `origin` keeps
+     * a same-titled book from another source out of it, and the notShelf predicate means
+     * a book that really is on the shelf can never be removed here.
+     */
+    @Query(
+        """
+        delete from books
+        where name = :name and author = :author and origin = :origin
+          and type & ${BookType.notShelf} > 0
+        """
+    )
+    fun deleteTempByIdentity(name: String, author: String, origin: String): Int
+
     @Transaction
     fun replace(oldBook: Book, newBook: Book) {
         newBook.sanitizeForStorage()
@@ -383,6 +405,14 @@ interface BookDao {
 
     @Query("update books set durChapterPos = :pos where bookUrl = :bookUrl")
     fun upProgress(bookUrl: String, pos: Int)
+
+    /**
+     * Stamp the last-read time without rewriting the row. A whole-row update would carry
+     * whatever `type` the in-memory copy holds, which can undo a concurrent shelf-state
+     * change made through another screen.
+     */
+    @Query("update books set durChapterTime = :time where bookUrl = :bookUrl")
+    fun updateReadTime(bookUrl: String, time: Long)
 
     @Query(
         """

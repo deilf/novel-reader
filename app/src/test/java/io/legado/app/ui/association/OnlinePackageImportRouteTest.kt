@@ -38,6 +38,50 @@ class OnlinePackageImportRouteTest {
     }
 
     @Test
+    fun parsesAutoTaskRoute() {
+        val route = OnlinePackageImportRoute.parse(
+            scheme = "legado",
+            host = "import",
+            path = "/autoTask",
+            sourceUrl = "https://example.com/tasks.json"
+        )
+
+        assertEquals(
+            OnlinePackageImportRoute.AutoTask("https://example.com/tasks.json"),
+            route
+        )
+    }
+
+    @Test
+    fun preservesLegacyGenericAutoImportRoute() {
+        val route = OnlinePackageImportRoute.parse(
+            scheme = "legado",
+            host = "import",
+            path = "/auto",
+            sourceUrl = "https://example.com/book-sources.json"
+        )
+
+        // Generic `/auto` is handled by OnLineImportActivity's legacy
+        // determineType() path, not by the auto-task dialog.
+        assertSame(OnlinePackageImportRoute.Other, route)
+    }
+
+    @Test
+    fun acceptsAutoTaskAliasCaseInsensitively() {
+        val route = OnlinePackageImportRoute.parse(
+            scheme = "YUEDU",
+            host = "IMPORT",
+            path = "/AutoTasks",
+            sourceUrl = "https://example.com/tasks.json"
+        )
+
+        assertEquals(
+            OnlinePackageImportRoute.AutoTask("https://example.com/tasks.json"),
+            route
+        )
+    }
+
+    @Test
     fun keepsUnrelatedLegacyRoutesOutsideNewDispatcher() {
         val route = OnlinePackageImportRoute.parse(
             scheme = "legado",

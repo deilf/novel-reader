@@ -63,7 +63,10 @@ object BackupConfig {
         PreferKey.bitmapCacheSize,
         PreferKey.webServiceWakeLock,
         PreferKey.readAloudWakeLock,
-        PreferKey.audioPlayWakeLock
+        PreferKey.audioPlayWakeLock,
+        PreferKey.readerDataRepairVersion,
+        PreferKey.advancedTitleLottieJson,
+        PreferKey.advancedTitleLottiePath
     )
 
     //阅读配置

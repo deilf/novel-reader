@@ -11,7 +11,7 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isJsonArray
 import io.legado.app.utils.isJsonObject

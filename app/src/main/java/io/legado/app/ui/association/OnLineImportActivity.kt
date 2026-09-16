@@ -10,6 +10,7 @@ import io.legado.app.data.appDb
 import io.legado.app.databinding.ActivityTranslucenceBinding
 import io.legado.app.help.config.BubblePackageManager
 import io.legado.app.model.ReadBook
+import io.legado.app.ui.autoTask.ImportAutoTaskDialog
 import io.legado.app.ui.widget.compose.showComposeConfirmDialog
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -72,6 +73,11 @@ class OnLineImportActivity :
 
                 is OnlinePackageImportRoute.Bubble -> {
                     downloadOnlinePackage(route, OnlineImportPayloadType.BUBBLE_PACKAGE)
+                    return
+                }
+
+                is OnlinePackageImportRoute.AutoTask -> {
+                    showDialogFragment(ImportAutoTaskDialog(route.sourceUrl))
                     return
                 }
 
@@ -284,7 +290,17 @@ class OnLineImportActivity :
             Formatter.formatFileSize(this, download.size),
             if (download.privateNetwork) getString(R.string.yes) else getString(R.string.no)
         )
-        if (inspection == null) return base
+        val softLimit = when (route) {
+            is OnlinePackageImportRoute.ParagraphRule -> OnlineImportPayloadType.PARAGRAPH_RULES.softLimitBytes
+            is OnlinePackageImportRoute.Bubble -> OnlineImportPayloadType.BUBBLE_PACKAGE.softLimitBytes
+            else -> Long.MAX_VALUE
+        }
+        val largeNotice = if (download.size > softLimit) {
+            "\n\n${getString(R.string.large_package_read_only_notice)}"
+        } else {
+            ""
+        }
+        if (inspection == null) return base + largeNotice
         val totalCount = inspection.packageData.entries.size
         val summary = getString(
             R.string.paragraph_import_summary,
@@ -292,7 +308,7 @@ class OnLineImportActivity :
             totalCount - inspection.conflictCount,
             inspection.conflictCount
         )
-        return "$base\n\n$summary\n\n${getString(R.string.online_import_paragraph_script_warning)}"
+        return "$base$largeNotice\n\n$summary\n\n${getString(R.string.online_import_paragraph_script_warning)}"
     }
 
     private fun discardPendingDownload(

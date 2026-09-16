@@ -5,11 +5,12 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.RssSource
 import io.legado.app.model.SharedJsScope
+import io.legado.app.help.http.dns.DnsScope
 import org.mozilla.javascript.Scriptable
 import kotlin.coroutines.CoroutineContext
 
-fun BaseSource.getShareScope(coroutineContext: CoroutineContext? = null): Scriptable? {
-    return SharedJsScope.getScope(jsLib, coroutineContext)
+fun BaseSource.getShareScope(coroutineContext: CoroutineContext? = null, dnsScope: DnsScope = getNetworkDnsScope()): Scriptable? {
+    return SharedJsScope.getScope(jsLib, coroutineContext, dnsScope)
 }
 
 fun BaseSource.getSourceType(): Int {

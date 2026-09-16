@@ -25,6 +25,7 @@ import io.legado.app.databinding.DialogSimulatedReadingBinding
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
+import io.legado.app.help.storage.ReaderDataRepair
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.ThemeStore
@@ -82,6 +83,7 @@ abstract class BaseReadBookActivity :
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        ReaderDataRepair.repairOnAppStart()
         ReadBook.msg = null
         setOrientation()
         upLayoutInDisplayCutoutMode()
@@ -366,7 +368,7 @@ abstract class BaseReadBookActivity :
         }
     }
 
-    fun showPageAnimConfig(success: () -> Unit) {
+    fun showPageAnimConfig(success: (previousPageAnim: Int) -> Unit) {
         val items = listOf(
             getString(R.string.btn_default_s) to null,
             getString(R.string.page_anim_cover) to PageAnim.coverPageAnim,
@@ -377,8 +379,11 @@ abstract class BaseReadBookActivity :
             getString(R.string.page_anim_none) to PageAnim.noAnim
         )
         selector(R.string.page_anim, items.map { it.first }) { _, i ->
+            val previousPageAnim = ReadBook.pageAnim()
             ReadBook.book?.setPageAnim(items.getOrNull(i)?.second ?: -1)
-            success()
+            if (ReadBook.pageAnim() != previousPageAnim) {
+                success(previousPageAnim)
+            }
         }
     }
 

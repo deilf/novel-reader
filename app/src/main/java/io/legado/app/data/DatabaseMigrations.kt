@@ -24,8 +24,59 @@ object DatabaseMigrations {
             migration_95_96, migration_96_97, migration_97_98, migration_98_99,
             migration_99_100, migration_100_101, migration_101_102, migration_102_103,
             migration_103_104, migration_104_105, migration_105_106,
-            migration_106_107, migration_107_108, migration_108_109,
+            migration_106_107, migration_107_108, migration_108_109, migration_109_110,
+            migration_110_111, migration_111_112, MIGRATION_112_113,
         )
+    }
+
+    val MIGRATION_112_113 = object : Migration(112, 113) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `auto_task_rules` (
+                    `id` TEXT NOT NULL,
+                    `name` TEXT NOT NULL,
+                    `enable` INTEGER NOT NULL DEFAULT 1,
+                    `cron` TEXT,
+                    `loginUrl` TEXT,
+                    `loginUi` TEXT,
+                    `loginCheckJs` TEXT,
+                    `comment` TEXT,
+                    `script` TEXT NOT NULL,
+                    `header` TEXT,
+                    `jsLib` TEXT,
+                    `concurrentRate` TEXT,
+                    `enabledCookieJar` INTEGER NOT NULL DEFAULT 1,
+                    `lastRunAt` INTEGER NOT NULL DEFAULT 0,
+                    `lastResult` TEXT,
+                    `lastError` TEXT,
+                    `lastLog` TEXT,
+                    `sortOrder` INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(`id`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
+    private val migration_111_112 = object : Migration(111, 112) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // No schema change. Version bump forces repaired builds through the startup gate.
+        }
+    }
+
+    private val migration_110_111 = object : Migration(110, 111) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // No schema change. This advances devices that already received database 110.
+        }
+    }
+
+    private val migration_109_110 = object : Migration(109, 110) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // No schema change.
+            // Version bump only: experimental builds may already be at 110 on device.
+            // Room cannot open if app declares 109 while device DB is 110.
+        }
     }
 
     private val migration_108_109 = object : Migration(108, 109) {

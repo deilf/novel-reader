@@ -3,7 +3,7 @@ package io.legado.app.lib.cloud
 import android.net.Uri
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.syncHttpClient as okHttpClient
 import io.legado.app.help.http.text
 import io.legado.app.utils.toRequestBody
 import kotlinx.coroutines.Dispatchers.IO

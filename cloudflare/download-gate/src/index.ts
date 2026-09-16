@@ -93,17 +93,17 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
 
   const metadata = await getReleaseMetadata(env).catch(() => undefined);
   const fileName = sanitizeFilename(metadata?.fileName || apkKey.split("/").pop() || DEFAULT_APK_KEY);
-  const size = metadata?.size || object.size;
+  // Metadata may describe an older release, even if both APKs have the same size.
+  // Response framing must describe this object; unbound release hashes/tags cannot.
+  const size = object.size;
 
   return new Response(object.body, {
     status: 200,
     headers: {
-      "content-type": metadata?.contentType || object.httpMetadata?.contentType || APK_CONTENT_TYPE,
+      "content-type": object.httpMetadata?.contentType || APK_CONTENT_TYPE,
       "content-disposition": `attachment; filename="${fileName}"`,
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
-      ...(metadata?.tagName ? { "x-release-tag": metadata.tagName } : {}),
-      ...(metadata?.sha256 ? { "x-sha256": metadata.sha256 } : {}),
       ...(size > 0 ? { "content-length": String(size) } : {}),
     },
   });

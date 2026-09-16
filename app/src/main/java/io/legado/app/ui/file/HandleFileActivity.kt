@@ -189,6 +189,7 @@ class HandleFileActivity :
     }
 
     private fun showInputDirectoryDialog() {
+        var selectionSubmitted = false
         val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
             editView.hint = getString(R.string.enter_directory_path)
         }
@@ -207,13 +208,16 @@ class HandleFileActivity :
                     isExternalStorage(file) &&
                     file.checkWrite()
                 ) {
+                    selectionSubmitted = true
                     onResult(Intent().setData(Uri.fromFile(file)))
                 } else {
                     toastOnUi(getString(R.string.invalid_directory))
                 }
             }
             onDismiss {
-                finish()
+                // Confirming dismisses the input dialog too. An export must stay
+                // alive until its asynchronous save has completed or reported an error.
+                if (!selectionSubmitted) finish()
             }
             cancelButton()
         }
@@ -360,11 +364,14 @@ class HandleFileActivity :
             return
         }
         if (mode == HandleFileContract.EXPORT) {
-            getFileData()?.let { fileData ->
-                viewModel.saveToLocal(uri, fileData.first, fileData.second, fileData.third) { savedUri ->
-                    setResult(RESULT_OK, Intent().setData(savedUri))
-                    finish()
-                }
+            val fileData = getFileData() ?: run {
+                toastOnUi(R.string.error)
+                finish()
+                return
+            }
+            viewModel.saveToLocal(uri, fileData.first, fileData.second, fileData.third) { savedUri ->
+                setResult(RESULT_OK, Intent().setData(savedUri))
+                finish()
             }
         } else {
             data.putExtra("value", intent.getStringExtra("value"))

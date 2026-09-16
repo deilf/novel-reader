@@ -17,8 +17,9 @@ import io.legado.app.help.config.AdvancedTitleConfig
 import io.legado.app.help.config.AdvancedTitlePackageManager
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
+import io.legado.app.lib.dialogs.alert
 import io.legado.app.ui.book.read.config.AdvancedTitleConfigDialog
 import io.legado.app.ui.book.read.page.LottieImageBitmapCache
 import io.legado.app.ui.file.HandleFileContract
@@ -112,15 +113,10 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
                         entries = entriesState.value,
                         activeId = activeIdState.value,
                         loading = loadingState.value,
-                        previewProvider = { entry ->
-                            withContext(Dispatchers.IO) {
-                                runCatching { AdvancedTitlePackageManager.readTemplate(entry) }.getOrNull()
-                            }
-                        },
                         onApply = ::applyEntry,
                         onEdit = ::editEntry,
                         onMoreActions = ::entryActions,
-                        onImport = ::showImportPicker
+                        onImport = ::showAddMenu
                     )
                 }
             },
@@ -152,7 +148,9 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
     private fun entryActions(
         entry: AdvancedTitlePackageManager.Entry
     ): List<AppManagementMenuAction> = buildList {
-        add(AppManagementMenuAction(getString(R.string.export_str)) { exportEntry(entry) })
+        if (entry.isUsable) {
+            add(AppManagementMenuAction(getString(R.string.export_str)) { exportEntry(entry) })
+        }
         if (!entry.isBuiltin) {
             add(
                 AppManagementMenuAction(
@@ -163,12 +161,48 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
         }
     }
 
+    private fun showAddMenu() {
+        alert(getString(R.string.advanced_title_add)) {
+            items(
+                listOf(
+                    getString(R.string.advanced_title_add_from_builtin),
+                    getString(R.string.advanced_title_import_from_file),
+                    getString(R.string.advanced_title_import_from_net),
+                )
+            ) { _, _, index ->
+                when (index) {
+                    0 -> addFromBuiltin()
+                    1 -> showImportPicker()
+                    2 -> showNetworkImportDialog()
+                }
+            }
+        }
+    }
+
     private fun showImportPicker() {
         importJson.launch {
             mode = HandleFileContract.FILE
             title = getString(R.string.advanced_title_import_title)
-            allowExtensions = arrayOf("json")
+            allowExtensions = arrayOf("json", "lottie")
             otherActions = arrayListOf(SelectItem(importFromNet, -1))
+        }
+    }
+
+    private fun addFromBuiltin() {
+        lifecycleScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val builtin = AdvancedTitlePackageManager.builtinEntry()
+                    val json = AdvancedTitlePackageManager.readTemplate(builtin)
+                    AdvancedTitlePackageManager.addOrUpdate(
+                        name = getString(R.string.advanced_title_unnamed),
+                        json = json
+                    )
+                }
+            }.onSuccess {
+                toastOnUi(R.string.advanced_title_added)
+                loadEntries()
+            }.onFailure { toastOnUi(it.localizedMessage) }
         }
     }
 
@@ -237,6 +271,14 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
     }
 
     private fun editEntry(entry: AdvancedTitlePackageManager.Entry) {
+        if (entry.isBuiltin || !entry.isUsable) {
+            if (!entry.isBuiltin) toastOnUi(R.string.advanced_title_invalid_json)
+            return
+        }
+        if (!AdvancedTitlePackageManager.isEditable(entry)) {
+            toastOnUi(R.string.large_config_read_only)
+            return
+        }
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { AdvancedTitlePackageManager.readTemplate(entry) }
@@ -266,7 +308,7 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
         heightFactor: Int
     ) {
         val entry = entriesState.value.firstOrNull { it.id == entryId }
-        if (entry == null || entry.isBuiltin) {
+        if (entry == null || entry.isBuiltin || !entry.isUsable) {
             toastOnUi(R.string.error)
             loadEntries()
             return
@@ -284,6 +326,7 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
+                    AdvancedTitlePackageManager.validateEditableJson(json)
                     val updated = AdvancedTitlePackageManager.addOrUpdate(
                         name = name,
                         json = json,
@@ -304,6 +347,10 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
     }
 
     private fun exportEntry(entry: AdvancedTitlePackageManager.Entry) {
+        if (!entry.isUsable) {
+            toastOnUi(R.string.advanced_title_invalid_json)
+            return
+        }
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { AdvancedTitlePackageManager.readTemplate(entry) }
@@ -346,6 +393,10 @@ class AdvancedTitleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
     }
 
     private fun applyEntry(entry: AdvancedTitlePackageManager.Entry) {
+        if (!entry.isUsable) {
+            toastOnUi(R.string.advanced_title_invalid_json)
+            return
+        }
         lifecycleScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { AdvancedTitlePackageManager.apply(entry) }

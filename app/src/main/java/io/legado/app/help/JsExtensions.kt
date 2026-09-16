@@ -12,6 +12,7 @@ import io.legado.app.constant.AppConst.dateFormat
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.entities.BaseSource
+import io.legado.app.data.entities.HttpTTS
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.BackstageWebView
@@ -20,6 +21,8 @@ import io.legado.app.help.http.CookieStore
 import io.legado.app.help.http.SSLHelper
 import io.legado.app.help.http.StrResponse
 import io.legado.app.help.http.HttpCaptureHelper
+import io.legado.app.help.http.dns.DnsRequestContext
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.SourceVerificationHelp
 import io.legado.app.help.source.getSourceType
@@ -92,6 +95,7 @@ import io.legado.app.help.config.ThemeConfig
 interface JsExtensions : JsEncodeUtils {
 
     fun getSource(): BaseSource?
+    fun getNetworkDnsScope(): DnsScope = if (getSource() is HttpTTS) DnsScope.MEDIA else DnsScope.READING
     fun getTag(): String?
     fun isWebSocketAllowed(): Boolean = false
 
@@ -175,7 +179,7 @@ interface JsExtensions : JsEncodeUtils {
         } else {
             url.toString()
         }
-        val analyzeUrl = AnalyzeUrl(urlStr, source = getSource(), callTimeout = callTimeout, coroutineContext = context)
+        val analyzeUrl = AnalyzeUrl(urlStr, dnsScope = getNetworkDnsScope(), source = getSource(), callTimeout = callTimeout, coroutineContext = context)
         return kotlin.runCatching {
             analyzeUrl.getStrResponse().body
         }.onFailure {
@@ -196,7 +200,7 @@ interface JsExtensions : JsEncodeUtils {
         return runBlocking(context) {
             urlList.asFlow().mapAsync(AppConfig.threadCount) { url ->
                 val analyzeUrl = AnalyzeUrl(
-                    url,
+                    url, dnsScope = getNetworkDnsScope(),
                     source = getSource(),
                     coroutineContext = coroutineContext
                 )
@@ -215,7 +219,7 @@ interface JsExtensions : JsEncodeUtils {
         return runBlocking(context) {
             urlList.asFlow().mapAsync(AppConfig.threadCount) { url ->
                 val analyzeUrl = AnalyzeUrl(
-                    url,
+                    url, dnsScope = getNetworkDnsScope(),
                     source = getSource(),
                     coroutineContext = coroutineContext,
                     callTimeout = timeout.toLong()
@@ -231,7 +235,7 @@ interface JsExtensions : JsEncodeUtils {
      */
     fun connect(urlStr: String): StrResponse {
         val analyzeUrl = AnalyzeUrl(
-            urlStr,
+            urlStr, dnsScope = getNetworkDnsScope(),
             source = getSource(),
             coroutineContext = context
         )
@@ -252,7 +256,7 @@ interface JsExtensions : JsEncodeUtils {
     fun connect(urlStr: String, header: String?, callTimeout: Long?): StrResponse {
         val headerMap = GSON.fromJsonObject<Map<String, String>>(header).getOrNull()
         val analyzeUrl = AnalyzeUrl(
-            urlStr,
+            urlStr, dnsScope = getNetworkDnsScope(),
             headerMapF = headerMap,
             source = getSource(),
             callTimeout = callTimeout,
@@ -529,7 +533,7 @@ interface JsExtensions : JsEncodeUtils {
     @JavascriptInterface
     fun downloadFile(url: String): String {
         rhinoContextOrNull?.ensureActive()
-        val analyzeUrl = AnalyzeUrl(url, source = getSource(), coroutineContext = context)
+        val analyzeUrl = AnalyzeUrl(url, dnsScope = getNetworkDnsScope(), source = getSource(), coroutineContext = context)
         val type = analyzeUrl.type ?: UrlUtil.getSuffix(url)
         val path = FileUtils.getPath(
             File(FileUtils.getCachePath()),
@@ -565,7 +569,7 @@ interface JsExtensions : JsEncodeUtils {
     @JavascriptInterface
     fun downloadFile(content: String, url: String): String {
         rhinoContextOrNull?.ensureActive()
-        val type = AnalyzeUrl(url, source = getSource(), coroutineContext = context).type
+        val type = AnalyzeUrl(url, dnsScope = getNetworkDnsScope(), source = getSource(), coroutineContext = context).type
             ?: return ""
         val path = FileUtils.getPath(
             FileUtils.createFolderIfNotExist(FileUtils.getCachePath()),
@@ -594,15 +598,17 @@ interface JsExtensions : JsEncodeUtils {
         } else headers
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
-            rhinoContextOrNull?.ensureActive()
-            Jsoup.connect(urlStr)
-                .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
-                .timeout(timeout ?: 30000)
-                .ignoreContentType(true)
-                .followRedirects(false)
-                .headers(requestHeaders)
-                .method(Connection.Method.GET)
-                .execute()
+            DnsRequestContext.withScope(getNetworkDnsScope()) {
+                rhinoContextOrNull?.ensureActive()
+                Jsoup.connect(urlStr)
+                    .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
+                    .timeout(timeout ?: 30000)
+                    .ignoreContentType(true)
+                    .followRedirects(false)
+                    .headers(requestHeaders)
+                    .method(Connection.Method.GET)
+                    .execute()
+            }
         }
         return response
     }
@@ -620,15 +626,17 @@ interface JsExtensions : JsEncodeUtils {
         } else headers
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
-            rhinoContextOrNull?.ensureActive()
-            Jsoup.connect(urlStr)
-                .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
-                .timeout(timeout ?: 30000)
-                .ignoreContentType(true)
-                .followRedirects(false)
-                .headers(requestHeaders)
-                .method(Connection.Method.HEAD)
-                .execute()
+            DnsRequestContext.withScope(getNetworkDnsScope()) {
+                rhinoContextOrNull?.ensureActive()
+                Jsoup.connect(urlStr)
+                    .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
+                    .timeout(timeout ?: 30000)
+                    .ignoreContentType(true)
+                    .followRedirects(false)
+                    .headers(requestHeaders)
+                    .method(Connection.Method.HEAD)
+                    .execute()
+            }
         }
         return response
     }
@@ -646,16 +654,18 @@ interface JsExtensions : JsEncodeUtils {
         } else headers
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
-            rhinoContextOrNull?.ensureActive()
-            Jsoup.connect(urlStr)
-                .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
-                .timeout(timeout ?: 30000)
-                .ignoreContentType(true)
-                .followRedirects(false)
-                .requestBody(body)
-                .headers(requestHeaders)
-                .method(Connection.Method.POST)
-                .execute()
+            DnsRequestContext.withScope(getNetworkDnsScope()) {
+                rhinoContextOrNull?.ensureActive()
+                Jsoup.connect(urlStr)
+                    .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
+                    .timeout(timeout ?: 30000)
+                    .ignoreContentType(true)
+                    .followRedirects(false)
+                    .requestBody(body)
+                    .headers(requestHeaders)
+                    .method(Connection.Method.POST)
+                    .execute()
+            }
         }
         return response
     }
@@ -793,6 +803,32 @@ interface JsExtensions : JsEncodeUtils {
     @JavascriptInterface
     fun getWebViewUA(): String {
         return WebSettings.getDefaultUserAgent(appCtx)
+    }
+
+    /**
+     * 获取 App 字体库列表（字体管理中的 ttf/otf）。
+     * @return JSON 数组字符串，元素形如：
+     *   {"ref":"@font:仓耳今楷.ttf","displayName":"仓耳今楷.ttf","pathOrUri":"..."}
+     * 无字体时返回 "[]"。
+     */
+    @JavascriptInterface
+    fun getFontList(): String {
+        return getFontList(true)
+    }
+
+    /**
+     * @param withAtFontPrefix true 时 ref 带 @font: 前缀；false 时 ref 仅为文件名
+     */
+    @JavascriptInterface
+    fun getFontList(withAtFontPrefix: Boolean): String {
+        val list = AppFont.list().map { item ->
+            mapOf(
+                "ref" to if (withAtFontPrefix) item.ref else item.displayName,
+                "displayName" to item.displayName,
+                "pathOrUri" to item.pathOrUri,
+            )
+        }
+        return GSON.toJson(list)
     }
 
 //****************文件操作******************//
@@ -986,7 +1022,7 @@ interface JsExtensions : JsEncodeUtils {
      */
     fun getZipByteArrayContent(url: String, path: String): ByteArray? {
         val bytes = if (url.isAbsUrl()) {
-            AnalyzeUrl(url, source = getSource(), coroutineContext = context).getByteArray()
+            AnalyzeUrl(url, dnsScope = getNetworkDnsScope(), source = getSource(), coroutineContext = context).getByteArray()
         } else {
             HexUtil.decodeHex(url)
         }
@@ -1014,7 +1050,7 @@ interface JsExtensions : JsEncodeUtils {
      */
     fun getRarByteArrayContent(url: String, path: String): ByteArray? {
         val bytes = if (url.isAbsUrl()) {
-            AnalyzeUrl(url, source = getSource(), coroutineContext = context).getByteArray()
+            AnalyzeUrl(url, dnsScope = getNetworkDnsScope(), source = getSource(), coroutineContext = context).getByteArray()
         } else {
             HexUtil.decodeHex(url)
         }
@@ -1032,7 +1068,7 @@ interface JsExtensions : JsEncodeUtils {
      */
     fun get7zByteArrayContent(url: String, path: String): ByteArray? {
         val bytes = if (url.isAbsUrl()) {
-            AnalyzeUrl(url, source = getSource(), coroutineContext = context).getByteArray()
+            AnalyzeUrl(url, dnsScope = getNetworkDnsScope(), source = getSource(), coroutineContext = context).getByteArray()
         } else {
             HexUtil.decodeHex(url)
         }
@@ -1077,7 +1113,7 @@ interface JsExtensions : JsEncodeUtils {
                     }
                     val font: ByteArray? = when {
                         data.isAbsUrl() -> AnalyzeUrl(
-                            data,
+                            data, dnsScope = getNetworkDnsScope(),
                             source = getSource(),
                             coroutineContext = context
                         ).getByteArray()

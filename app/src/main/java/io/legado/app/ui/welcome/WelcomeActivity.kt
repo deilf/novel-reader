@@ -3,7 +3,6 @@ package io.legado.app.ui.welcome
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
-import androidx.core.view.postDelayed
 import io.legado.app.R
 import io.legado.app.base.BaseActivity
 import io.legado.app.constant.PreferKey
@@ -14,7 +13,6 @@ import io.legado.app.ui.book.read.ReadBookActivity
 import io.legado.app.ui.main.MainActivity
 import io.legado.app.utils.fullScreen
 import io.legado.app.utils.getPrefBoolean
-import io.legado.app.utils.getPrefInt
 import io.legado.app.utils.setStatusBarColorAuto
 import io.legado.app.utils.startActivity
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -32,12 +30,7 @@ open class WelcomeActivity : BaseActivity<ActivityWelcomeBinding>(imageBg = fals
             // 避免从桌面启动程序后，会重新实例化入口类的activity
             finish()
         } else {
-            val welcomeShowTime = getPrefInt(PreferKey.welcomeShowTime, 0)
-            if (welcomeShowTime == 0) {
-                startMainActivity()
-            } else {
-                binding.root.postDelayed(welcomeShowTime.toLong()) { startMainActivity() }
-            }
+            startMainActivity()
         }
         binding.tvLegado.visibility = View.GONE
         binding.ivBook.visibility = View.GONE
@@ -51,7 +44,10 @@ open class WelcomeActivity : BaseActivity<ActivityWelcomeBinding>(imageBg = fals
     }
 
     override fun upBackgroundImage() {
-        window.decorView.setBackgroundResource(R.drawable.bg_welcome_preview)
+        // Keep the launcher hand-off visually neutral. The welcome activity is
+        // still used for default-to-read routing, but it must not flash the old
+        // branded splash artwork before MainActivity is ready.
+        window.decorView.setBackgroundColor(backgroundColor)
     }
 
     private fun startMainActivity() {

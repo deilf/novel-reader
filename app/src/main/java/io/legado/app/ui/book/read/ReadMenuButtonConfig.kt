@@ -105,6 +105,22 @@ object ReadMenuButtonConfig {
         return ButtonRef(type = TYPE_BUILTIN, id = id)
     }
 
+    fun supportsReplaceRules(isEpub: Boolean, directReader: Boolean): Boolean =
+        !isEpub || !directReader
+
+    fun supportsDirectReader(ref: ButtonRef, allowReplaceRules: Boolean = false): Boolean =
+        ref.type != TYPE_BUILTIN || when (ref.id) {
+            Builtin.REPLACE_RULE -> allowReplaceRules
+            Builtin.SEARCH, Builtin.PARAGRAPH_RULES, Builtin.BUBBLE -> false
+            else -> true
+        }
+
+    fun forDirectReader(layout: ButtonLayout, allowReplaceRules: Boolean = false): ButtonLayout =
+        ButtonLayout(
+            layout.firstRow.filter { supportsDirectReader(it, allowReplaceRules) },
+            layout.secondRow.filter { supportsDirectReader(it, allowReplaceRules) }
+        )
+
     private fun sanitize(layout: ButtonLayout): ButtonLayout {
         val first = sanitizeRow(layout.firstRow)
         val second = sanitizeRow(layout.secondRow)

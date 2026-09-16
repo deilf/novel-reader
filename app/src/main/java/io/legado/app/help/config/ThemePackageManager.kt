@@ -23,7 +23,7 @@ import io.legado.app.utils.normalizeFileName
 import io.legado.app.utils.putPrefString
 import io.legado.app.utils.readBytesLimited
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient as okHttpClient
 import io.legado.app.utils.compress.ZipUtils
 import io.legado.app.utils.compress.SafeZipExtractor
 import io.legado.app.utils.compress.SafeZipLimits

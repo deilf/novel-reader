@@ -7,11 +7,14 @@ import androidx.lifecycle.lifecycleScope
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.CacheManager
-import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.ui.rss.read.RssJsExtensions
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.lang.ref.WeakReference
 import java.util.UUID
 
@@ -21,7 +24,8 @@ class WebJsExtensions(
     activity: AppCompatActivity?,
     webView: WebView,
     bookType: Int = 0,
-    callback: Callback? = null
+    callback: Callback? = null,
+    private val requestLifecycle: WebViewRequestLifecycle? = null
 ): RssJsExtensions(activity, source, bookType) {
     private val callbackRef: WeakReference<Callback> = WeakReference(callback)
     private val webViewRef: WeakReference<WebView?> = WeakReference(webView)
@@ -32,7 +36,15 @@ class WebJsExtensions(
 
     @JavascriptInterface
     fun upConfig(config: String) {
-        callbackRef.get()?.upConfig(config)
+        val page = requestLifecycle?.currentPage()
+        if (requestLifecycle != null && page == null) return
+        if (page == null) {
+            callbackRef.get()?.upConfig(config)
+            return
+        }
+        page.scope.launch(Dispatchers.Main) {
+            if (page.isCurrent) callbackRef.get()?.upConfig(config)
+        }
     }
 
     /**
@@ -40,123 +52,133 @@ class WebJsExtensions(
      */
     @JavascriptInterface
     fun request(funName: String, jsParam: Array<String?>, id: String) {
-        val activity = activityRef.get() ?: return
-        Coroutine.async(activity.lifecycleScope) {
-            val params = Array(6) { i -> jsParam.getOrNull(i) }
-            val p0 = params[0]
-            val p1 = params[1]
-            val p2 = params[2]
-            val p3 = params[3]
-            val p4 = params[4]
-            val p5 = params[5]
-            when (funName) {
-                "run" -> {
-                    analyzeRule.setCoroutineContext(coroutineContext)
-                        .evalJS(
-                            p0 ?: throw NoStackTraceException("error null")
-                        ).toString()
+        val page = requestLifecycle?.currentPage()
+        if (requestLifecycle != null && page == null) return
+        val requestScope = page?.scope ?: activityRef.get()?.lifecycleScope ?: return
+        requestScope.launch(Dispatchers.Main) {
+            if (page != null && !page.isCurrent) return@launch
+            try {
+                val data = withContext(Dispatchers.IO) {
+                    val params = Array(6) { i -> jsParam.getOrNull(i) }
+                    val p0 = params[0]
+                    val p1 = params[1]
+                    val p2 = params[2]
+                    val p3 = params[3]
+                    val p4 = params[4]
+                    val p5 = params[5]
+                    when (funName) {
+                        "run" -> {
+                            analyzeRule.setCoroutineContext(coroutineContext)
+                                .evalJS(
+                                    p0 ?: throw NoStackTraceException("error null")
+                                ).toString()
+                        }
+                        "ajaxAwait" -> {
+                            ajax(
+                                p0 ?: throw NoStackTraceException("error url null"),
+                                p1?.toLongOrNull()
+                            ).toString()
+                        }
+                        "connectAwait" -> {
+                            connect(
+                                p0 ?: throw NoStackTraceException("error url null"),
+                                p1,
+                                p2?.toIntOrNull()
+                            )
+                        }
+                        "getAwait" -> {
+                            get(
+                                p0 ?: throw NoStackTraceException("error url null"),
+                                p1 ?: throw NoStackTraceException("error header null"),
+                                p2?.toIntOrNull()
+                            )
+                        }
+                        "headAwait" -> {
+                            head(
+                                p0 ?: throw NoStackTraceException("error url null"),
+                                p1 ?: throw NoStackTraceException("error header null"),
+                                p2?.toIntOrNull()
+                            )
+                        }
+                        "postAwait" -> {
+                            post(
+                                p0 ?: throw NoStackTraceException("error url null"),
+                                p1 ?: throw NoStackTraceException("error body null"),
+                                p2 ?: throw NoStackTraceException("error header null"),
+                                p3?.toIntOrNull()
+                            )
+                        }
+                        "webViewAwait" -> {
+                            webView(
+                                p0,
+                                p1,
+                                p2,
+                                p3.toBoolean()
+                            ).toString()
+                        }
+                        "webViewGetSourceAwait" -> {
+                            webViewGetSource(
+                                p0,
+                                p1,
+                                p2,
+                                p3 ?: throw NoStackTraceException("error sourceRegex null"),
+                                p4.toBoolean(),
+                                p5?.toLongOrNull() ?: 0
+                            ).toString()
+                        }
+                        "decryptStrAwait" -> {
+                            createSymmetricCrypto(
+                                p0 ?: throw NoStackTraceException("error transformation null"),
+                                p1 ?: throw NoStackTraceException("error key null"),
+                                p2
+                            ).decryptStr(p3 ?: throw NoStackTraceException("error data null"))
+                        }
+                        "encryptBase64Await" -> {
+                            createSymmetricCrypto(
+                                p0 ?: throw NoStackTraceException("error transformation null"),
+                                p1 ?: throw NoStackTraceException("error key null"),
+                                p2
+                            ).encryptBase64(p3 ?: throw NoStackTraceException("error data null"))
+                        }
+                        "encryptHexAwait" -> {
+                            createSymmetricCrypto(
+                                p0 ?: throw NoStackTraceException("error transformation null"),
+                                p1 ?: throw NoStackTraceException("error key null"),
+                                p2
+                            ).encryptHex(p3 ?: throw NoStackTraceException("error data null"))
+                        }
+                        "createSignHexAwait" -> {
+                            createSign(p0 ?: throw NoStackTraceException("error algorithm null"))
+                                .setPublicKey(p1 ?: throw NoStackTraceException("error publicKey null"))
+                                .setPrivateKey(p2 ?: throw NoStackTraceException("error privateKey null"))
+                                .signHex(p3 ?: throw NoStackTraceException("error data null"))
+                        }
+                        "downloadFileAwait" -> {
+                            downloadFile(p0 ?: throw NoStackTraceException("error url null"))
+                        }
+                        "readTxtFileAwait" -> {
+                            readTxtFile(p0 ?: throw NoStackTraceException("error path null"))
+                        }
+                        "importScriptAwait" -> {
+                            importScript(p0 ?: throw NoStackTraceException("error path null"))
+                        }
+                        "getStringAwait" -> {
+                            analyzeRule.setCoroutineContext(coroutineContext)
+                                .getString(p0, p1)
+                        }
+                        else -> throw NoStackTraceException("error funName")
+                    }
                 }
-                "ajaxAwait" -> {
-                    ajax(
-                        p0 ?: throw NoStackTraceException("error url null"),
-                        p1?.toLongOrNull()
-                    ).toString()
-                }
-                "connectAwait" -> {
-                    connect(
-                        p0 ?: throw NoStackTraceException("error url null"),
-                        p1,
-                        p2?.toIntOrNull()
-                    )
-                }
-                "getAwait" -> {
-                    get(
-                        p0 ?: throw NoStackTraceException("error url null"),
-                        p1 ?: throw NoStackTraceException("error header null"),
-                        p2?.toIntOrNull()
-                    )
-                }
-                "headAwait" -> {
-                    head(
-                        p0 ?: throw NoStackTraceException("error url null"),
-                        p1 ?: throw NoStackTraceException("error header null"),
-                        p2?.toIntOrNull()
-                    )
-                }
-                "postAwait" -> {
-                    post(
-                        p0 ?: throw NoStackTraceException("error url null"),
-                        p1 ?: throw NoStackTraceException("error body null"),
-                        p2 ?: throw NoStackTraceException("error header null"),
-                        p3?.toIntOrNull()
-                    )
-                }
-                "webViewAwait" -> {
-                    webView(
-                        p0,
-                        p1,
-                        p2,
-                        p3.toBoolean()
-                    ).toString()
-                }
-                "webViewGetSourceAwait" -> {
-                    webViewGetSource(
-                        p0,
-                        p1,
-                        p2,
-                        p3 ?: throw NoStackTraceException("error sourceRegex null"),
-                        p4.toBoolean(),
-                        p5?.toLongOrNull() ?: 0
-                    ).toString()
-                }
-                "decryptStrAwait" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).decryptStr(p3 ?: throw NoStackTraceException("error data null"))
-                }
-                "encryptBase64Await" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).encryptBase64(p3 ?: throw NoStackTraceException("error data null"))
-                }
-                "encryptHexAwait" -> {
-                    createSymmetricCrypto(
-                        p0 ?: throw NoStackTraceException("error transformation null"),
-                        p1 ?: throw NoStackTraceException("error key null"),
-                        p2
-                    ).encryptHex(p3 ?: throw NoStackTraceException("error data null"))
-                }
-                "createSignHexAwait" -> {
-                    createSign(p0 ?: throw NoStackTraceException("error algorithm null"))
-                        .setPublicKey(p1 ?: throw NoStackTraceException("error publicKey null"))
-                        .setPrivateKey(p2 ?: throw NoStackTraceException("error privateKey null"))
-                        .signHex(p3 ?: throw NoStackTraceException("error data null"))
-                }
-                "downloadFileAwait" -> {
-                    downloadFile(p0 ?: throw NoStackTraceException("error url null"))
-                }
-                "readTxtFileAwait" -> {
-                    readTxtFile(p0 ?: throw NoStackTraceException("error path null"))
-                }
-                "importScriptAwait" -> {
-                    importScript(p0 ?: throw NoStackTraceException("error path null"))
-                }
-                "getStringAwait" -> {
-                    analyzeRule.setCoroutineContext(coroutineContext)
-                        .getString(p0, p1)
-                }
-                else -> throw NoStackTraceException("error funName")
+                if (page != null && !page.isCurrent) return@launch
+                CacheManager.putMemory(id, data)
+                webViewRef.get()?.evaluateJavascript("window.$JSBridgeResult(${GSON.toJson(id)}, true);", null)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (page != null && !page.isCurrent) return@launch
+                CacheManager.putMemory(id, error.localizedMessage ?: "err")
+                webViewRef.get()?.evaluateJavascript("window.$JSBridgeResult(${GSON.toJson(id)}, false);", null)
             }
-        }.onSuccess { data ->
-            CacheManager.putMemory(id, data)
-            webViewRef.get()?.evaluateJavascript("window.$JSBridgeResult('$id', true);", null)
-        }.onError {
-            CacheManager.putMemory(id, it.localizedMessage ?: "err")
-            webViewRef.get()?.evaluateJavascript("window.$JSBridgeResult('$id', false);", null)
         }
     }
     @JavascriptInterface

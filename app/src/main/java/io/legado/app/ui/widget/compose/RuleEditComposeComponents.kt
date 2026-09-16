@@ -15,11 +15,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -41,7 +44,8 @@ fun AppRuleTextField(
     maxLines: Int = if (singleLine) 1 else 6,
     keyboardType: KeyboardType = KeyboardType.Text,
     style: AppDialogStyle = rememberAppDialogStyle(),
-    onFocused: (() -> Unit)? = null
+    onFocused: (() -> Unit)? = null,
+    onOpenEditor: (() -> Unit)? = null
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -70,6 +74,17 @@ fun AppRuleTextField(
                 fontFamily = style.bodyFontFamily
             ),
             shape = RoundedCornerShape(style.actionRadius),
+            trailingIcon = onOpenEditor?.let { openEditor ->
+                {
+                    IconButton(onClick = openEditor) {
+                        Icon(
+                            painter = painterResource(io.legado.app.R.drawable.ic_code),
+                            contentDescription = label,
+                            tint = style.accent
+                        )
+                    }
+                }
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = style.primaryText,
                 unfocusedTextColor = style.primaryText,

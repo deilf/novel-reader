@@ -1,5 +1,6 @@
 package io.legado.app.model
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Context.MODE_PRIVATE
@@ -28,6 +29,7 @@ import io.legado.app.data.entities.RssStar
 import io.legado.app.exception.ContentEmptyException
 import io.legado.app.help.CacheManager
 import io.legado.app.help.book.getDanmaku
+import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.update
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.gsyVideo.ExoVideoManager
@@ -56,6 +58,18 @@ import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+
+internal fun resolveVideoBookshelfState(
+    sourceType: Int?,
+    storedBook: Book?,
+    fallback: Boolean
+): Boolean {
+    return if (sourceType == SourceType.book) {
+        storedBook?.isNotShelf == false
+    } else {
+        fallback
+    }
+}
 
 object VideoPlay : CoroutineScope by MainScope(){
     private const val VIDEO_POS_NAME = "video_pos_" //单链接播放进度
@@ -154,7 +168,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                 }
                 inBookshelf = true
                 val analyzeUrl = AnalyzeUrl(
-                    mUrl,
+                    mUrl, dnsScope = DnsScope.MEDIA,
                     source = source,
                     ruleData = book,
                     chapter = null
@@ -185,7 +199,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                     val mUrl = rssArticle.link
                     videoUrl = mUrl
                     val analyzeUrl = AnalyzeUrl(
-                        mUrl,
+                        mUrl, dnsScope = DnsScope.MEDIA,
                         source = source,
                         ruleData = rssArticle
                     )
@@ -220,7 +234,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                         }
                         videoUrl = mUrl
                         val analyzeUrl = AnalyzeUrl(
-                            mUrl,
+                            mUrl, dnsScope = DnsScope.MEDIA,
                             source = source,
                             ruleData = rssArticle
                         )
@@ -298,7 +312,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                 }
                 videoUrl = mUrl
                 val analyzeUrl = AnalyzeUrl(
-                    mUrl,
+                    mUrl, dnsScope = DnsScope.MEDIA,
                     source = source,
                     ruleData = book,
                     chapter = chapter
@@ -357,7 +371,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                         content
                     }
                     val analyzeUrl = AnalyzeUrl(
-                        mUrl,
+                        mUrl, dnsScope = DnsScope.MEDIA,
                         source = source,
                         ruleData = book,
                         chapter = nextChapter
@@ -499,6 +513,10 @@ object VideoPlay : CoroutineScope by MainScope(){
             }
         }
         book = bookUrl?.let {
+            val storedBook = appDb.bookDao.getBook(it)
+            // A cached search result exists in the books table too; only notShelf tells us
+            // whether the user actually accepted the add-to-shelf confirmation.
+            inBookshelf = resolveVideoBookshelfState(sourceType, storedBook, inBookshelf)
             toc = appDb.bookChapterDao.getChapterList(it)
             volumes.clear()
             toc?.forEach { t ->
@@ -506,7 +524,7 @@ object VideoPlay : CoroutineScope by MainScope(){
                     volumes.add(t)
                 }
             }
-            appDb.bookDao.getBook(it) ?: appDb.searchBookDao.getSearchBook(it)?.toBook()
+            storedBook ?: appDb.searchBookDao.getSearchBook(it)?.toBook()
         }?.also { b ->
             chapterInVolumeIndex = b.chapterInVolumeIndex
             durVolumeIndex = b.durVolumeIndex

@@ -42,7 +42,17 @@ class BookTagManagementTest {
     @Test
     fun updateTagOnlyChangesWhenSelectionDiffers() {
         assertNull(BookTagManagement.updateTag("科幻 完结", "科幻", selected = true))
-        assertEquals("科幻,完结,收藏", BookTagManagement.updateTag("科幻 完结", "收藏", true))
-        assertEquals("完结", BookTagManagement.updateTag("科幻 完结", "科幻", false))
+        assertEquals(
+            BookTagManagement.TagWrite("科幻,完结,收藏"),
+            BookTagManagement.updateTag("科幻 完结", "收藏", true)
+        )
+        assertEquals(
+            BookTagManagement.TagWrite("完结"),
+            BookTagManagement.updateTag("科幻 完结", "科幻", false)
+        )
+        assertEquals(
+            BookTagManagement.TagWrite(null),
+            BookTagManagement.updateTag("科幻", "科幻", false)
+        )
     }
 }

@@ -63,13 +63,20 @@ class ReadView(context: Context, attrs: AttributeSet) :
             field?.onDestroy()
             field = null
             field = value
-            upContent()
+            // Binding content from the constructor is both pointless and dangerous: the
+            // view has no size, is not attached, and the hosting activity's binding is
+            // still being inflated — a content bind reaching back into it re-enters that
+            // inflation and rebuilds the reader recursively. Real content arrives once the
+            // book loads; later delegate swaps (page-animation changes) still rebind.
+            if (constructed) upContent()
         }
+    private var constructed = false
     override var isScroll = false
     val prevPage by lazy { PageView(context) }
     val curPage by lazy { PageView(context) }
     val nextPage by lazy { PageView(context) }
-    val defaultAnimationSpeed = 300
+    val defaultAnimationSpeed: Int
+        get() = ReadBookConfig.pageAnimationSpeed.durationMillis
     private var pressDown = false
     private var isMove = false
     private var ignoreMandatoryGestureTouch = false
@@ -118,6 +125,51 @@ class ReadView(context: Context, attrs: AttributeSet) :
     private var selectionMagnifier: Magnifier? = null
     val autoPager = AutoPager(this)
     val isAutoPage get() = autoPager.isRunning
+    private var pageTurnPrewarmGeneration = 0L
+    private val pageTurnPrewarmCurRunnable = Runnable { runPageTurnPrewarmStep(0) }
+    private val pageTurnPrewarmNextRunnable = Runnable { runPageTurnPrewarmStep(1) }
+    private val pageTurnPrewarmPrevRunnable = Runnable { runPageTurnPrewarmStep(2) }
+    private val pageTurnPrewarmAllRunnable = Runnable { runPageTurnPrewarmStep(3) }
+
+    private fun runPageTurnPrewarmStep(step: Int) {
+        if (isScroll) return
+        val delegate = pageDelegate ?: return
+        if (delegate.isRunning || delegate.isStarted) return
+        // One page per frame-ish step: avoids multi-page screenshot hitch on open.
+        delegate.prewarmPageSnapshots(step)
+    }
+
+    internal val isHorizontalPageTurnActive: Boolean
+        get() = (pageDelegate as? HorizontalPageDelegate)?.let {
+            pressDown || it.isRunning || it.isStarted
+        } == true
+
+    internal fun freezeAdvancedTitleAnimationsForPageTurn() {
+        curPage.freezeAdvancedTitleAnimationsForPageTurn()
+        nextPage.freezeAdvancedTitleAnimationsForPageTurn()
+        prevPage.freezeAdvancedTitleAnimationsForPageTurn()
+    }
+
+    internal fun resumeAdvancedTitleAnimationsAfterPageTurn() {
+        curPage.resumeAdvancedTitleAnimationsAfterPageTurn()
+        nextPage.resumeAdvancedTitleAnimationsAfterPageTurn()
+        prevPage.resumeAdvancedTitleAnimationsAfterPageTurn()
+        postInvalidateOnAnimation()
+    }
+
+    internal fun flushPendingAdvancedTitleCompositions() {
+        if (isHorizontalPageTurnActive) return
+        curPage.flushPendingAdvancedTitleCompositions()
+        nextPage.flushPendingAdvancedTitleCompositions()
+        prevPage.flushPendingAdvancedTitleCompositions()
+        postInvalidateOnAnimation()
+    }
+
+    private fun disposeAdvancedTitleRequests() {
+        curPage.disposeAdvancedTitleRequests()
+        nextPage.disposeAdvancedTitleRequests()
+        prevPage.disposeAdvancedTitleRequests()
+    }
 
     init {
         if (!isInEditMode) {
@@ -133,6 +185,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
         nextPage.invisible()
         curPage.markAsMainView()
         upPageTouchClick()
+        constructed = true
     }
 
     private fun setRect9x() {
@@ -249,6 +302,9 @@ class ReadView(context: Context, attrs: AttributeSet) :
                         if (!curPage.onClick(startX, startY)) {
                             onSingleTapUp()
                         }
+                        // A tap may synchronously start a page turn. This only commits when
+                        // release really left the horizontal delegate idle.
+                        flushPendingAdvancedTitleCompositions()
                         return true
                     }
                 }
@@ -258,6 +314,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
                     pageDelegate?.onTouch(event)
                 }
                 pressOnTextSelected = false
+                flushPendingAdvancedTitleCompositions()
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -272,6 +329,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
                 }
                 pressOnTextSelected = false
                 autoPager.resume()
+                flushPendingAdvancedTitleCompositions()
             }
         }
         return true
@@ -527,6 +585,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
      */
     fun onDestroy() {
         dismissSelectionMagnifier()
+        disposeAdvancedTitleRequests()
         pageDelegate?.onDestroy()
         curPage.cancelSelect()
         invalidateTextPage()
@@ -556,6 +615,9 @@ class ReadView(context: Context, attrs: AttributeSet) :
     fun upPageAnim(upRecorder: Boolean = false) {
         isScroll = ReadBook.pageAnim() == 3
         ChapterProvider.upLayout()
+        // pageDelegate's setter immediately rebinds content. Propagate the new coordinate
+        // mode first so synchronous advanced-title fallbacks use the matching layout.
+        curPage.setIsScroll(isScroll)
         when (ReadBook.pageAnim()) {
             PageAnim.coverPageAnim -> if (pageDelegate !is CoverPageDelegate) {
                 pageDelegate = CoverPageDelegate(this)
@@ -599,7 +661,6 @@ class ReadView(context: Context, attrs: AttributeSet) :
         } else {
             curPage.setAutoPager(null)
         }
-        curPage.setIsScroll(isScroll)
     }
 
     /**
@@ -607,6 +668,26 @@ class ReadView(context: Context, attrs: AttributeSet) :
      * @param relativePosition 相对位置 -1 上一页 0 当前页 1 下一页
      * @param resetPageOffset 滚动阅读是是否重置位置
      */
+    /**
+     * Pre-capture cover/slide/simulation page bitmaps after Lottie binds, so the first
+     * finger flip does not stall on full-page Lottie hierarchy draw.
+     */
+    /**
+     * Disabled automatic full-page ARGB prewarm.
+     * Open/chapter-switch already constructs 3 live PageViews; eagerly screenshot-ing them
+     * caused black ReadBook screens and process kills (no Java crash dialog) on mid-range
+     * Android 12 / HarmonyOS devices. Page-turn still screenshots on demand in setBitmap().
+     */
+    fun schedulePageTurnPrewarm() {
+        pageTurnPrewarmGeneration++
+        removeCallbacks(pageTurnPrewarmCurRunnable)
+        removeCallbacks(pageTurnPrewarmNextRunnable)
+        removeCallbacks(pageTurnPrewarmPrevRunnable)
+        removeCallbacks(pageTurnPrewarmAllRunnable)
+    }
+
+    fun ensurePageTurnSnapshotsForGesture() = Unit
+
     override fun upContent(relativePosition: Int, resetPageOffset: Boolean) {
         post {
             curPage.setContentDescription(pageFactory.curPage.text)
@@ -622,12 +703,16 @@ class ReadView(context: Context, attrs: AttributeSet) :
                 -1 -> prevPage.setContent(pageFactory.prevPage, pageFactory.prevPairPage)
                 1 -> nextPage.setContent(pageFactory.nextPage, pageFactory.nextPairPage)
                 else -> {
+                    // Main first for body text paint; advanced Lottie binds idle on each PageView.
                     curPage.setContent(pageFactory.curPage, pageFactory.curPairPage, resetPageOffset)
                     nextPage.setContent(pageFactory.nextPage, pageFactory.nextPairPage)
                     prevPage.setContent(pageFactory.prevPage, pageFactory.prevPairPage)
                 }
             }
         }
+        // Keep the first frame on the UI draw path. Starting recorder work here races the
+        // initial draw against the same Picture/RenderNode objects when optimizeRender is on.
+        // The established post-page-change path below still warms subsequent pages.
         callBack.screenOffTimerStart()
     }
 
@@ -731,15 +816,20 @@ class ReadView(context: Context, attrs: AttributeSet) :
     }
 
     fun invalidateTextPage() {
-        if (!AppConfig.optimizeRender) {
-            return
+        if (AppConfig.optimizeRender) {
+            pageFactory.run {
+                prevPage.invalidateAll()
+                curPage.invalidateAll()
+                nextPage.invalidateAll()
+                nextPlusPage.invalidateAll()
+            }
         }
-        pageFactory.run {
-            prevPage.invalidateAll()
-            curPage.invalidateAll()
-            nextPage.invalidateAll()
-            nextPlusPage.invalidateAll()
-        }
+        // Style-only changes such as underline width/dash length must repaint even when the
+        // recorder optimization is disabled. Previously this method returned before invalidating
+        // any View, so the new values appeared only after recreating the reader.
+        prevPage.invalidateContentView()
+        curPage.invalidateContentView()
+        nextPage.invalidateContentView()
     }
 
     fun onScrollAnimStart() {

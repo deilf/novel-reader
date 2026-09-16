@@ -1,7 +1,7 @@
 package io.legado.app.help.book.library
 
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.syncHttpClient as okHttpClient
 import io.legado.app.help.http.text
 import io.legado.app.lib.cloud.CloudStorageFile
 import io.legado.app.lib.cloud.S3Config

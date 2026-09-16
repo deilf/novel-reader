@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,12 +63,14 @@ import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isAudio
+import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalTxt
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.lib.theme.UiCorner
+import io.legado.app.model.localBook.epubcore.facade.EpubChapterMetadata
 import io.legado.app.ui.widget.compose.AppManagementCard
 import io.legado.app.ui.widget.compose.AppManagementIconAction
 import io.legado.app.ui.widget.compose.AppManagementMenuAction
@@ -77,6 +80,7 @@ import io.legado.app.ui.widget.compose.ComposeLazyListFastScroller
 import io.legado.app.ui.widget.compose.LegadoComposeTheme
 import io.legado.app.ui.widget.compose.appSettingPanelBackground
 import io.legado.app.ui.widget.compose.rememberAppManagementPalette
+import io.legado.app.ui.book.read.epub.EpubTocNavigationPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -672,11 +676,25 @@ private fun TocChapterList(
                 val key = "${chapter.bookUrl}|${chapter.index}|${chapter.url}"
                 if (chapter.isVolume) {
                     stickyHeader(key = key, contentType = "volume") {
+                        val canOpenChapter = EpubTocNavigationPolicy.canOpenParent(
+                            isEpub = book?.isEpub == true,
+                            isVolume = chapter.isVolume,
+                            chapterUrl = chapter.url
+                        )
                         TocVolumeHeaderRow(
                             palette = palette,
                             title = chapterTitleMap[chapter.primaryStr()] ?: chapter.title,
                             collapsed = collapsedVolumeIndexes.contains(chapter.index),
-                            onClick = { onToggleVolume(chapter) }
+                            onClick = if (canOpenChapter) {
+                                { onOpenChapter(chapter) }
+                            } else {
+                                { onToggleVolume(chapter) }
+                            },
+                            onToggle = if (canOpenChapter) {
+                                { onToggleVolume(chapter) }
+                            } else {
+                                null
+                            }
                         )
                     }
                 } else {
@@ -707,7 +725,8 @@ private fun TocVolumeHeaderRow(
     palette: AppManagementPalette,
     title: String,
     collapsed: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onToggle: (() -> Unit)?
 ) {
     val occludingBackground = remember(palette.settings.page, palette.settings.row) {
         if (palette.settings.page.alpha < 0.98f) {
@@ -744,14 +763,30 @@ private fun TocVolumeHeaderRow(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
-        Icon(
-            painter = painterResource(
-                id = if (collapsed) R.drawable.ic_expand_more else R.drawable.ic_expand_less
-            ),
-            contentDescription = null,
-            tint = palette.settings.secondaryText,
-            modifier = Modifier.size(20.dp)
-        )
+        if (onToggle == null) {
+            Icon(
+                painter = painterResource(
+                    id = if (collapsed) R.drawable.ic_expand_more else R.drawable.ic_expand_less
+                ),
+                contentDescription = null,
+                tint = palette.settings.secondaryText,
+                modifier = Modifier.size(20.dp)
+            )
+        } else {
+            IconButton(
+                onClick = onToggle,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    painter = painterResource(
+                        id = if (collapsed) R.drawable.ic_expand_more else R.drawable.ic_expand_less
+                    ),
+                    contentDescription = null,
+                    tint = palette.settings.secondaryText,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
     }
 }
 
@@ -1094,10 +1129,11 @@ private fun visibleChapters(
     searchKey: String,
     collapsedVolumeIndexes: Set<Int>
 ): List<BookChapter> {
-    if (searchKey.isNotBlank() || collapsedVolumeIndexes.isEmpty()) return chapters
+    val tocChapters = chapters.filterNot(EpubChapterMetadata::isHiddenFromToc)
+    if (searchKey.isNotBlank() || collapsedVolumeIndexes.isEmpty()) return tocChapters
     val visible = arrayListOf<BookChapter>()
     var hideUntilNextVolume = false
-    chapters.forEach { chapter ->
+    tocChapters.forEach { chapter ->
         if (chapter.isVolume) {
             visible.add(chapter)
             hideUntilNextVolume = collapsedVolumeIndexes.contains(chapter.index)

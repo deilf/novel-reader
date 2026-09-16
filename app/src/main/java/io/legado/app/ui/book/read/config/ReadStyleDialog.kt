@@ -54,9 +54,11 @@ import com.github.liuyueyi.quick.transfer.constants.TransType
 import io.legado.app.R
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PageAnim
+import io.legado.app.constant.PageAnimationSpeed
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReaderFontWeight
+import io.legado.app.help.book.isEpub
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.model.ReadBook
@@ -101,6 +103,7 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
 
     @Composable
     private fun ReadStyleContent() {
+        var selectedAnim by rememberSaveable { mutableIntStateOf(ReadBook.pageAnim()) }
         ReaderBottomSheetFrame(maxHeightFraction = maxSheetHeightFraction) { style ->
             Column(
                 modifier = Modifier
@@ -109,16 +112,43 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Text(
+                    text = stringResource(if (ReadBookConfig.usingEpubLayout) R.string.epub_layout_profile else R.string.native_layout_profile),
+                    color = style.primaryText,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
                 TextMetricSection(style = style)
-                AnimAndToolsSection(style = style)
-                StyleLibrarySection(style = style)
+                if (ReadBookConfig.usingEpubLayout && ReadBook.book?.isEpub == false) {
+                    ReaderTextAction(
+                        text = stringResource(R.string.reader_template_title),
+                        style = style,
+                        onClick = { showDialogFragment<ReaderTemplateDialog>() }
+                    )
+                }
+                AnimAndToolsSection(
+                    style = style,
+                    selectedAnim = selectedAnim,
+                    onSelectedAnimChange = { selectedAnim = it }
+                )
+                StyleLibrarySection(
+                    style = style,
+                    onThemeApplied = { selectedAnim = ReadBook.pageAnim() }
+                )
             }
         }
     }
 
     @Composable
-    private fun AnimAndToolsSection(style: AppDialogStyle) {
-        var selectedAnim by rememberSaveable { mutableIntStateOf(ReadBook.pageAnim()) }
+    private fun AnimAndToolsSection(
+        style: AppDialogStyle,
+        selectedAnim: Int,
+        onSelectedAnimChange: (Int) -> Unit
+    ) {
+        var selectedAnimationSpeed by rememberSaveable {
+            mutableIntStateOf(ReadBookConfig.pageAnimationSpeed.preferenceValue)
+        }
         var shareLayout by rememberSaveable { mutableIntStateOf(if (ReadBookConfig.shareLayout) 1 else 0) }
         var textWeight by rememberSaveable { mutableIntStateOf(ReadBookConfig.textWeight) }
         var chineseMode by rememberSaveable { mutableIntStateOf(AppConfig.chineseConverterType) }
@@ -133,11 +163,31 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
             ) { value ->
                 val anim = value.toIntOrNull() ?: return@ReaderSegmentedOptions
                 if (selectedAnim != anim) {
+                    val previousPageAnim = ReadBook.pageAnim()
                     ReadBook.book?.setPageAnim(-1)
                     ReadBookConfig.pageAnim = anim
-                    selectedAnim = anim
-                    callBack?.upPageAnim()
-                    ReadBook.loadContent(false)
+                    onSelectedAnimChange(anim)
+                    callBack?.applyPageAnimationChange(previousPageAnim)
+                }
+            }
+            Text(
+                text = stringResource(R.string.page_animation_speed),
+                color = style.secondaryText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            ReaderSegmentedOptions(
+                options = pageAnimationSpeedOptions(),
+                selectedValue = selectedAnimationSpeed.toString(),
+                style = style,
+                pillStyle = true
+            ) { value ->
+                val preferenceValue = value.toIntOrNull() ?: return@ReaderSegmentedOptions
+                val speed = PageAnimationSpeed.fromPreference(preferenceValue)
+                if (selectedAnimationSpeed != speed.preferenceValue) {
+                    ReadBookConfig.pageAnimationSpeed = speed
+                    selectedAnimationSpeed = speed.preferenceValue
                 }
             }
             FontWeightSlider(
@@ -176,7 +226,7 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
                         callBack?.showPaddingConfig()
                     }
                 )
-                ReaderTextAction(
+                if (!ReadBookConfig.usingEpubLayout) ReaderTextAction(
                     text = chineseLabels.getOrElse(chineseMode) { "" },
                     style = style,
                     modifier = Modifier.weight(1f),
@@ -401,7 +451,10 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun StyleLibrarySection(style: AppDialogStyle) {
+    private fun StyleLibrarySection(
+        style: AppDialogStyle,
+        onThemeApplied: () -> Unit
+    ) {
         var selectedIndex by rememberSaveable { mutableIntStateOf(ReadBookConfig.styleSelect) }
         var version by rememberSaveable { mutableIntStateOf(0) }
         val configs = remember(version) { ReadBookConfig.configList.toList() }
@@ -421,6 +474,7 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
                         onClick = {
                             changeBgTextConfig(index)
                             selectedIndex = ReadBookConfig.styleSelect
+                            onThemeApplied()
                             version++
                         },
                         onLongClick = {
@@ -546,7 +600,11 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
     private fun changeBgTextConfig(index: Int) {
         val oldIndex = ReadBookConfig.styleSelect
         if (index != oldIndex) {
+            ReadBook.book?.setPageAnim(-1)
             ReadBookConfig.styleSelect = index
+            // Page animation belongs to the selected reading theme. Rebind the
+            // delegate now instead of waiting for the activity to be recreated.
+            callBack?.upPageAnim()
             postEvent(EventBus.UP_CONFIG, arrayListOf(1, 2, 5))
             if (AppConfig.readBarStyleFollowPage) {
                 postEvent(EventBus.UPDATE_READ_ACTION_BAR, true)
@@ -572,6 +630,28 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
             ReaderOption(PageAnim.simulationPageAnim.toString(), stringResource(R.string.page_anim_simulation)),
             ReaderOption(PageAnim.scrollPageAnim.toString(), stringResource(R.string.page_anim_scroll)),
             ReaderOption(PageAnim.noAnim.toString(), stringResource(R.string.page_anim_none))
+        )
+    }
+
+    @Composable
+    private fun pageAnimationSpeedOptions(): List<ReaderOption> {
+        return listOf(
+            ReaderOption(
+                PageAnimationSpeed.EXTREME.preferenceValue.toString(),
+                stringResource(R.string.page_animation_speed_extreme)
+            ),
+            ReaderOption(
+                PageAnimationSpeed.STANDARD.preferenceValue.toString(),
+                stringResource(R.string.page_animation_speed_standard)
+            ),
+            ReaderOption(
+                PageAnimationSpeed.RELAXED.preferenceValue.toString(),
+                stringResource(R.string.page_animation_speed_relaxed)
+            ),
+            ReaderOption(
+                PageAnimationSpeed.ELEGANT.preferenceValue.toString(),
+                stringResource(R.string.page_animation_speed_elegant)
+            )
         )
     }
 

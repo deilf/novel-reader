@@ -45,6 +45,8 @@ object SearchBookOpenHelper {
             if (target == VideoPlayerActivity::class.java && prepareInPlayer) {
                 putExtra("sourceKey", book.origin)
                 putExtra("sourceType", SourceType.book)
+                // Search/discovery results are temporary until the user explicitly confirms.
+                putExtra("inBookshelf", false)
                 putExtra(VideoPlayerActivity.EXTRA_PREPARE_BOOK_INFO, true)
             }
         })

@@ -151,8 +151,8 @@ class PaddingConfigDialog : ComposeDialogFragment() {
                 bottom = bottom,
                 left = left,
                 right = right,
-                topRange = 0..100,
-                bottomRange = 0..100,
+                topRange = 0..150,
+                bottomRange = 0..150,
                 sideRange = 0..100,
                 onTopChange = {
                     top = it
@@ -246,8 +246,8 @@ class PaddingConfigDialog : ComposeDialogFragment() {
                 bottom = bottom,
                 left = left,
                 right = right,
-                topRange = 0..100,
-                bottomRange = 0..100,
+                topRange = 0..150,
+                bottomRange = 0..150,
                 sideRange = 0..100,
                 onTopChange = {
                     top = it

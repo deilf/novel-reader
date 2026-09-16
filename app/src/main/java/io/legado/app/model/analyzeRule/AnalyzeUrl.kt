@@ -51,21 +51,23 @@ import io.legado.app.utils.isJson
 import io.legado.app.utils.isJsonArray
 import io.legado.app.utils.isJsonObject
 import io.legado.app.utils.isXml
-import io.legado.app.utils.parseIpsFromString
 import io.legado.app.utils.stackTraceStr
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.net.URLEncoder
 import java.nio.charset.Charset
-import java.util.concurrent.ConcurrentHashMap
+import io.legado.app.help.http.dns.DnsScope
+import io.legado.app.help.http.dns.DnsNames
+import io.legado.app.help.http.dns.HostOverrideDns
+import io.legado.app.help.http.dns.withoutCronet
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import kotlin.coroutines.ContinuationInterceptor
@@ -102,7 +104,8 @@ class AnalyzeUrl(
     headerMapF: Map<String, String>? = null,
     hasLoginHeader: Boolean = true,
     private val infoMap: MutableMap<String, String>? = null,
-    private val webViewPoolScope: WebViewPool.Scope = WebViewPool.Scope.GLOBAL
+    private val webViewPoolScope: WebViewPool.Scope = WebViewPool.Scope.GLOBAL,
+    private val dnsScope: DnsScope = source?.getNetworkDnsScope() ?: DnsScope.READING
 ) : JsExtensions {
     constructor(mUrl: String) : this(mUrl, null)
 
@@ -390,7 +393,7 @@ class AnalyzeUrl(
             bindings["result"] = result
             bindings["infoMap"] = infoMap
         }
-        val sharedScope = source?.getShareScope(coroutineContext)
+        val sharedScope = source?.getShareScope(coroutineContext, dnsScope)
         val scope = if (sharedScope == null) {
             RhinoScriptEngine.getRuntimeScope(bindings)
         } else {
@@ -611,12 +614,9 @@ class AnalyzeUrl(
         StrResponse(getErrResponse(e), e.stackTraceStr)
 
     private fun getClient(): OkHttpClient {
-        val client = getProxyClient(proxy)
+        val client = getProxyClient(proxy, dnsScope)
         if (readTimeout == null && callTimeout == null && dnsIp == null) {
             return client
-        }
-        if (AppConfig.isCronet && dnsIp != null) {
-            customIp[urlNoQuery] = dnsIp!!
         }
         return client.newBuilder().run {
             if (readTimeout != null) {
@@ -626,11 +626,11 @@ class AnalyzeUrl(
             if (callTimeout != null) {
                 callTimeout(callTimeout, TimeUnit.MILLISECONDS)
             }
-            if (dnsIp != null) {
-                val inetAddress = dnsIp!!.parseIpsFromString()
-                dns { hostname ->
-                    inetAddress ?: Dns.SYSTEM.lookup(hostname)
-                }
+            if (dnsIp != null && proxy.isNullOrBlank()) {
+                withoutCronet()
+                val targetHost = url.toHttpUrl().host
+                val values = dnsIp!!.split(',').mapNotNull { DnsNames.host(it) }.distinct()
+                dns(HostOverrideDns(targetHost, values, client.dns))
             }
             build()
         }
@@ -691,7 +691,7 @@ class AnalyzeUrl(
      * 上传文件
      */
     suspend fun upload(fileName: String, file: Any, contentType: String): StrResponse {
-        return getProxyClient(proxy).newCallStrResponse(retry) {
+        return getClient().newCallStrResponse(retry) {
             url(urlNoQuery)
             val bodyMap = GSON.fromJsonObject<HashMap<String, Any>>(body).getOrNull()!!
             bodyMap.forEach { entry ->
@@ -755,6 +755,8 @@ class AnalyzeUrl(
         return source
     }
 
+    override fun getNetworkDnsScope(): DnsScope = dnsScope
+
     override fun getTag(): String? {
         return source?.getTag()
     }
@@ -768,7 +770,6 @@ class AnalyzeUrl(
         private val pagePattern = Pattern.compile("<(.*?)>")
         private val queryEncoder =
             RFC3986.UNRESERVED.orNew(PercentCodec.of("!$%&()*+,/:;=?@[\\]^`{|}"))
-        val customIp by lazy { ConcurrentHashMap<String, String>() }
         fun AnalyzeUrl.getMediaItem(): MediaItem {
             setCookie()
             return ExoPlayerHelper.createMediaItem(url, headerMap)

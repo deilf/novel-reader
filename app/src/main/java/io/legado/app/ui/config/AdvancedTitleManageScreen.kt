@@ -1,10 +1,8 @@
 package io.legado.app.ui.config
 
-import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,23 +26,16 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import com.airbnb.lottie.LottieAnimationView
-import com.airbnb.lottie.RenderMode
 import io.legado.app.R
 import io.legado.app.help.config.AdvancedTitlePackageManager
-import io.legado.app.help.config.AdvancedTitleFontAssetDelegate
 import io.legado.app.lib.theme.composeActionRadius
 import io.legado.app.ui.widget.compose.AppListSpacing
 import io.legado.app.ui.widget.compose.AppManagementCard
@@ -65,7 +56,6 @@ internal fun AdvancedTitleManageScreen(
     entries: List<AdvancedTitlePackageManager.Entry>,
     activeId: String,
     loading: Boolean,
-    previewProvider: suspend (AdvancedTitlePackageManager.Entry) -> String?,
     onApply: (AdvancedTitlePackageManager.Entry) -> Unit,
     onEdit: (AdvancedTitlePackageManager.Entry) -> Unit,
     onMoreActions: (AdvancedTitlePackageManager.Entry) -> List<AppManagementMenuAction>,
@@ -106,7 +96,6 @@ internal fun AdvancedTitleManageScreen(
                         entry = entry,
                         active = entry.id == activeId,
                         palette = palette,
-                        previewProvider = previewProvider,
                         onApply = { onApply(entry) },
                         onEdit = { onEdit(entry) },
                         moreActions = onMoreActions(entry)
@@ -115,7 +104,7 @@ internal fun AdvancedTitleManageScreen(
             }
 
             LegadoMiuixActionButton(
-                text = LocalContext.current.getString(R.string.import_str),
+                text = LocalContext.current.getString(R.string.advanced_title_add),
                 palette = palette.miuix,
                 onClick = onImport,
                 modifier = Modifier
@@ -134,11 +123,11 @@ private fun AdvancedTitleItem(
     entry: AdvancedTitlePackageManager.Entry,
     active: Boolean,
     palette: AppManagementPalette,
-    previewProvider: suspend (AdvancedTitlePackageManager.Entry) -> String?,
     onApply: () -> Unit,
     onEdit: () -> Unit,
     moreActions: List<AppManagementMenuAction>
 ) {
+    val editable = AdvancedTitlePackageManager.isEditable(entry)
     AppManagementCard(
         palette = palette,
         modifier = Modifier.fillMaxWidth(),
@@ -150,7 +139,7 @@ private fun AdvancedTitleItem(
                 .heightIn(min = 92.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AdvancedTitlePreview(entry, previewProvider, palette)
+            AdvancedTitlePreview(entry, palette)
             Spacer(modifier = Modifier.width(12.dp))
             Column(
                 modifier = Modifier.weight(1f),
@@ -180,15 +169,17 @@ private fun AdvancedTitleItem(
                         ),
                         palette = palette.miuix,
                         accent = true,
-                        enabled = !active,
+                        enabled = entry.isUsable && !active,
                         onClick = onApply
                     )
                     if (!entry.isBuiltin) {
                         AdvancedTitleActionButton(
-                            text = LocalContext.current.getString(R.string.edit),
+                            text = LocalContext.current.getString(
+                                if (editable) R.string.edit else R.string.read_only
+                            ),
                             palette = palette.miuix,
                             accent = false,
-                            enabled = true,
+                            enabled = editable,
                             onClick = onEdit
                         )
                     }
@@ -206,12 +197,8 @@ private fun AdvancedTitleItem(
 @Composable
 private fun AdvancedTitlePreview(
     entry: AdvancedTitlePackageManager.Entry,
-    previewProvider: suspend (AdvancedTitlePackageManager.Entry) -> String?,
     palette: AppManagementPalette
 ) {
-    val json by produceState<String?>(null, entry.id, entry.updatedAt) {
-        value = previewProvider(entry)
-    }
     Surface(
         modifier = Modifier.size(width = 112.dp, height = 72.dp),
         shape = RoundedCornerShape(10.dp),
@@ -219,39 +206,25 @@ private fun AdvancedTitlePreview(
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
-        val value = json
-        if (value == null) {
-            Box(modifier = Modifier.fillMaxSize())
-        } else {
-            AndroidView(
-                factory = { context ->
-                    LottieAnimationView(context).apply {
-                        setBackgroundColor(AndroidColor.TRANSPARENT)
-                        setCacheComposition(false)
-                        setFontAssetDelegate(AdvancedTitleFontAssetDelegate())
-                        repeatCount = 0
-                        renderMode = RenderMode.SOFTWARE
-                    }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = if (entry.isUsable) "Lottie" else {
+                    LocalContext.current.getString(R.string.advanced_title_invalid_json)
                 },
-                update = { view ->
-                    val key = value.hashCode()
-                    if (view.tag != key) {
-                        view.cancelAnimation()
-                        view.clearAnimation()
-                        runCatching {
-                            view.setAnimationFromJson(value, null)
-                            view.progress = 0.5f
-                            view.pauseAnimation()
-                            view.tag = key
-                        }
-                    }
+                color = if (entry.isUsable) {
+                    palette.settings.secondaryText
+                } else {
+                    palette.miuix.accent
                 },
-                onRelease = { view ->
-                    view.cancelAnimation()
-                    view.clearAnimation()
-                    view.tag = null
-                },
-                modifier = Modifier.fillMaxSize()
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -314,5 +287,10 @@ private fun buildEntryInfo(
     if (entry.updatedAt > 0L) {
         append(" · ")
         append(advancedTitleDateFormat.format(Date(entry.updatedAt)))
+    }
+    if (!entry.isUsable) {
+        append(" [")
+        append(LocalContext.current.getString(R.string.advanced_title_invalid_json))
+        append("]")
     }
 }

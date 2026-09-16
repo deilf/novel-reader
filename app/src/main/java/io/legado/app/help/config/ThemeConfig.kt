@@ -46,7 +46,7 @@ import java.io.FileInputStream
 import androidx.core.graphics.drawable.toDrawable
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient as okHttpClient
 import io.legado.app.utils.CenterCropBitmapDrawable
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.getPrefBoolean

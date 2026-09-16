@@ -1,5 +1,6 @@
 package io.legado.app.help.ai
 
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.model.Debug
@@ -334,6 +335,7 @@ object AiBookSourceTool {
         val source = resolveSource(args, allowDbLookup = true) ?: temporarySourceFor(url)
         runCatching {
             val response = AnalyzeUrl(
+                dnsScope = DnsScope.AI,
                 mUrl = url,
                 source = source,
                 callTimeout = timeoutMs,

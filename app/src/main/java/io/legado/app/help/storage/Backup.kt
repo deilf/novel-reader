@@ -15,11 +15,15 @@ import io.legado.app.lib.cloud.S3CapacityFullException
 import io.legado.app.lib.cloud.S3ContainerManager
 import io.legado.app.lib.cloud.CloudStorageType
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.AdvancedTitlePackageManager
+import io.legado.app.help.config.BubblePackageManager
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.BookCover
+import io.legado.app.model.AutoTask
+import io.legado.app.model.AutoTaskImport
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.HttpTTS
@@ -70,6 +74,8 @@ object Backup {
     internal const val bookCharactersFileName = "bookCharacters.json"
     internal const val bookCharacterRelationsFileName = "bookCharacterRelations.json"
     internal const val bookCharacterAvatarsDirName = "bookCharacterAvatars"
+    internal const val advancedTitlePackagesDirName = "advancedTitlePackages"
+    internal const val bubblePackagesDirName = "bubblePackages"
 
     private const val TAG = "Backup"
 
@@ -94,9 +100,12 @@ object Backup {
             bookCharactersFileName,
             bookCharacterRelationsFileName,
             "servers.json",
+            "autoTask.json",
             DirectLinkUpload.ruleFileName,
             ReadBookConfig.configFileName,
             ReadBookConfig.shareConfigFileName,
+            ReadBookConfig.epubConfigFileName,
+            ReadBookConfig.epubShareConfigFileName,
             ThemeConfig.configFileName,
             BookCover.configFileName,
             "sourceRuntime.json",
@@ -183,7 +192,12 @@ object Backup {
         writeListToJson(appDb.dictRuleDao.all, "dictRule.json", backupPath)
         writeListToJson(appDb.bookCharacterDao.allCharacters(), bookCharactersFileName, backupPath)
         writeListToJson(appDb.bookCharacterDao.allRelations(), bookCharacterRelationsFileName, backupPath)
+        AutoTask.all().takeIf { it.isNotEmpty() }?.let { rules ->
+            FileUtils.createFileIfNotExist(backupPath + File.separator + "autoTask.json")
+                .writeText(AutoTaskImport.exportJson(rules), Charsets.UTF_8)
+        }
         exportBookCharacterAvatars()
+        exportVisualResourcePackages()
         GSON.toJson(appDb.serverDao.all).let { json ->
             aes.runCatching {
                 encryptBase64(json)
@@ -193,13 +207,8 @@ object Backup {
             }
         }
         currentCoroutineContext().ensureActive()
-        GSON.toJson(ReadBookConfig.configList).let {
-            FileUtils.createFileIfNotExist(backupPath + File.separator + ReadBookConfig.configFileName)
-                .writeText(it)
-        }
-        GSON.toJson(ReadBookConfig.shareConfig).let {
-            FileUtils.createFileIfNotExist(backupPath + File.separator + ReadBookConfig.shareConfigFileName)
-                .writeText(it)
+        ReadBookConfig.backupLayoutFiles().forEach { (name, json) ->
+            FileUtils.createFileIfNotExist(backupPath + File.separator + name).writeText(json)
         }
         GSON.toJson(ThemeConfig.configList).let {
             FileUtils.createFileIfNotExist(backupPath + File.separator + ThemeConfig.configFileName)
@@ -272,6 +281,12 @@ object Backup {
             paths[i] = backupPath + File.separator + paths[i]
         }
         File(backupPath, bookCharacterAvatarsDirName).takeIf { it.exists() }?.let { paths.add(it.absolutePath) }
+        File(backupPath, advancedTitlePackagesDirName).takeIf { it.exists() }?.let { paths.add(it.absolutePath) }
+        File(backupPath, bubblePackagesDirName).takeIf { it.exists() }?.let { paths.add(it.absolutePath) }
+        File(backupPath, io.legado.app.help.book.highlight.HighlightRules.BACKUP_DIR)
+            .takeIf { it.exists() }?.let { paths.add(it.absolutePath) }
+        File(backupPath, io.legado.app.help.reader.ReaderAssets.BACKUP_DIR)
+            .takeIf { it.exists() }?.let { paths.add(it.absolutePath) }
         FileUtils.delete(zipFilePath)
         FileUtils.delete(zipFilePath.replace("tmp_", ""))
         val backupFileName = if (AppConfig.onlyLatestBackup) {
@@ -387,6 +402,35 @@ object Backup {
         }.onFailure {
             AppLog.put("备份角色头像出错\n${it.localizedMessage}", it)
         }
+    }
+
+    private fun exportVisualResourcePackages() {
+        io.legado.app.help.reader.ReaderAssets.store.backupTo(
+            File(backupPath, io.legado.app.help.reader.ReaderAssets.BACKUP_DIR)
+        )
+        io.legado.app.help.book.highlight.HighlightRules.store.backupTo(
+            File(backupPath, io.legado.app.help.book.highlight.HighlightRules.BACKUP_DIR)
+        )
+        AdvancedTitlePackageManager.exportPackagesTo(
+            File(backupPath, advancedTitlePackagesDirName)
+        )
+        copyPackageDirectories(
+            BubblePackageManager.rootDir,
+            File(backupPath, bubblePackagesDirName)
+        ) { name -> name !in setOf("temp", "remote_cache", BubblePackageManager.BUILTIN_DIR_NAME) }
+    }
+
+    private fun copyPackageDirectories(
+        sourceRoot: File,
+        targetRoot: File,
+        include: (String) -> Boolean
+    ) {
+        sourceRoot.listFiles()
+            ?.filter { it.isDirectory && include(it.name) }
+            .orEmpty()
+            .forEach { directory ->
+                copyDir(directory, File(targetRoot, directory.name))
+            }
     }
 
     private fun copyDir(source: File, target: File) {

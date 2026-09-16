@@ -15,6 +15,7 @@ import io.legado.app.data.dao.AiReadAloudRoleCacheDao
 import io.legado.app.data.dao.AiGeneratedImageDao
 import io.legado.app.data.dao.AiImageGroupDao
 import io.legado.app.data.dao.AiReadAloudUsageRecordDao
+import io.legado.app.data.dao.AutoTaskRuleDao
 import io.legado.app.data.dao.BookAiChapterSummaryDao
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookCharacterDao
@@ -92,6 +93,7 @@ import io.legado.app.data.entities.SearchKeyword
 import io.legado.app.data.entities.Server
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.DefaultData
+import io.legado.app.model.AutoTaskRule
 import org.intellij.lang.annotations.Language
 import splitties.init.appCtx
 import java.util.Locale
@@ -106,7 +108,7 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 109,
+    version = 113,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -123,7 +125,8 @@ val appDb by lazy {
         ReadAloudSpeakerGroup::class, ReadAloudSpeakerGroupItem::class,
         AiReadAloudUsageRecord::class,
         AiAgentSession::class, AiAgentJob::class, AiAgentTrace::class,
-        AiMemoryItem::class, AiMemoryFragment::class, AiMemoryItemFts::class, AiMemoryFragmentFts::class],
+        AiMemoryItem::class, AiMemoryFragment::class, AiMemoryItemFts::class, AiMemoryFragmentFts::class,
+        AutoTaskRule::class],
     views = [BookSourcePart::class],
     autoMigrations = [
         AutoMigration(from = 43, to = 44),
@@ -213,6 +216,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val aiReadAloudUsageRecordDao: AiReadAloudUsageRecordDao
     abstract val aiAgentDao: AiAgentDao
     abstract val aiMemoryDao: AiMemoryDao
+    abstract val autoTaskRuleDao: AutoTaskRuleDao
 
     companion object {
 

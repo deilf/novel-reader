@@ -69,6 +69,7 @@ import io.legado.app.help.ai.AiImageGalleryManager
 import io.legado.app.help.book.BookCloudEntryMode
 import io.legado.app.help.book.BookCloudEntryModeStore
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.BookTagHelper
 import io.legado.app.help.book.addType
 import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isAudio
@@ -85,6 +86,7 @@ import io.legado.app.help.config.BookInfoComponentType
 import io.legado.app.help.config.BookInfoPageStyle
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.glide.ImageLoader
+import io.legado.app.help.glide.OkHttpModelLoader
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.webView.PooledWebView
 import io.legado.app.help.webView.WebJsExtensions
@@ -109,6 +111,7 @@ import io.legado.app.lib.theme.titleTextColor
 import io.legado.app.lib.theme.titleTypeface
 import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.model.BookCover
+import io.legado.app.model.localBook.epubcore.facade.EpubChapterMetadata
 import io.legado.app.model.remote.RemoteBookWebDav
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.book.audio.AudioPlayActivity
@@ -124,6 +127,7 @@ import io.legado.app.ui.book.info.compose.BookInfoActions
 import io.legado.app.ui.book.info.compose.BookInfoChapterUi
 import io.legado.app.ui.book.info.compose.BookInfoComposeRoute
 import io.legado.app.ui.book.info.compose.BookInfoUiState
+import io.legado.app.ui.autoTask.showBookAutoTaskDialog
 import io.legado.app.ui.book.manga.ReadMangaActivity
 import io.legado.app.ui.book.read.ReadBookActivity
 import io.legado.app.ui.book.read.ReadBookActivity.Companion.RESULT_DELETED
@@ -704,10 +708,26 @@ class BookInfoActivity :
                     updateComposeBookInfoState()
                 }
             },
+            onBookAutoTask = {
+                viewModel.getBook(false)?.let { book ->
+                    showBookAutoTaskDialog(book) {
+                        updateComposeBookInfoState()
+                    }
+                }
+            },
             onAllowUpdateChanged = ::setBookCanUpdate,
             onSetSourceVariable = ::setSourceVariable,
             onSetBookVariable = ::setBookVariable,
-            onSetupWebIntro = ::setupComposeWebIntro
+            onSetupWebIntro = ::setupComposeWebIntro,
+            onIntroButtonClick = { name, click ->
+                viewModel.onButtonClick(this@BookInfoActivity, "info button $name", click)
+            },
+            onIntroImageClick = { click ->
+                viewModel.onButtonClick(this@BookInfoActivity, "info image", click)
+            },
+            onIntroImageLongClick = { source ->
+                showDialogFragment(PhotoDialog(source, viewModel.bookSource?.bookSourceUrl))
+            }
         )
     }
 
@@ -819,7 +839,9 @@ class BookInfoActivity :
             chapterList.isEmpty() -> getString(R.string.toc_s, getString(R.string.error_load_toc))
             else -> getString(R.string.toc_s, safeBook.durChapterTitle)
         }
-        val readableChapters = chapterList.filter { !it.isVolume }
+        val readableChapters = chapterList.filter {
+            !it.isVolume && !EpubChapterMetadata.isHiddenFromToc(it)
+        }
         val currentChapterPosition = readableChapters
             .indexOfFirst { it.index == safeBook.durChapterIndex }
             .takeIf { it >= 0 } ?: 0
@@ -839,6 +861,7 @@ class BookInfoActivity :
             coverPath = coverPath,
             intro = intro,
             kinds = safeBook.getKindList(),
+            customTags = BookTagHelper.parse(safeBook.customTag),
             groupText = composeGroupText,
             tocText = tocText,
             chapterCount = readableChapters.size,
@@ -1550,6 +1573,9 @@ class BookInfoActivity :
             viewModel.bookData.value?.isLocalTxt ?: false
         menu.findItem(R.id.menu_upload)?.isVisible =
             viewModel.bookData.value?.isLocal ?: false
+        menu.findItem(R.id.menu_auto_task_book_update)?.isVisible =
+            viewModel.inBookshelf && viewModel.bookSource != null &&
+                viewModel.bookData.value?.isLocal != true
         menu.findItem(R.id.menu_delete_alert)?.isChecked =
             LocalConfig.bookInfoDeleteAlert
         updateBookCloudEntryMenu()
@@ -1597,6 +1623,12 @@ class BookInfoActivity :
 
             R.id.menu_refresh -> {
                 refreshBook()
+            }
+
+            R.id.menu_auto_task_book_update -> {
+                viewModel.getBook(false)?.let { book ->
+                    showBookAutoTaskDialog(book)
+                }
             }
 
             R.id.menu_login -> viewModel.bookSource?.let {
@@ -2218,15 +2250,17 @@ class BookInfoActivity :
                 val context = this@BookInfoActivity
                 val markwon: Markwon
                 val markdown = withContext(IO) {
+                    val requestOptions = RequestOptions()
+                        .override(imgAvailableWidth.coerceAtLeast(1))
+                        .encodeQuality(88)
+                    viewModel.bookSource?.bookSourceUrl?.let { sourceOrigin ->
+                        requestOptions.set(OkHttpModelLoader.sourceOriginOption, sourceOrigin)
+                    }
                     markwon = Markwon.builder(context)
                         .usePlugin(
                             GlideImagesPlugin.create(
                                 Glide.with(context)
-                                    .applyDefaultRequestOptions(
-                                        RequestOptions()
-                                            .override(imgAvailableWidth)
-                                            .encodeQuality(88)
-                                    )
+                                    .applyDefaultRequestOptions(requestOptions)
                             )
                         )
                         .usePlugin(HtmlPlugin.create())
@@ -2239,6 +2273,9 @@ class BookInfoActivity :
                     markdown,
                     imgOnLongClickListener = { source ->
                         showDialogFragment(PhotoDialog(source, viewModel.bookSource?.bookSourceUrl))
+                    },
+                    imgOnClickListener = { click ->
+                        viewModel.onButtonClick(this@BookInfoActivity, "info image", click)
                     }
                 )
                 setIntroContent(tvIntro.text)
@@ -2766,7 +2803,8 @@ class BookInfoActivity :
         val query = etCatalogSearch.text?.toString().orEmpty().trim()
         val filtered = filterCatalogRows(chapters, query)
         catalogAdapter.submitList(filtered)
-        updateCatalogPageIndicator(filtered.size, chapters.size)
+        val logicalChapterCount = chapters.count { !EpubChapterMetadata.isHiddenFromToc(it) }
+        updateCatalogPageIndicator(filtered.size, logicalChapterCount)
         if (query.isBlank()) {
             val currentPosition = book?.durChapterIndex?.let { currentIndex ->
                 filtered.indexOfFirst { !it.isVolume && it.index == currentIndex }
@@ -2779,13 +2817,14 @@ class BookInfoActivity :
     }
 
     private fun filterCatalogRows(chapters: List<BookChapter>, query: String): List<BookChapter> {
+        val tocChapters = chapters.filterNot(EpubChapterMetadata::isHiddenFromToc)
         if (query.isNotBlank()) {
-            return chapters.filter { it.title.contains(query, ignoreCase = true) }
+            return tocChapters.filter { it.title.contains(query, ignoreCase = true) }
         }
-        if (collapsedCatalogVolumeIndexes.isEmpty()) return chapters
+        if (collapsedCatalogVolumeIndexes.isEmpty()) return tocChapters
         val result = arrayListOf<BookChapter>()
         var hideUntilNextVolume = false
-        chapters.forEach { chapter ->
+        tocChapters.forEach { chapter ->
             if (chapter.isVolume) {
                 result.add(chapter)
                 hideUntilNextVolume = collapsedCatalogVolumeIndexes.contains(chapter.index)

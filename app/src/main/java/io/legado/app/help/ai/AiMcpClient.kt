@@ -2,7 +2,7 @@ package io.legado.app.help.ai
 
 import io.legado.app.BuildConfig
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.aiHttpClient as okHttpClient
 import io.legado.app.help.http.postJson
 import io.legado.app.ui.main.ai.AiMcpServerConfig
 import okhttp3.Response

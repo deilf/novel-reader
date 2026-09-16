@@ -62,6 +62,7 @@ import io.legado.app.service.VideoPlayService
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.association.OnLineImportActivity
+import io.legado.app.ui.book.ShelfExitRequestGate
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.info.BookInfoViewModel
 import io.legado.app.ui.book.source.edit.BookSourceEditActivity
@@ -112,6 +113,7 @@ class VideoPlayerActivity : VMBaseActivity<ActivityVideoPlayerBinding, VideoPlay
     private val bookInfoViewModel by viewModels<BookInfoViewModel>()
     private val playerView: VideoPlayer by lazy { binding.playerView }
     private var starMenuItem: MenuItem? = null
+    private val shelfExitRequestGate = ShelfExitRequestGate()
     private var initIntroView = false
     private val introTextView by lazy {
         initIntroView = true
@@ -903,28 +905,33 @@ class VideoPlayerActivity : VMBaseActivity<ActivityVideoPlayerBinding, VideoPlay
     }
 
     override fun finish() {
+        if (isFinishing) return
         val book = VideoPlay.book ?: return super.finish()
         if (VideoPlay.inBookshelf) {
             callBackBookEnd()
             return super.finish()
         }
+        if (!shelfExitRequestGate.tryBegin()) return
         if (!AppConfig.showAddToShelfAlert) {
             callBackBookEnd()
             viewModel.removeFromBookshelf { super.finish() }
         } else {
-            alert(title = getString(R.string.add_to_bookshelf)) {
+            val dialog = alert(title = getString(R.string.add_to_bookshelf)) {
                 setMessage(getString(R.string.check_add_bookshelf, book.name))
                 okButton {
                     VideoPlay.book?.removeType(BookType.notShelf)
                     VideoPlay.book?.save()
                     VideoPlay.inBookshelf = true
                     setResult(RESULT_OK)
+                    callBackBookEnd()
+                    super.finish()
                 }
                 noButton {
                     callBackBookEnd()
                     viewModel.removeFromBookshelf { super.finish() }
                 }
             }
+            dialog.setOnCancelListener { shelfExitRequestGate.cancel() }
         }
     }
 

@@ -1,5 +1,6 @@
 package io.legado.app.ui.image
 
+import io.legado.app.help.http.dns.DnsScope
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
@@ -22,7 +23,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.databinding.ActivityImageCropBinding
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient as okHttpClient
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.utils.ImageProcessUtils
 import io.legado.app.utils.printOnDebug
@@ -160,7 +161,7 @@ class ImageCropActivity : BaseActivity<ActivityImageCropBinding>(
 
     private suspend fun copyImageSourceToFile(uri: Uri, target: File) {
         if (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) {
-            val analyzeUrl = AnalyzeUrl(uri.toString())
+            val analyzeUrl = AnalyzeUrl(uri.toString(), dnsScope = DnsScope.IMAGE)
             okHttpClient.newCallResponse(0) {
                 addHeaders(analyzeUrl.headerMap)
                 url(analyzeUrl.urlNoQuery)

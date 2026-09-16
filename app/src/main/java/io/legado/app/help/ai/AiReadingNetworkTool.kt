@@ -1,5 +1,6 @@
 package io.legado.app.help.ai
 
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.http.BackstageWebView
@@ -98,6 +99,7 @@ object AiReadingNetworkTool {
         val source = resolveSource(args) ?: temporarySourceFor(url)
         runCatching {
             val response = AnalyzeUrl(
+                dnsScope = DnsScope.AI,
                 mUrl = url,
                 source = source,
                 callTimeout = timeoutMs,

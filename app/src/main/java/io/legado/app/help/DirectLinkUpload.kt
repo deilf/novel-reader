@@ -1,5 +1,6 @@
 package io.legado.app.help
 
+import io.legado.app.help.http.dns.DnsScope
 import androidx.annotation.Keep
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
@@ -67,7 +68,7 @@ object DirectLinkUpload {
                 else -> ZipUtils.zipByteArray(GSON.toJson(file).toByteArray(), fileName)
             }
         }
-        val analyzeUrl = AnalyzeUrl(safeUploadUrl)
+        val analyzeUrl = AnalyzeUrl(safeUploadUrl, dnsScope = DnsScope.OTHER)
         val res = analyzeUrl.upload(mFileName, mFile, mContentType)
         if (mFile is File) {
             mFile.delete()

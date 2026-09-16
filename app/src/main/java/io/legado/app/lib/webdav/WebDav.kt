@@ -1,12 +1,13 @@
 package io.legado.app.lib.webdav
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.net.Uri
 import cn.hutool.core.net.URLDecoder
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.syncHttpClient as okHttpClient
 import io.legado.app.help.http.text
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.analyzeRule.CustomUrl
@@ -45,7 +46,7 @@ open class WebDav(
     companion object {
 
         fun fromPath(path: String): WebDav {
-            val id = AnalyzeUrl(path).serverID ?: throw WebDavException("没有serverID")
+            val id = AnalyzeUrl(path, dnsScope = DnsScope.SYNC).serverID ?: throw WebDavException("没有serverID")
             val authorization = Authorization(id)
             return WebDav(path, authorization)
         }

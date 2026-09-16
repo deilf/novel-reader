@@ -1,5 +1,6 @@
 package io.legado.app.service
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.net.Uri
@@ -42,7 +43,7 @@ import io.legado.app.help.book.characterBookKey
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.mediaHttpClient as okHttpClient
 import io.legado.app.help.readaloud.ReadAloudLoudnessAudioProcessor
 import io.legado.app.help.readaloud.ReadAloudPlaybackState
 import io.legado.app.help.readaloud.ReadAloudSpeakerLoudnessManager
@@ -736,6 +737,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             try {
                 val analyzeUrl = AnalyzeUrl(
                     httpTts.url,
+                    dnsScope = DnsScope.MEDIA,
                     speakText = speakText,
                     speakSpeed = speechRate,
                     currentToneID = route?.toneID,

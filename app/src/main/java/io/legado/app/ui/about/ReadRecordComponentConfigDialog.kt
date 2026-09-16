@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateListOf
@@ -25,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,8 @@ import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.utils.applyModernWindowStyle
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.setLayout
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.math.min
 
 object ReadRecordComponentConfigDialog {
@@ -75,8 +80,8 @@ object ReadRecordComponentConfigDialog {
                             if (normalized.none { it.enabled }) {
                                 normalized.firstOrNull()?.enabled = true
                             }
+                            // Applied as it is edited, so the dialog stays open.
                             onSaved(normalized)
-                            dialog.dismiss()
                         }
                     )
                 }
@@ -111,55 +116,64 @@ private fun ReadRecordComponentConfigContent(
     }
     val dialogStyle = rememberAppDialogStyle()
     val palette = dialogStyle.toMiuixPalette()
+    val listState = rememberLazyListState()
+    val reorderState = rememberReorderableLazyListState(listState) { from, to ->
+        items.add(to.index, items.removeAt(from.index))
+    }
+    // Every change takes effect immediately: the list behind this dialog is the thing being
+    // edited, so waiting for a confirm button only makes the edit look lost.
+    fun commit() = onSave(items.map { it.copy() })
     AppDialogFrame(
         title = stringResource(R.string.read_record_customize_components),
         message = stringResource(R.string.read_record_components_hint),
         scrollContent = false,
         content = {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 260.dp, max = listHeightDp.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(vertical = 2.dp)
             ) {
-                itemsIndexed(
+                items(
                     items = items,
-                    key = { _, item -> item.type.name }
-                ) { index, item ->
-                    ReadRecordComponentConfigRow(
-                        item = item,
-                        canMoveUp = index > 0,
-                        canMoveDown = index < items.lastIndex,
-                        onToggle = { checked ->
-                            items[index] = item.copy(enabled = checked)
-                        },
-                        onMoveUp = {
-                            if (index > 0) {
-                                items.move(index, index - 1)
+                    key = { item -> item.type.name }
+                ) { item ->
+                    ReorderableItem(reorderState, key = item.type.name) {
+                        ReadRecordComponentConfigRow(
+                            item = item,
+                            // Resolve the position at click time. Rows are keyed, so a
+                            // composable outlives reordering and an index captured when it
+                            // was composed would go on addressing the row's old slot.
+                            onToggle = { checked ->
+                                val index = items.indexOfFirst { it.type == item.type }
+                                if (index >= 0) {
+                                    items[index] = item.copy(enabled = checked)
+                                    commit()
+                                }
+                            },
+                            dragHandle = {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_drag_handle),
+                                    contentDescription = stringResource(R.string.sort),
+                                    tint = palette.secondaryText,
+                                    modifier = Modifier
+                                        .padding(end = 10.dp)
+                                        .draggableHandle(onDragStopped = { commit() })
+                                )
                             }
-                        },
-                        onMoveDown = {
-                            if (index < items.lastIndex) {
-                                items.move(index, index + 1)
-                            }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         },
         actions = {
             LegadoMiuixActionButton(
-                text = stringResource(android.R.string.cancel),
-                palette = palette,
-                onClick = onCancel
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            LegadoMiuixActionButton(
-                text = stringResource(android.R.string.ok),
+                text = stringResource(R.string.close),
                 palette = palette,
                 primary = true,
-                onClick = { onSave(items) }
+                onClick = onCancel
             )
         }
     )
@@ -168,11 +182,8 @@ private fun ReadRecordComponentConfigContent(
 @Composable
 private fun ReadRecordComponentConfigRow(
     item: ReadRecordComponentItem,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
     onToggle: (Boolean) -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit
+    dragHandle: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     val style = rememberAppDialogStyle()
@@ -192,6 +203,7 @@ private fun ReadRecordComponentConfigRow(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            dragHandle()
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = stringResource(item.type.titleRes),
@@ -219,35 +231,5 @@ private fun ReadRecordComponentConfigRow(
                 onCheckedChange = onToggle
             )
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp),
-            horizontalArrangement = Arrangement.End
-        ) {
-            LegadoMiuixActionButton(
-                text = stringResource(R.string.move_up),
-                palette = palette,
-                onClick = onMoveUp,
-                minWidth = 60.dp,
-                minHeight = 34.dp,
-                insidePadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            LegadoMiuixActionButton(
-                text = stringResource(R.string.move_down),
-                palette = palette,
-                onClick = onMoveDown,
-                minWidth = 60.dp,
-                minHeight = 34.dp,
-                insidePadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            )
-        }
     }
-}
-
-private fun MutableList<ReadRecordComponentItem>.move(from: Int, to: Int) {
-    if (from !in indices || to !in indices || from == to) return
-    val item = removeAt(from)
-    add(to, item)
 }

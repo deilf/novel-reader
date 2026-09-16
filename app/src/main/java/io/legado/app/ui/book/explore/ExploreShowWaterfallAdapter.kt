@@ -3,7 +3,6 @@ package io.legado.app.ui.book.explore
 import android.content.Context
 import android.os.Bundle
 import android.view.ViewGroup
-import androidx.core.view.isVisible
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import io.legado.app.R
 import io.legado.app.base.adapter.ItemViewHolder
@@ -57,7 +56,7 @@ class ExploreShowWaterfallAdapter(
             payloads.forEach { payload ->
                 val bundle = payload as? Bundle ?: return@forEach
                 if (bundle.containsKey("isInBookshelf")) {
-                    binding.ivInBookshelf.isVisible = callBack.isInBookshelf(item)
+                    bindKindLabels(binding, item)
                 }
             }
             return
@@ -65,7 +64,6 @@ class ExploreShowWaterfallAdapter(
         binding.run {
             tvName.text = item.name
             tvAuthor.text = context.getString(R.string.author_show, item.author)
-            ivInBookshelf.isVisible = callBack.isInBookshelf(item)
             if (item.latestChapterTitle.isNullOrEmpty()) {
                 tvLasted.gone()
             } else {
@@ -73,15 +71,22 @@ class ExploreShowWaterfallAdapter(
                 tvLasted.visible()
             }
             tvIntroduce.text = item.exploreListIntro(context)
-            val kinds = item.getKindList()
-            if (kinds.isEmpty()) {
-                llKind.gone()
-            } else {
-                llKind.visible()
-                llKind.setLabels(kinds.take(4))
-            }
+            bindKindLabels(this, item)
             ivCover.setCoverStyle(CoverImageView.CoverStyle.GRID)
             ivCover.load(item, AppConfig.loadCoverOnlyWifi)
+        }
+    }
+
+    private fun bindKindLabels(binding: ItemSearchWaterfallBinding, item: SearchBook) {
+        val labels = buildList {
+            if (callBack.isInBookshelf(item)) add(IN_BOOKSHELF_LABEL)
+            addAll(item.getKindList())
+        }.take(4)
+        if (labels.isEmpty()) {
+            binding.llKind.gone()
+        } else {
+            binding.llKind.visible()
+            binding.llKind.setLabels(labels)
         }
     }
 
@@ -100,3 +105,5 @@ class ExploreShowWaterfallAdapter(
         }
     }
 }
+
+private const val IN_BOOKSHELF_LABEL = "已在书架"

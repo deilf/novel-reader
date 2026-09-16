@@ -1,6 +1,8 @@
 package io.legado.app.service.relay
 
 import io.legado.app.utils.GSON
+import io.legado.app.help.http.dns.DnsScope
+import io.legado.app.help.http.dns.withDnsScope
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,6 +23,7 @@ internal data class RelayShareResult(
 internal class RelayControlClient(
     private val config: RelayConfig,
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .withDnsScope(DnsScope.RELAY)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)

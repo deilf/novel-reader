@@ -65,16 +65,11 @@ class EpubFile(var book: Book) {
         const val NATIVE_CONTENT_FLAG = "<epub-native"
         const val NATIVE_LAYOUT_FLAG = "data-href="
         const val NATIVE_CONTENT_VERSION_FLAG = "data-native-ver=\"2\""
-        const val TEXT_CONTENT_VERSION_FLAG = "<!--epub-text-ver=1-->"
         private const val NATIVE_LAYOUT_DISK_CACHE_VERSION = 4
         private const val ENABLE_EPUB_DEBUG_DUMP = false
         private const val MAX_COVER_IMAGE_SIZE = 1600
         private val scriptBlockRegex = Regex("(?is)<script\\b[^>]*>.*?</script>")
         private val scriptSelfClosingRegex = Regex("(?is)<script\\b[^>]*/>")
-        private val textEngineBlockTags = setOf(
-            "p", "div", "blockquote", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-            "br", "hr", "img", "table"
-        )
         private val maxNativeDomCache: Int
             get() = if (Runtime.getRuntime().maxMemory() <= 256L * 1024L * 1024L) 160 else 320
         private val maxNativeLayoutCache: Int
@@ -108,7 +103,7 @@ class EpubFile(var book: Book) {
 
         @Synchronized
         override fun getChapterList(book: Book): ArrayList<BookChapter> {
-            return runCatching {
+            val chapters = runCatching {
                 EpubCoreProvider.getChapterList(book).takeIf { it.isNotEmpty() }
                     ?: error("EPUB core returned empty chapter list")
             }.onFailure {
@@ -116,6 +111,17 @@ class EpubFile(var book: Book) {
             }.getOrElse {
                 getEFile(book).getChapterList()
             }
+            val coverPath = book.coverUrl
+            if (coverPath.isNullOrBlank() || !File(coverPath).isFile) {
+                // The direct core owns the chapter list, but the established EPUB
+                // parser still owns bookshelf metadata. Preserve its lazy cover
+                // extraction for imports and older books with a missing cover file.
+                runCatching { getEFile(book).ensureBookCoverLoaded() }
+                    .onFailure {
+                        AppLog.putDebug("EPUB lazy cover load failed: ${it.localizedMessage}", it)
+                    }
+            }
+            return chapters
         }
 
         @Synchronized
@@ -339,13 +345,13 @@ class EpubFile(var book: Book) {
         AppLog.putDebug(
             "EPUB getContent done: chapter=${chapter.index}:${chapter.title}, " +
                 "cost=${cost}ms, native=${result?.startsWith(NATIVE_CONTENT_FLAG) == true}, " +
-                "text=${result?.contains(TEXT_CONTENT_VERSION_FLAG) == true}"
+                "text=${!AppConfig.useEpubCore}"
         )
         return result
     }
 
     private fun getContentInternal(chapter: BookChapter): String? {
-        if (!AppConfig.useExperimentalEpubCore) {
+        if (!AppConfig.useEpubCore) {
             return getTextContentInternal(chapter)
         }
         /*获取当前章节文本*/
@@ -442,7 +448,8 @@ class EpubFile(var book: Book) {
             AppLog.put("EPUB Text Content empty: chapter=${chapter.index}:${chapter.title}, href=$currentChapterFirstResourceHref")
             return null
         }
-        val htmlParts = chapterResources.mapIndexedNotNull { index, res ->
+        val elements = Elements()
+        chapterResources.forEachIndexed { index, res ->
             val body = when {
                 index == 0 -> getBody(res, startFragmentId, endFragmentId, buildNativeDom = false)
                 index == chapterResources.lastIndex &&
@@ -451,24 +458,12 @@ class EpubFile(var book: Book) {
                     res.href == nextChapterFirstResourceHref -> getBody(res, null, endFragmentId, buildNativeDom = false)
                 else -> getBody(res, null, null, buildNativeDom = false)
             }
-            body.toTextEngineBody()
-            body.html().trim().takeIf { it.isNotBlank() }
+            elements.add(body)
         }
-        if (htmlParts.isEmpty()) return ""
-        val bodyHtml = htmlParts.joinToString("\n")
-        val titleHtml = chapter.title
-            .takeUnless { chapter.isVolume }
-            ?.trim()
-            ?.takeIf { it.isNotBlank() && !bodyHtml.hasVisibleEpubTitle(it) }
-            ?.let { """<h1 align="center"><b>${it.escapeHtmlText()}</b></h1>""" }
-            .orEmpty()
-        return buildString {
-            append("<usehtml>")
-            append(TEXT_CONTENT_VERSION_FLAG)
-            append(titleHtml)
-            append(bodyHtml)
-            append("</usehtml>")
-        }
+        return EpubTextContentFormatter.format(
+            elements = elements,
+            removeRubyAnnotations = book.getDelTag(Book.rubyTag)
+        )
     }
 
     private fun collectChapterResources(
@@ -638,75 +633,6 @@ class EpubFile(var book: Book) {
         }.onFailure {
             AppLog.putDebug("构建 EPUB 原生 DOM 失败: ${res.href}\n${it.localizedMessage}", it)
         }
-    }
-
-    private fun Element.toTextEngineBody() {
-        select("script,style,link,meta,nav,form,input,button,select,textarea,canvas,svg").remove()
-        select("[data-epub-page-bg]").remove()
-        select("[style*=display:none], [style*=display: none], [hidden]").remove()
-        select("rp").remove()
-        if (book.getDelTag(Book.rubyTag)) {
-            select("rt").remove()
-        }
-        select("*").forEach { element ->
-            element.stripForTextEngine()
-        }
-        select("div,section,article,main,header,footer,aside,figure,figcaption,blockquote,li").forEach { element ->
-            when {
-                element.selectFirst("img") != null -> Unit
-                element.children().all { it.normalName() !in textEngineBlockTags } -> element.tagName("p")
-                element.normalName() !in setOf("p", "blockquote", "li") -> element.tagName("div")
-            }
-        }
-        select("span").forEach { span ->
-            if (span.attributesSize() == 0 && span.children().isEmpty()) {
-                span.unwrap()
-            }
-        }
-        select("p,div,blockquote,li,h1,h2,h3,h4,h5,h6").forEach { element ->
-            if (element.text().isBlank() && element.selectFirst("img,[data-epub-page-bg]") == null) {
-                element.remove()
-            }
-        }
-    }
-
-    private fun Element.stripForTextEngine() {
-        val name = normalName()
-        val keep = linkedMapOf<String, String>()
-        when (name) {
-            "img" -> {
-                copyAttrTo(keep, "src")
-                copyAttrTo(keep, "alt")
-                copyAttrTo(keep, "data-epub-background")
-                copyAttrTo(keep, "data-legado-width")
-                copyAttrTo(keep, "data-legado-style")
-            }
-            "h1", "h2", "h3", "h4", "h5", "h6" -> {
-                copyAttrTo(keep, "align")
-                val style = textEngineStyle()
-                if (style.isNotBlank()) {
-                    keep["style"] = style
-                }
-            }
-        }
-        clearAttributes()
-        keep.forEach { (key, value) ->
-            if (value.isNotBlank()) attr(key, value)
-        }
-    }
-
-    private fun Element.copyAttrTo(target: MutableMap<String, String>, name: String) {
-        attr(name).takeIf { it.isNotBlank() }?.let { target[name] = it }
-    }
-
-    private fun Element.textEngineStyle(): String {
-        val declarations = EpubCss.declarations(attr("style"))
-        val keep = linkedMapOf<String, String>()
-        declarations["text-align"]?.let { keep["text-align"] = it }
-        declarations["font-weight"]?.let { keep["font-weight"] = it }
-        declarations["font-style"]?.let { keep["font-style"] = it }
-        declarations["font-size"]?.let { keep["font-size"] = it }
-        return keep.entries.joinToString(";") { (key, value) -> "$key:$value" }
     }
 
     private fun getFootnote(href: String): EpubFootnote? {
@@ -1540,25 +1466,6 @@ class EpubFile(var book: Book) {
             .replace(">", "&gt;")
     }
 
-    private fun String.escapeHtmlText(): String {
-        return replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    }
-
-    private fun String.hasVisibleEpubTitle(title: String): Boolean {
-        val normalizedTitle = title.cleanEpubInfoText().replace(Regex("\\s+"), "")
-        if (normalizedTitle.isBlank()) return true
-        val body = Jsoup.parseBodyFragment(this).body()
-        val firstText = body.select("h1,h2,h3,h4,h5,h6,p,div")
-            .firstOrNull { it.text().isNotBlank() }
-            ?.text()
-            ?.cleanEpubInfoText()
-            ?.replace(Regex("\\s+"), "")
-            .orEmpty()
-        return firstText == normalizedTitle || firstText.startsWith(normalizedTitle)
-    }
-
     private fun Element.applyEpubInlineStyle() {
         val style = attr("style")
         if (style.isBlank()) return
@@ -2092,6 +1999,28 @@ class EpubFile(var book: Book) {
     }
 
     private fun upBookCover(fastCheck: Boolean = false): Boolean {
+        // The Direct package parser is authoritative for cover metadata.  The
+        // legacy epublib object is retained below only as a compatibility
+        // fallback for malformed/old packages.
+        runCatching {
+            val existing = book.coverUrl
+                ?.takeIf { it.isNotBlank() && File(it).isFile }
+                ?: LocalBook.findCoverPath(book)?.also { book.coverUrl = it }
+            if (existing != null && fastCheck) return true
+            val resource = EpubCoreProvider.getCoverResource(book)
+            val cover = resource?.let(::decodeCoreCoverResource)
+            if (cover != null) {
+                val coverPath = LocalBook.resolveCoverPath(book, cover.preferredCoverExtension())
+                FileOutputStream(FileUtils.createFileIfNotExist(coverPath)).use { out ->
+                    check(cover.compressPreservingAlpha(out, 90)) { "Unable to encode EPUB cover" }
+                    out.flush()
+                }
+                book.coverUrl = coverPath
+                return true
+            }
+        }.onFailure {
+            AppLog.putDebug("EPUB core cover load failed: ${it.localizedMessage}", it)
+        }
         return try {
             epubBook?.let {
                 if (book.coverUrl.isNullOrEmpty()) {
@@ -2122,17 +2051,36 @@ class EpubFile(var book: Book) {
         }
     }
 
+    private fun decodeCoreCoverResource(resource: io.legado.app.model.localBook.epubcore.facade.EpubCoreCoverResource): Bitmap? {
+        val mediaType = resource.mediaType.orEmpty().substringBefore(';').trim()
+        val svg = mediaType.equals("image/svg+xml", true) ||
+            resource.path.substringAfterLast('.', "").equals("svg", true) ||
+            resource.path.substringAfterLast('.', "").equals("svgz", true)
+        return if (svg) {
+            SvgUtils.createBitmap(ByteArrayInputStream(resource.bytes), MAX_COVER_IMAGE_SIZE)
+                ?: BitmapUtils.decodeBitmap(resource.bytes, MAX_COVER_IMAGE_SIZE, MAX_COVER_IMAGE_SIZE)
+        } else {
+            BitmapUtils.decodeBitmap(resource.bytes, MAX_COVER_IMAGE_SIZE, MAX_COVER_IMAGE_SIZE)
+                ?: SvgUtils.createBitmap(ByteArrayInputStream(resource.bytes), MAX_COVER_IMAGE_SIZE)
+        }
+    }
+
     private fun ensureBookCoverLoaded() {
-        if (coverLoadChecked) return
         val coverPath = book.coverUrl
-        if (!coverPath.isNullOrBlank() && File(coverPath).exists()) {
+        if (coverLoadChecked && !coverPath.isNullOrBlank() && File(coverPath).isFile) {
             coverLoadChecked = true
             return
         }
-        if (upBookCover(fastCheck = true)) {
+        // Do not permanently cache a failed lazy lookup. Archive leases and
+        // bitmap decoders can fail transiently (especially while a large EPUB
+        // is being imported); a later chapter-list/read pass must be able to
+        // retry and persist the cover.
+        val loaded = upBookCover(fastCheck = true)
+        if (loaded) {
             kotlin.runCatching { book.update() }
         }
-        coverLoadChecked = true
+        coverLoadChecked = loaded && !book.coverUrl.isNullOrBlank() &&
+            File(book.coverUrl!!).isFile
     }
 
     private fun decodeCoverResource(resource: Resource?): Bitmap? {

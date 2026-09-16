@@ -1,30 +1,47 @@
 package io.legado.app.model.localBook.epubcore.pkg
 
 import java.io.ByteArrayInputStream
+import java.io.StringReader
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Document
 import org.w3c.dom.Element
 import org.w3c.dom.Node
+import org.xml.sax.EntityResolver
+import org.xml.sax.InputSource
 
 internal object XmlTools {
 
     fun parse(bytes: ByteArray): Document {
-        return factory().newDocumentBuilder().parse(ByteArrayInputStream(bytes))
+        return factory().newDocumentBuilder().apply {
+            // EPUB navigation files frequently carry the standard NCX/XHTML
+            // DOCTYPE. Keep external entities disabled while allowing that
+            // harmless declaration to be parsed; otherwise a valid package
+            // fails before its cover or table of contents can be inspected.
+            setEntityResolver(EntityResolver { _, _ ->
+                InputSource(StringReader(""))
+            })
+        }.parse(ByteArrayInputStream(bytes))
     }
 
     private fun factory(): DocumentBuilderFactory {
         return DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
             isExpandEntityReferences = false
-            setFeatureIfSupported("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeatureIfSupported("http://apache.org/xml/features/disallow-doctype-decl", false)
             setFeatureIfSupported("http://xml.org/sax/features/external-general-entities", false)
             setFeatureIfSupported("http://xml.org/sax/features/external-parameter-entities", false)
             setFeatureIfSupported("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            setAttributeIfSupported("http://javax.xml.XMLConstants/property/accessExternalDTD", "")
+            setAttributeIfSupported("http://javax.xml.XMLConstants/property/accessExternalSchema", "")
         }
     }
 
     private fun DocumentBuilderFactory.setFeatureIfSupported(name: String, value: Boolean) {
         runCatching { setFeature(name, value) }
+    }
+
+    private fun DocumentBuilderFactory.setAttributeIfSupported(name: String, value: Any) {
+        runCatching { setAttribute(name, value) }
     }
 }
 

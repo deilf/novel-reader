@@ -6,11 +6,13 @@ import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.CheckBox
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.viewModels
+import androidx.appcompat.widget.AppCompatCheckBox
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
+import androidx.core.widget.NestedScrollView
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.BookType
@@ -26,7 +28,11 @@ import io.legado.app.help.book.isVideo
 import io.legado.app.help.book.removeType
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.applyUiBodyTypefaceDeep
+import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.primaryTextColor
+import io.legado.app.lib.theme.secondaryTextColor
 import io.legado.app.lib.theme.uiTypeface
+import io.legado.app.lib.theme.view.ThemeEditText
 import io.legado.app.ui.book.changecover.ChangeCoverDialog
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.widget.image.CoverImageView
@@ -41,7 +47,6 @@ import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import splitties.init.appCtx
-import splitties.views.bottomPadding
 import java.io.FileOutputStream
 
 class BookInfoEditActivity :
@@ -82,11 +87,15 @@ class BookInfoEditActivity :
 
     private fun initView() {
         binding.root.setOnApplyWindowInsetsListenerCompat { view, windowInsets ->
-            val typeMask = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
+            val typeMask = WindowInsetsCompat.Type.systemBars() or
+                WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
             val insets = windowInsets.getInsets(typeMask)
-            view.bottomPadding = insets.bottom
+            // The TitleBar owns the top inset; the form must also avoid side cutouts
+            // and remain scrollable when the keyboard reduces its available height.
+            view.updatePadding(left = insets.left, right = insets.right, bottom = insets.bottom)
             windowInsets
         }
+        binding.tvBookTags.setTextColor(primaryTextColor)
     }
 
     private fun initEvent() = binding.run {
@@ -138,7 +147,7 @@ class BookInfoEditActivity :
     private fun showTagEditDialog(book: Book) {
         viewModel.loadTagCandidates(book) { candidates ->
             val currentTags = BookTagHelper.parse(book.customTag)
-            val allTags = (currentTags + candidates).distinct()
+            val allTags = BookTagHelper.parse(BookTagHelper.join(currentTags + candidates))
             val checkBoxes = mutableListOf<Pair<String, CheckBox>>()
             val container = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -147,27 +156,40 @@ class BookInfoEditActivity :
             if (allTags.isEmpty()) {
                 container.addView(TextView(this).apply {
                     setText(R.string.bookshelf_tag_none)
+                    setTextColor(secondaryTextColor)
                 })
             } else {
                 allTags.forEach { tag ->
-                    val checkBox = CheckBox(this).apply {
+                    val checkBox = AppCompatCheckBox(this).apply {
                         text = tag
                         isChecked = currentTags.any { it.equals(tag, ignoreCase = true) }
+                        setTextColor(primaryTextColor)
+                        minHeight = 48.dpToPx()
+                        buttonTintList = android.content.res.ColorStateList(
+                            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                            intArrayOf(accentColor, secondaryTextColor)
+                        )
                     }
                     checkBoxes += tag to checkBox
                     container.addView(checkBox)
                 }
             }
-            val newTagEdit = EditText(this).apply {
+            val newTagEdit = ThemeEditText(this).apply {
                 hint = getString(R.string.bookshelf_tag_new_hint)
                 inputType = InputType.TYPE_CLASS_TEXT
                 setSingleLine(false)
                 minLines = 1
+                setTextColor(primaryTextColor)
+                setHintTextColor(secondaryTextColor)
             }
             container.addView(newTagEdit)
             container.applyUiBodyTypefaceDeep(uiTypeface())
+            val scrollView = NestedScrollView(this).apply {
+                isFillViewport = true
+                addView(container)
+            }
             alert(titleResource = R.string.bookshelf_tag_edit) {
-                customView { container }
+                customView { scrollView }
                 okButton {
                     val selected = checkBoxes
                         .filter { it.second.isChecked }

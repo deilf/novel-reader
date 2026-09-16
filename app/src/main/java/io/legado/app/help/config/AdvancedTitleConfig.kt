@@ -2,6 +2,8 @@ package io.legado.app.help.config
 
 import io.legado.app.R
 import com.airbnb.lottie.LottieCompositionFactory
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.entities.Book
 import io.legado.app.utils.GSON
@@ -10,9 +12,11 @@ import io.legado.app.utils.getPrefInt
 import io.legado.app.utils.getPrefString
 import io.legado.app.utils.putPrefInt
 import io.legado.app.utils.putPrefString
+import io.legado.app.utils.removePref
 import org.json.JSONObject
 import splitties.init.appCtx
 import java.io.File
+import java.io.StringReader
 
 object AdvancedTitleConfig {
 
@@ -44,9 +48,15 @@ object AdvancedTitleConfig {
         }
 
     var lottieJson: String?
-        get() = appCtx.getPrefString(PreferKey.advancedTitleLottieJson)
-        set(value) {
-            appCtx.putPrefString(PreferKey.advancedTitleLottieJson, value?.takeIf { it.isNotBlank() })
+        get() {
+            // Never serve multi-KB Lottie from prefs (open-book OOM poison).
+            if (appCtx.getPrefString(PreferKey.advancedTitleLottieJson) != null) {
+                appCtx.removePref(PreferKey.advancedTitleLottieJson)
+            }
+            return null
+        }
+        set(@Suppress("UNUSED_PARAMETER") value) {
+            appCtx.removePref(PreferKey.advancedTitleLottieJson)
         }
 
     var lottiePath: String?
@@ -88,17 +98,28 @@ object AdvancedTitleConfig {
     }
 
     fun renderLottieJson(book: Book, title: String): String? {
-        val raw = AdvancedTitlePackageManager.currentTemplate()
-            ?: lottieJson?.takeIf { it.isNotBlank() }
-            ?: lottiePath?.takeIf { it.isNotBlank() }?.let { path ->
-                runCatching { File(path).takeIf { it.isFile }?.readText() }.getOrNull()
-            }
-        return raw?.let { replaceVariables(it, book, title) }
+        return renderLottieDocument(book, title)?.json
     }
 
     fun renderValidLottieJson(book: Book, title: String): String? {
-        val json = renderLottieJson(book, title)?.takeIf { it.isNotBlank() } ?: return null
-        return json.takeIf { hasRenderableLayers(it) }
+        return renderValidLottieDocument(book, title)?.json
+    }
+
+    internal fun renderLottieDocument(book: Book, title: String): PreparedLottieTemplate? {
+        val raw = rawTemplate() ?: return null
+        val prepared = LottieDerivedResourceCache.prepare(raw)
+        return prepared.copy(json = replaceVariables(prepared.json, book, title))
+    }
+
+    internal fun renderValidLottieDocument(book: Book, title: String): PreparedLottieTemplate? {
+        val raw = rawTemplate() ?: return null
+        val prepared = LottieDerivedResourceCache.prepare(raw)
+        val rendered = prepared.copy(json = replaceVariables(prepared.json, book, title))
+        if (rendered.json.isNotBlank() && hasRenderableLayers(rendered.json)) return rendered
+        if (!prepared.derived) return null
+        val original = replaceVariables(raw, book, title)
+        return original.takeIf { it.isNotBlank() && hasRenderableLayers(it) }
+            ?.let(::PreparedLottieTemplate)
     }
 
     fun isValidLottieJson(json: String): Boolean {
@@ -115,8 +136,28 @@ object AdvancedTitleConfig {
 
     fun hasRenderableLayers(json: String): Boolean {
         return runCatching {
-            val obj = JSONObject(json)
-            obj.optJSONArray("layers")?.length()?.let { it > 0 } == true
+            JsonReader(StringReader(json)).use { reader ->
+                var hasLayer = false
+                var allLayersAreObjects = true
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    if (reader.nextName() == "layers") {
+                        reader.beginArray()
+                        while (reader.hasNext()) {
+                            if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+                                allLayersAreObjects = false
+                            }
+                            reader.skipValue()
+                            hasLayer = true
+                        }
+                        reader.endArray()
+                    } else {
+                        reader.skipValue()
+                    }
+                }
+                reader.endObject()
+                hasLayer && allLayersAreObjects && reader.peek() == JsonToken.END_DOCUMENT
+            }
         }.getOrDefault(false)
     }
 
@@ -179,6 +220,13 @@ object AdvancedTitleConfig {
     ): String {
         val parts = split(title, book)
         return replaceTemplateVariables(source, variables(book, parts))
+    }
+
+    private fun rawTemplate(): String? {
+        return AdvancedTitlePackageManager.currentTemplate()
+            ?: lottiePath?.takeIf { it.isNotBlank() }?.let { path ->
+                runCatching { File(path).takeIf { it.isFile }?.readText() }.getOrNull()
+            }
     }
 
     internal fun replaceTemplateVariables(

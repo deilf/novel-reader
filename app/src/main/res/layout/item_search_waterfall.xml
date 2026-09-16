@@ -26,16 +26,6 @@
             android:scaleType="centerCrop"
             android:src="@drawable/image_cover_default" />
 
-        <io.legado.app.ui.widget.image.CircleImageView
-            android:id="@+id/iv_in_bookshelf"
-            android:layout_width="8dp"
-            android:layout_height="8dp"
-            android:layout_gravity="top|end"
-            android:layout_margin="8dp"
-            android:scaleType="centerCrop"
-            android:src="@color/md_green_600"
-            android:visibility="invisible" />
-
     </FrameLayout>
 
     <TextView

@@ -6,7 +6,6 @@ import androidx.core.graphics.withClip
 import androidx.core.graphics.withTranslation
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.entities.PageDirection
-import io.legado.app.utils.screenshot
 
 class CoverPageDelegate(readView: ReadView) : HorizontalPageDelegate(readView) {
     private val shadowDrawableR: GradientDrawable
@@ -52,18 +51,23 @@ class CoverPageDelegate(readView: ReadView) : HorizontalPageDelegate(readView) {
         }
     }
 
-    override fun setBitmap() {
-        when (mDirection) {
+    override fun setBitmap(): Boolean {
+        return when (mDirection) {
             PageDirection.PREV -> {
-                prevPage.screenshot(prevRecorder)
+                ensurePageSnap(prevPage, prevRecorder, prevSnapRev) { prevSnapRev = it }
             }
 
             PageDirection.NEXT -> {
-                nextPage.screenshot(nextRecorder)
-                curPage.screenshot(curRecorder)
+                val nextReady = ensurePageSnap(nextPage, nextRecorder, nextSnapRev) {
+                    nextSnapRev = it
+                }
+                val currentReady = ensurePageSnap(curPage, curRecorder, curSnapRev) {
+                    curSnapRev = it
+                }
+                nextReady && currentReady
             }
 
-            else -> Unit
+            else -> true
         }
     }
 

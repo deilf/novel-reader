@@ -46,7 +46,6 @@ import androidx.compose.ui.unit.sp
 import io.legado.app.R
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.model.ReadAloud
-import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.BaseReadBookActivity
 import io.legado.app.ui.book.read.ReadBookActivity
@@ -120,9 +119,9 @@ class AutoReadDialog : ComposeDialogFragment() {
                             post { dismissAllowingStateLoss() }
                         },
                         onOpenSetting = {
-                            (activity as? BaseReadBookActivity)?.showPageAnimConfig {
-                                (activity as? ReadBookActivity)?.upPageAnim()
-                                ReadBook.loadContent(false)
+                            (activity as? BaseReadBookActivity)?.showPageAnimConfig { previousPageAnim ->
+                                (activity as? ReadBookActivity)
+                                    ?.applyPageAnimationChange(previousPageAnim)
                             }
                         },
                         onSpeedCommitted = ::upTtsSpeechRate

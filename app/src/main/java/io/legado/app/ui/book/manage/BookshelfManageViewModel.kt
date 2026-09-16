@@ -17,6 +17,9 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.model.SourceCallBack
+import io.legado.app.model.AutoTask
+import io.legado.app.model.AutoTaskBookConfig
+import io.legado.app.model.AutoTaskBookSettings
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.stackTraceStr
@@ -63,6 +66,52 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
                     SourceCallBack.callBackBook(SourceCallBack.DEL_BOOK_SHELF, source, it)
                 }
             }
+            AutoTask.delete(*books.map { AutoTask.bookTaskId(it.bookUrl) }.toTypedArray())
+        }
+    }
+
+    /** Resolves selected books off the main thread before opening the batch editor. */
+    fun findAutoTaskBooks(books: List<Book>, onResult: (List<Book>) -> Unit) {
+        val selected = books.toList()
+        execute {
+            eligibleAutoTaskBooks(selected)
+        }.onSuccess { onResult(it) }.onError {
+            context.toastOnUi(
+                context.getString(
+                    R.string.auto_task_failed,
+                    it.localizedMessage ?: context.getString(R.string.error)
+                )
+            )
+        }
+    }
+
+    /** Persists all selected book rules in one transaction and one scheduler refresh. */
+    fun saveAutoTaskBooks(
+        books: List<Book>,
+        settings: AutoTaskBookSettings,
+        onSaved: (Int) -> Unit
+    ) {
+        execute {
+            val eligible = eligibleAutoTaskBooks(books)
+            val rules = eligible.map { book ->
+                AutoTaskBookConfig.buildRule(
+                    book = book,
+                    settings = settings,
+                    name = context.getString(
+                        R.string.auto_task_book_update_name,
+                        book.name.ifBlank { book.bookUrl }
+                    )
+                )
+            }
+            AutoTask.upsert(rules)
+            eligible.size
+        }.onSuccess { onSaved(it) }.onError {
+            context.toastOnUi(
+                context.getString(
+                    R.string.auto_task_failed,
+                    it.localizedMessage ?: context.getString(R.string.error)
+                )
+            )
         }
     }
 
@@ -128,6 +177,20 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
             }
         }.onSuccess {
             context.toastOnUi(R.string.clear_cache_success)
+        }
+    }
+
+    private fun eligibleAutoTaskBooks(books: List<Book>): List<Book> {
+        val sourceUrls = appDb.bookSourceDao.all
+            .asSequence()
+            .map { it.bookSourceUrl }
+            .filter(String::isNotBlank)
+            .toHashSet()
+        return books.filter { book ->
+            !book.isLocal &&
+                book.bookUrl.isNotBlank() &&
+                book.origin.isNotBlank() &&
+                sourceUrls.contains(book.origin)
         }
     }
 

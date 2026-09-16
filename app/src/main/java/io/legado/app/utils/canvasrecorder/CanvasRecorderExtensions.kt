@@ -24,12 +24,22 @@ fun CanvasRecorder.recordIfNeeded(view: View): Boolean {
 
 inline fun CanvasRecorder.record(width: Int, height: Int, block: Canvas.() -> Unit) {
     val canvas = beginRecording(width, height)
+    var drawCompleted = false
+    var completed = false
     try {
         canvas.withSave {
             block()
         }
+        drawCompleted = true
     } finally {
-        endRecording()
+        try {
+            endRecording()
+            completed = drawCompleted
+        } finally {
+            // Some implementations mark themselves clean in endRecording even when drawing
+            // threw. Never allow a partial display list/bitmap to masquerade as a valid snap.
+            if (!completed) invalidate()
+        }
     }
 }
 

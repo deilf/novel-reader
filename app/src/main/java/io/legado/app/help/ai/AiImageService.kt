@@ -11,7 +11,8 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.CookieStore
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.aiHttpClient as okHttpClient
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.help.http.postJson
 import io.legado.app.help.source.getShareScope
 import io.legado.app.ui.main.ai.AiImageProviderConfig
@@ -265,6 +266,7 @@ object AiImageService {
     private class AiImageJsSource(
         private val provider: AiImageProviderConfig
     ) : BaseSource {
+        override fun getNetworkDnsScope(): DnsScope = DnsScope.AI
         override var concurrentRate: String? = null
         override var loginUrl: String? = provider.loginUrl
         override var loginUi: String? = provider.loginUi

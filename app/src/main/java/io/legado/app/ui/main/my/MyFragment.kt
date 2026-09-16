@@ -20,6 +20,7 @@ import io.legado.app.help.config.ThemeConfig
 import io.legado.app.lib.theme.TopBarSearchStyle
 import io.legado.app.lib.theme.applyUiBodyTypefaceDeep
 import io.legado.app.lib.theme.uiTypeface
+import io.legado.app.model.AutoTask
 import io.legado.app.service.WebService
 import io.legado.app.ui.about.AboutActivity
 import io.legado.app.ui.about.ReadRecordActivity
@@ -34,6 +35,7 @@ import io.legado.app.ui.config.RelaySettingsActivity
 import io.legado.app.ui.dict.rule.DictRuleActivity
 import io.legado.app.ui.file.FileManageActivity
 import io.legado.app.ui.main.MainFragmentInterface
+import io.legado.app.ui.autoTask.AutoTaskActivity
 import io.legado.app.ui.replace.ReplaceRuleActivity
 import io.legado.app.ui.rss.source.manage.RssSourceActivity
 import io.legado.app.ui.widget.compose.ComposeActionListDialog
@@ -73,6 +75,9 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
     private val webServiceState = mutableStateOf(
         MyWebServiceUiState(checked = false, summary = "")
     )
+    private val autoTaskServiceState = mutableStateOf(
+        MyWebServiceUiState(checked = false, summary = "")
+    )
     private val sections by lazy(LazyThreadSafetyMode.NONE) { buildSections() }
     private val themeOptions by lazy(LazyThreadSafetyMode.NONE) { buildThemeOptions() }
     private val subSearchItems by lazy(LazyThreadSafetyMode.NONE) { buildSubSearchItems() }
@@ -89,6 +94,9 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
     override fun observeLiveBus() {
         observeEventSticky<String>(EventBus.WEB_SERVICE) {
             updateWebServiceState()
+        }
+        observeEventSticky<String>(EventBus.AUTO_TASK_SERVICE) {
+            updateAutoTaskServiceState()
         }
     }
 
@@ -128,6 +136,8 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
                 themeModeState.value = requireContext().getPrefString(PreferKey.themeMode, "0") ?: "0"
             }
 
+            PreferKey.autoTaskService -> updateAutoTaskServiceState()
+
             "recordLog" -> LogUtils.upLevel()
         }
     }
@@ -147,9 +157,12 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
                     searchQuery = searchQueryState.value,
                     themeModeLabel = currentThemeModeLabel(),
                     webServiceState = webServiceState.value,
+                    autoTaskServiceState = autoTaskServiceState.value,
                     onThemeModeClick = ::showThemeModeActions,
                     onWebServiceCheckedChange = ::setWebServiceEnabled,
                     onWebServiceClick = ::handleWebServiceClick,
+                    onAutoTaskServiceCheckedChange = ::setAutoTaskServiceEnabled,
+                    onAutoTaskServiceClick = ::handleAutoTaskServiceClick,
                     onRowClick = ::handleRowClick
                 )
             }
@@ -187,6 +200,7 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
     private fun updateSettingsState() {
         themeModeState.value = requireContext().getPrefString(PreferKey.themeMode, "0") ?: "0"
         updateWebServiceState()
+        updateAutoTaskServiceState()
     }
 
     private fun updateWebServiceState() {
@@ -197,6 +211,14 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
             } else {
                 getString(R.string.web_service_desc)
             }
+        )
+    }
+
+    private fun updateAutoTaskServiceState() {
+        val enabled = requireContext().getPrefBoolean(PreferKey.autoTaskService)
+        autoTaskServiceState.value = MyWebServiceUiState(
+            checked = enabled,
+            summary = getString(R.string.auto_task_service_desc)
         )
     }
 
@@ -251,6 +273,20 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
         }
     }
 
+    private fun setAutoTaskServiceEnabled(enabled: Boolean) {
+        requireContext().putPrefBoolean(PreferKey.autoTaskService, enabled)
+        if (enabled) {
+            AutoTask.start(requireContext())
+        } else {
+            AutoTask.stop(requireContext())
+        }
+        updateAutoTaskServiceState()
+    }
+
+    private fun handleAutoTaskServiceClick() {
+        setAutoTaskServiceEnabled(!requireContext().getPrefBoolean(PreferKey.autoTaskService))
+    }
+
     private fun showWebServiceActions() {
         val url = WebService.hostAddress.takeIf { WebService.isRun } ?: return
         showDialogFragment(
@@ -286,6 +322,7 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
             "replaceManage" -> startActivity<ReplaceRuleActivity>()
             "dictRuleManage" -> startActivity<DictRuleActivity>()
             "txtTocRuleManage" -> startActivity<TxtTocRuleActivity>()
+            "autoTaskManage" -> startActivity<AutoTaskActivity>()
             "bookmark" -> startActivity<AllBookmarkActivity>()
             "setting" -> startActivity<ConfigActivity> {
                 putExtra("configTag", ConfigTag.OTHER_CONFIG)
@@ -364,6 +401,22 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
                 )
             ),
             MySettingsSectionModel(
+                title = getString(R.string.auto_task_group),
+                rows = listOf(
+                    MySettingsRowModel(
+                        key = PreferKey.autoTaskService,
+                        title = getString(R.string.auto_task_service),
+                        summary = getString(R.string.auto_task_service_desc),
+                        kind = MySettingsRowKind.AutoTaskService
+                    ),
+                    actionRow(
+                        key = "autoTaskManage",
+                        titleRes = R.string.auto_task_manage,
+                        summaryRes = R.string.auto_task_manage_desc
+                    )
+                )
+            ),
+            MySettingsSectionModel(
                 title = getString(R.string.config_category_tools),
                 rows = listOf(
                     actionRow("setting", R.string.other_setting, R.string.other_setting_s),
@@ -412,6 +465,7 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
             Triple("web_dav_setting", R.xml.pref_config_backup, ConfigTag.BACKUP_CONFIG),
             Triple("ai_setting", R.xml.pref_config_ai, ConfigTag.AI_CONFIG),
             Triple("setting", R.xml.pref_config_other, ConfigTag.OTHER_CONFIG),
+            Triple("setting", R.xml.pref_config_network_dns, ConfigTag.NETWORK_DNS_CONFIG),
             Triple(
                 "theme_setting",
                 R.xml.pref_config_discovery_subscription,

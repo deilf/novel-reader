@@ -4,6 +4,7 @@ import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class AdvancedTitlePackageConfigTest {
@@ -51,5 +52,30 @@ class AdvancedTitlePackageConfigTest {
         assertEquals(AdvancedTitleConfig.SPLIT_DELIMITER, config.splitRuleOrNull()?.mode)
         assertEquals(" ", config.splitRuleOrNull()?.delimiter)
         assertEquals(120, config.normalizedHeightFactorOrNull())
+    }
+
+    @Test
+    fun largeTemplatesHaveSeparateEditableAndSafetyLimits() {
+        assertEquals(2L * 1024L * 1024L, AdvancedTitlePackageManager.MAX_EDITABLE_JSON_BYTES)
+        assertEquals(8L * 1024L * 1024L, AdvancedTitlePackageManager.MAX_JSON_BYTES)
+    }
+
+    @Test
+    fun utf8SizeCountingStopsAtLimitWithoutAllocatingEncodedCopy() {
+        assertEquals(8L, AdvancedTitlePackageManager.utf8SizeUpTo("a中😀", 10L))
+        assertEquals(5L, AdvancedTitlePackageManager.utf8SizeUpTo("中文", 4L))
+    }
+
+    @Test
+    fun legacyOpenCandidateIsBoundedAndRequiresRenderableLayers() {
+        val valid = """{"v":"5.9.0","layers":[{}]}"""
+
+        assertSame(valid, AdvancedTitlePackageManager.safeLegacyTemplateCandidate(valid))
+        assertNull(AdvancedTitlePackageManager.safeLegacyTemplateCandidate("""{"layers":[]}"""))
+        assertNull(
+            AdvancedTitlePackageManager.safeLegacyTemplateCandidate(
+                "x".repeat(8 * 1024 * 1024 + 1)
+            )
+        )
     }
 }

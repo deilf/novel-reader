@@ -1,7 +1,6 @@
 package io.legado.app.ui.main.explore
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,7 +20,6 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyColumnItems
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -34,7 +32,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
@@ -82,7 +79,6 @@ fun ExploreModernListScreen(
             scrollToTopSignal = scrollToTopSignal,
             isLoading = isLoading,
             hasMore = hasMore,
-            isInBookshelf = isInBookshelf,
             onBookClick = onBookClick,
             onLoadMore = onLoadMore,
             onCanScrollBackwardChanged = onCanScrollBackwardChanged,
@@ -203,7 +199,6 @@ private fun ExploreModernGridScreen(
     scrollToTopSignal: Int,
     isLoading: Boolean,
     hasMore: Boolean,
-    isInBookshelf: (SearchBook) -> Boolean,
     onBookClick: (SearchBook) -> Unit,
     onLoadMore: () -> Unit,
     onCanScrollBackwardChanged: (Boolean) -> Unit,
@@ -270,7 +265,6 @@ private fun ExploreModernGridScreen(
             ) { book ->
                 ExploreGridBookItem(
                     book = book,
-                    inBookshelf = isInBookshelf(book),
                     renderConfig = renderConfig,
                     fragment = fragment,
                     lifecycle = lifecycle,
@@ -316,7 +310,6 @@ private fun ExploreModernGridScreen(
 @Composable
 private fun ExploreGridBookItem(
     book: SearchBook,
-    inBookshelf: Boolean,
     renderConfig: BookshelfListRenderConfig,
     fragment: Fragment,
     lifecycle: Lifecycle,
@@ -347,16 +340,6 @@ private fun ExploreGridBookItem(
                 fillBounds = true,
                 onBoundsChanged = { coverBounds = it }
             )
-            if (inBookshelf) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(5.dp)
-                        .clip(CircleShape)
-                        .background(palette.accent)
-                        .size(10.dp)
-                )
-            }
         }
         Text(
             text = book.name,

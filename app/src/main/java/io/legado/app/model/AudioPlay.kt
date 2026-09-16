@@ -1,5 +1,6 @@
 package io.legado.app.model
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -279,7 +280,7 @@ object AudioPlay : CoroutineScope by MainScope() {
         if (chapter.index == book?.durChapterIndex) {
             kotlin.runCatching {
                 val request = AnalyzeUrl(
-                    content,
+                    content, dnsScope = DnsScope.MEDIA,
                     source = bookSource,
                     ruleData = book,
                     chapter = chapter

@@ -44,7 +44,8 @@ import io.legado.app.ui.widget.compose.rememberAppSettingPalette
 internal enum class MySettingsRowKind {
     Action,
     ThemeMode,
-    WebService
+    WebService,
+    AutoTaskService
 }
 
 internal data class MySettingsThemeOption(
@@ -101,9 +102,12 @@ internal fun MySettingsScreen(
     searchQuery: String,
     themeModeLabel: String,
     webServiceState: MyWebServiceUiState,
+    autoTaskServiceState: MyWebServiceUiState,
     onThemeModeClick: () -> Unit,
     onWebServiceCheckedChange: (Boolean) -> Unit,
     onWebServiceClick: () -> Unit,
+    onAutoTaskServiceCheckedChange: (Boolean) -> Unit,
+    onAutoTaskServiceClick: () -> Unit,
     onRowClick: (String, MySettingsSubSearchItem?) -> Unit
 ) {
     val colors = rememberAppSettingPalette()
@@ -113,6 +117,7 @@ internal fun MySettingsScreen(
         subSearchItems = subSearchItems,
         searchQuery = searchQuery,
         webServiceState = webServiceState,
+        autoTaskServiceState = autoTaskServiceState,
         themeModeLabel = themeModeLabel,
     )
 
@@ -139,9 +144,12 @@ internal fun MySettingsScreen(
                         panelRadiusPx = panelRadiusPx,
                         themeModeLabel = themeModeLabel,
                         webServiceState = webServiceState,
+                        autoTaskServiceState = autoTaskServiceState,
                         onThemeModeClick = onThemeModeClick,
                         onWebServiceCheckedChange = onWebServiceCheckedChange,
                         onWebServiceClick = onWebServiceClick,
+                        onAutoTaskServiceCheckedChange = onAutoTaskServiceCheckedChange,
+                        onAutoTaskServiceClick = onAutoTaskServiceClick,
                         onRowClick = onRowClick
                     )
                 }
@@ -165,9 +173,12 @@ private fun SettingsSectionCard(
     panelRadiusPx: Float,
     themeModeLabel: String,
     webServiceState: MyWebServiceUiState,
+    autoTaskServiceState: MyWebServiceUiState,
     onThemeModeClick: () -> Unit,
     onWebServiceCheckedChange: (Boolean) -> Unit,
     onWebServiceClick: () -> Unit,
+    onAutoTaskServiceCheckedChange: (Boolean) -> Unit,
+    onAutoTaskServiceClick: () -> Unit,
     onRowClick: (String, MySettingsSubSearchItem?) -> Unit
 ) {
     val context = LocalContext.current
@@ -200,7 +211,7 @@ private fun SettingsSectionCard(
                     onClick = onThemeModeClick
                 )
 
-                MySettingsRowKind.WebService -> WebServiceRow(
+                MySettingsRowKind.WebService -> ServiceSwitchRow(
                     item = item,
                     state = webServiceState,
                     colors = colors,
@@ -210,6 +221,18 @@ private fun SettingsSectionCard(
                     showDivider = showDivider,
                     onCheckedChange = onWebServiceCheckedChange,
                     onClick = onWebServiceClick
+                )
+
+                MySettingsRowKind.AutoTaskService -> ServiceSwitchRow(
+                    item = item,
+                    state = autoTaskServiceState,
+                    colors = colors,
+                    panelRadiusPx = panelRadiusPx,
+                    isFirst = false,
+                    isLast = isLastRowInSection,
+                    showDivider = showDivider,
+                    onCheckedChange = onAutoTaskServiceCheckedChange,
+                    onClick = onAutoTaskServiceClick
                 )
 
                 MySettingsRowKind.Action -> SettingsActionRow(
@@ -285,7 +308,7 @@ private fun SettingsActionRow(
 }
 
 @Composable
-private fun WebServiceRow(
+private fun ServiceSwitchRow(
     item: VisibleRow,
     state: MyWebServiceUiState,
     colors: AppSettingPalette,
@@ -387,12 +410,17 @@ private fun buildVisibleSections(
     subSearchItems: List<MySettingsSubSearchItem>,
     searchQuery: String,
     webServiceState: MyWebServiceUiState,
+    autoTaskServiceState: MyWebServiceUiState,
     themeModeLabel: String
 ): List<VisibleSection> {
     val query = searchQuery.trim().lowercase()
     return sections.mapNotNull { section ->
         val rows = section.rows.mapNotNull { row ->
-            val summary = row.effectiveSummary(webServiceState, themeModeLabel)
+            val summary = row.effectiveSummary(
+                webServiceState = webServiceState,
+                autoTaskServiceState = autoTaskServiceState,
+                themeModeLabel = themeModeLabel
+            )
             val matchedSubItems = if (query.isBlank()) {
                 emptyList()
             } else {
@@ -421,11 +449,13 @@ private fun buildVisibleSections(
 
 private fun MySettingsRowModel.effectiveSummary(
     webServiceState: MyWebServiceUiState,
+    autoTaskServiceState: MyWebServiceUiState,
     themeModeLabel: String
 ): String {
     return when (kind) {
         MySettingsRowKind.ThemeMode -> themeModeLabel
         MySettingsRowKind.WebService -> webServiceState.summary
+        MySettingsRowKind.AutoTaskService -> autoTaskServiceState.summary
         MySettingsRowKind.Action -> summary.orEmpty()
     }
 }

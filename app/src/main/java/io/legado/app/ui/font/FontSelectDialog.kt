@@ -52,6 +52,7 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
     }
     private val selectFontDir = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
+            io.legado.app.help.AppFont.invalidateFontList()
             if (uri.isContentScheme()) {
                 putPrefString(PreferKey.fontFolder, uri.toString())
                 val doc = DocumentFile.fromTreeUri(requireContext(), uri)

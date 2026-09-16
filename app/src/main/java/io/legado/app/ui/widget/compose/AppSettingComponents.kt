@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -223,8 +224,14 @@ fun AppManagementLazyColumn(
         androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(AppListSpacing.Normal),
     showFastScroller: Boolean = true,
+    reserveFastScrollerSpace: Boolean = false,
     content: LazyListScope.() -> Unit
 ) {
+    val fastScrollerSpace = if (showFastScroller && reserveFastScrollerSpace) {
+        AppConfig.fastScrollerTouchTargetDp.dp
+    } else {
+        0.dp
+    }
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -232,7 +239,10 @@ fun AppManagementLazyColumn(
     ) {
         LazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                // Keep row actions outside the scrollbar's touch target.
+                .padding(end = fastScrollerSpace),
             contentPadding = contentPadding,
             verticalArrangement = verticalArrangement,
             content = content
@@ -360,7 +370,11 @@ fun AppManagementListRow(
                 palette = palette,
                 onToggleSelection = onToggleSelection
             )
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .widthIn(min = 0.dp)
+            ) {
                 Text(
                     text = title,
                     color = palette.settings.primaryText,

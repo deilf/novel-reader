@@ -1,6 +1,8 @@
 package io.legado.app.service.relay
 
 import io.legado.app.utils.GSON
+import io.legado.app.help.http.dns.DnsScope
+import io.legado.app.help.http.dns.withDnsScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +32,7 @@ internal class RelayClient(
     private val config: RelayConfig,
     private val stateRepository: RelayStateRepository = RelayStateRepository,
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .withDnsScope(DnsScope.RELAY)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)

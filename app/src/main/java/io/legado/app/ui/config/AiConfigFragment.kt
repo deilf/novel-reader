@@ -8,7 +8,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.help.ai.AiToolRegistry
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.newCallResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.ui.config.compose.ComposeSettingFragment
 import io.legado.app.ui.config.compose.SettingActionSpec
 import io.legado.app.ui.config.compose.SettingPageSpec
@@ -610,24 +610,6 @@ class AiConfigFragment : ComposeSettingFragment() {
         )
     }
 
-    private fun showSystemPromptDialog() {
-        showComposeTextInputDialog(
-            title = getString(R.string.ai_system_prompt),
-            hint = getString(R.string.ai_system_prompt_hint),
-            initialValue = AppConfig.aiSystemPrompt,
-            minLines = 8,
-            maxLines = 16,
-            neutralText = getString(R.string.restore_default),
-            onPositive = { text ->
-                AppConfig.aiSystemPrompt = text
-                refreshUi()
-            },
-            onNeutral = {
-                AppConfig.aiSystemPrompt = AppConfig.DEFAULT_AI_SYSTEM_PROMPT
-                refreshUi()
-            }
-        )
-    }
 
     private fun showContextCompressionDialog() {
         val enabledText = if (AppConfig.aiContextCompressionEnabled) "关闭上下文压缩" else "启用上下文压缩"

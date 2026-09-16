@@ -7,6 +7,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.AppPattern.bookFileRegex
 import io.legado.app.data.entities.Book
+import io.legado.app.help.book.highlight.HighlightImport
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.*
 import io.legado.app.utils.compress.ZipUtils
@@ -14,6 +15,7 @@ import io.legado.app.utils.compress.ZipUtils
 class FileAssociationViewModel(application: Application) : BaseAssociationViewModel(application) {
     val importBookLiveData = MutableLiveData<Uri>()
     val importRedThemeLiveData = MutableLiveData<Uri>()
+    val importHighlightLiveData = MutableLiveData<Uri>()
     val importBubbleLiveData = MutableLiveData<Uri>()
     val onLineImportLive = MutableLiveData<Uri>()
     val openBookLiveData = MutableLiveData<Book>()
@@ -25,6 +27,10 @@ class FileAssociationViewModel(application: Application) : BaseAssociationViewMo
             if (uri.isContentScheme() || uri.isFileScheme()) {
                 val fileDoc = FileDoc.fromUri(uri, false)
                 val fileName = fileDoc.name
+                if (HighlightImport.isHighlightFile(fileDoc)) {
+                    importHighlightLiveData.postValue(fileDoc.uri)
+                    return@execute
+                }
                 if (fileName.endsWith(".red", ignoreCase = true)) {
                     importRedThemeLiveData.postValue(fileDoc.uri)
                     return@execute
@@ -58,6 +64,10 @@ class FileAssociationViewModel(application: Application) : BaseAssociationViewMo
     }
 
     private fun dispatch(fileDoc: FileDoc) {
+        if (HighlightImport.isHighlightFile(fileDoc)) {
+            importHighlightLiveData.postValue(fileDoc.uri)
+            return
+        }
         kotlin.runCatching {
             if (fileDoc.openInputStream().getOrNull().isJson()) {
                 importJson(fileDoc.uri)

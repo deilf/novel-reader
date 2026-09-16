@@ -6,7 +6,8 @@ import com.script.ScriptBindings
 import com.script.rhino.RhinoScriptEngine
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.http.newCallStrResponse
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.getHttpClient
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.utils.ACache
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
@@ -27,7 +28,7 @@ object SharedJsScope {
 
     private val scopeMap = LruCache<String, WeakReference<Scriptable>>(16)
 
-    fun getScope(jsLib: String?, coroutineContext: CoroutineContext?): Scriptable? {
+    fun getScope(jsLib: String?, coroutineContext: CoroutineContext?, dnsScope: DnsScope = DnsScope.READING): Scriptable? {
         if (jsLib.isNullOrBlank()) {
             return null
         }
@@ -52,7 +53,7 @@ object SharedJsScope {
                         var js = aCache.getAsString(fileName)
                         if (js == null) {
                             js = runBlocking {
-                                okHttpClient.newCallStrResponse {
+                                getHttpClient(dnsScope).newCallStrResponse {
                                     url(value)
                                 }.body
                             }

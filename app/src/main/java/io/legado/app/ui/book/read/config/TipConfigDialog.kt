@@ -41,15 +41,22 @@ import androidx.compose.foundation.verticalScroll
 import com.jaredrummler.android.colorpicker.ColorPickerDialog
 import io.legado.app.R
 import io.legado.app.constant.EventBus
+import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.usesDirectReader
+import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.AdvancedTitleConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReadTipConfig
+import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeModePolicy
+import io.legado.app.model.ReadBook
 import io.legado.app.ui.widget.compose.AppDialogStyle
 import io.legado.app.ui.widget.compose.AppThemedStepperSlider
 import io.legado.app.ui.widget.compose.ComposeActionListDialog
 import io.legado.app.ui.widget.compose.LegadoMiuixChoiceRow
 import io.legado.app.ui.widget.compose.toMiuixPalette
 import io.legado.app.ui.config.AdvancedTitleManageActivity
+import io.legado.app.ui.config.AdvancedTipManageActivity
+import io.legado.app.help.config.AdvancedTipSlot
 import io.legado.app.utils.hexString
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.postEvent
@@ -134,6 +141,7 @@ private fun TipConfigContent(
 ) {
     val context = LocalContext.current
     val miuixPalette = style.toMiuixPalette()
+    val directEpub = ReadBook.book?.usesDirectReader == true
     var titleMode by rememberSaveable { mutableIntStateOf(ReadBookConfig.titleMode) }
     var titleSize by rememberSaveable { mutableIntStateOf(ReadBookConfig.titleSize) }
     var titleTopSpacing by rememberSaveable { mutableIntStateOf(ReadBookConfig.titleTopSpacing) }
@@ -148,17 +156,38 @@ private fun TipConfigContent(
     var footerLeft by rememberSaveable { mutableIntStateOf(ReadTipConfig.tipFooterLeft) }
     var footerMiddle by rememberSaveable { mutableIntStateOf(ReadTipConfig.tipFooterMiddle) }
     var footerRight by rememberSaveable { mutableIntStateOf(ReadTipConfig.tipFooterRight) }
-    val headerModes = remember(context) { ReadTipConfig.getHeaderModes(context) }
-    val footerModes = remember(context) { ReadTipConfig.getFooterModes(context) }
+    val headerModes = remember(context, directEpub) {
+        EpubReaderChromeModePolicy.selectableModes(
+            modes = ReadTipConfig.getHeaderModes(context),
+            directEpub = directEpub,
+            advancedMode = ReadTipConfig.HEADER_MODE_ADVANCED
+        )
+    }
+    val footerModes = remember(context, directEpub) {
+        EpubReaderChromeModePolicy.selectableModes(
+            modes = ReadTipConfig.getFooterModes(context),
+            directEpub = directEpub,
+            advancedMode = ReadTipConfig.FOOTER_MODE_ADVANCED
+        )
+    }
     val tipNames = ReadTipConfig.tipNames
     val tipValues = ReadTipConfig.tipValues.toList()
-    val titleModeOptions = listOf(
-        stringResource(R.string.title_left),
-        stringResource(R.string.title_center),
-        stringResource(R.string.advanced_title_mode_label),
-        stringResource(R.string.title_hide)
-    )
+    val titleModeOptions = if (directEpub) {
+        listOf(
+            stringResource(R.string.title_left),
+            stringResource(R.string.title_center),
+            stringResource(R.string.title_hide)
+        )
+    } else {
+        listOf(
+            stringResource(R.string.title_left),
+            stringResource(R.string.title_center),
+            stringResource(R.string.advanced_title_mode_label),
+            stringResource(R.string.title_hide)
+        )
+    }
     fun titleModeToUiIndex(mode: Int): Int {
+        if (directEpub) return if (mode == 2) 2 else mode.coerceIn(0, 2)
         return when (mode) {
             AdvancedTitleConfig.TITLE_MODE_ADVANCED -> 2
             2 -> 3
@@ -166,6 +195,7 @@ private fun TipConfigContent(
         }.coerceIn(0, titleModeOptions.lastIndex)
     }
     fun uiIndexToTitleMode(index: Int): Int {
+        if (directEpub) return if (index == 2) 2 else index
         return when (index) {
             2 -> AdvancedTitleConfig.TITLE_MODE_ADVANCED
             3 -> 2
@@ -201,8 +231,8 @@ private fun TipConfigContent(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(ReaderSheetDefaults.SectionGap)
     ) {
-        // 标题设置
-        TipSection(style = style) {
+        // Publisher/generated document headings belong to the Direct document.
+        if (!directEpub) TipSection(style = style) {
             TipCompactSlider(
                 label = stringResource(R.string.title_font_size),
                 value = titleSize,
@@ -230,6 +260,7 @@ private fun TipConfigContent(
                         text = label,
                         selected = titleModeToUiIndex(titleMode) == index,
                         palette = miuixPalette,
+                        enabled = true,
                         onClick = {
                             val newMode = uiIndexToTitleMode(index)
                             titleMode = newMode
@@ -250,7 +281,16 @@ private fun TipConfigContent(
         // 页眉
         TipPlacementSection(
             title = stringResource(R.string.header),
-            showLabel = headerModes[headerMode].orEmpty(),
+            showLabel = if (EpubReaderChromeModePolicy.isSupported(
+                    directEpub,
+                    headerMode,
+                    ReadTipConfig.HEADER_MODE_ADVANCED
+                )
+            ) {
+                headerModes[headerMode].orEmpty()
+            } else {
+                stringResource(R.string.disabled)
+            },
             leftLabel = tipName(headerLeft),
             middleLabel = tipName(headerMiddle),
             rightLabel = tipName(headerRight),
@@ -261,16 +301,34 @@ private fun TipConfigContent(
                     headerMode = keys.getOrElse(index) { 0 }
                     ReadTipConfig.headerMode = headerMode
                     postEvent(EventBus.UP_CONFIG, arrayListOf(2))
+                    if (headerMode == ReadTipConfig.HEADER_MODE_ADVANCED) {
+                        AdvancedTipManageActivity.start(context, AdvancedTipSlot.HEADER)
+                    }
                 }
             },
             onLeftClick = { chooseTip(context.getString(R.string.left)) { headerLeft = it; ReadTipConfig.tipHeaderLeft = it } },
             onMiddleClick = { chooseTip(context.getString(R.string.middle)) { headerMiddle = it; ReadTipConfig.tipHeaderMiddle = it } },
-            onRightClick = { chooseTip(context.getString(R.string.right)) { headerRight = it; ReadTipConfig.tipHeaderRight = it } }
+            onRightClick = { chooseTip(context.getString(R.string.right)) { headerRight = it; ReadTipConfig.tipHeaderRight = it } },
+            manageLabel = if (!directEpub && headerMode == ReadTipConfig.HEADER_MODE_ADVANCED) {
+                stringResource(R.string.advanced_header_manage)
+            } else null,
+            onManageClick = if (!directEpub && headerMode == ReadTipConfig.HEADER_MODE_ADVANCED) {
+                { AdvancedTipManageActivity.start(context, AdvancedTipSlot.HEADER) }
+            } else null
         )
         // 页脚
         TipPlacementSection(
             title = stringResource(R.string.footer),
-            showLabel = footerModes[footerMode].orEmpty(),
+            showLabel = if (EpubReaderChromeModePolicy.isSupported(
+                    directEpub,
+                    footerMode,
+                    ReadTipConfig.FOOTER_MODE_ADVANCED
+                )
+            ) {
+                footerModes[footerMode].orEmpty()
+            } else {
+                stringResource(R.string.disabled)
+            },
             leftLabel = tipName(footerLeft),
             middleLabel = tipName(footerMiddle),
             rightLabel = tipName(footerRight),
@@ -281,11 +339,20 @@ private fun TipConfigContent(
                     footerMode = keys.getOrElse(index) { 0 }
                     ReadTipConfig.footerMode = footerMode
                     postEvent(EventBus.UP_CONFIG, arrayListOf(2))
+                    if (footerMode == ReadTipConfig.FOOTER_MODE_ADVANCED) {
+                        AdvancedTipManageActivity.start(context, AdvancedTipSlot.FOOTER)
+                    }
                 }
             },
             onLeftClick = { chooseTip(context.getString(R.string.left)) { footerLeft = it; ReadTipConfig.tipFooterLeft = it } },
             onMiddleClick = { chooseTip(context.getString(R.string.middle)) { footerMiddle = it; ReadTipConfig.tipFooterMiddle = it } },
-            onRightClick = { chooseTip(context.getString(R.string.right)) { footerRight = it; ReadTipConfig.tipFooterRight = it } }
+            onRightClick = { chooseTip(context.getString(R.string.right)) { footerRight = it; ReadTipConfig.tipFooterRight = it } },
+            manageLabel = if (!directEpub && footerMode == ReadTipConfig.FOOTER_MODE_ADVANCED) {
+                stringResource(R.string.advanced_footer_manage)
+            } else null,
+            onManageClick = if (!directEpub && footerMode == ReadTipConfig.FOOTER_MODE_ADVANCED) {
+                { AdvancedTipManageActivity.start(context, AdvancedTipSlot.FOOTER) }
+            } else null
         )
         // 颜色
         TipColorSection(
@@ -377,7 +444,9 @@ private fun TipPlacementSection(
     onShowClick: () -> Unit,
     onLeftClick: () -> Unit,
     onMiddleClick: () -> Unit,
-    onRightClick: () -> Unit
+    onRightClick: () -> Unit,
+    manageLabel: String? = null,
+    onManageClick: (() -> Unit)? = null
 ) {
     TipSection(style = style) {
         TipValueRow(
@@ -386,6 +455,14 @@ private fun TipPlacementSection(
             style = style,
             onClick = onShowClick
         )
+        if (manageLabel != null && onManageClick != null) {
+            TipValueRow(
+                title = manageLabel,
+                value = stringResource(R.string.advanced_title_manage),
+                style = style,
+                onClick = onManageClick
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(5.dp)

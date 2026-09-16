@@ -4,6 +4,8 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import io.legado.app.help.http.CookieManager.cookieJarHeader
 import io.legado.app.help.http.SSLHelper.unsafeTrustManager
+import io.legado.app.help.http.dns.DnsRequestContext
+import io.legado.app.help.http.dns.withDnsScope
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
@@ -94,6 +96,7 @@ class ObsoleteUrlFactory(private var client: OkHttpClient) : URLStreamHandlerFac
     fun open(url: URL, proxy: Proxy?): HttpURLConnection {
         val protocol = url.protocol
         val copy = client.newBuilder()
+            .apply { DnsRequestContext.scope?.let { withDnsScope(it) } }
             .proxy(proxy)
             .build()
         if (protocol == "http") return OkHttpURLConnection(url, copy)

@@ -393,7 +393,7 @@ object CacheBook {
             }.start()
         }
 
-        suspend fun downloadAwait(chapter: BookChapter): String {
+        suspend fun downloadAwait(chapter: BookChapter, failOnError: Boolean = false): String {
             synchronized(this) {
                 onDownloadSet.add(chapter.index)
                 waitDownloadSet.remove(chapter.index)
@@ -415,6 +415,7 @@ object CacheBook {
             } catch (e: Exception) {
                 if (e is CancellationException) {
                     onCancel(chapter.index)
+                    if (failOnError) throw e
                 }
                 LibraryCloudSync.tryCloudFallback(book, chapter)?.let { content ->
                     BookHelp.saveText(book, chapter, content)
@@ -426,6 +427,7 @@ object CacheBook {
                 onError(chapter, e)
                 ReadBook.downloadFailChapters[chapter.index] =
                     (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
+                if (failOnError) throw e
                 return "获取正文失败\n${e.localizedMessage}"
             } finally {
                 postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)

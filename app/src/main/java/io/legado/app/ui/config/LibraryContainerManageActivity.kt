@@ -17,7 +17,7 @@ import io.legado.app.help.book.library.LibraryContainerConfig
 import io.legado.app.help.book.library.LibraryContainerExportCrypto
 import io.legado.app.help.book.library.LibraryContainerManager
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.lib.cloud.S3Config
 import io.legado.app.lib.cloud.S3Container
 import io.legado.app.ui.file.HandleFileContract

@@ -3,11 +3,14 @@ package io.legado.app.help.config
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.util.Log
 import androidx.annotation.Keep
+import androidx.core.graphics.drawable.toDrawable
 import androidx.core.graphics.toColorInt
 import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.PageAnim
+import io.legado.app.constant.PageAnimationSpeed
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.DefaultData
 import io.legado.app.help.coroutine.Coroutine
@@ -20,6 +23,8 @@ import io.legado.app.utils.externalCache
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
+import io.legado.app.model.localBook.epubcore.template.ReaderTemplateReferenceFiles
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.getFile
 import io.legado.app.utils.getMeanColor
@@ -32,7 +37,7 @@ import io.legado.app.utils.putPrefInt
 import io.legado.app.utils.resizeAndRecycle
 import splitties.init.appCtx
 import java.io.File
-import androidx.core.graphics.drawable.toDrawable
+import java.util.UUID
 
 /**
  * 阅读界面配置
@@ -40,15 +45,55 @@ import androidx.core.graphics.drawable.toDrawable
 @Suppress("ConstPropertyName")
 @Keep
 object ReadBookConfig {
+    private const val TAG = "ReadBookConfig"
     const val configFileName = "readConfig.json"
     const val shareConfigFileName = "shareReadConfig.json"
+    const val epubConfigFileName = "epubReadConfig.json"
+    const val epubShareConfigFileName = "epubShareReadConfig.json"
+    const val defaultUnderlineStrokeWidth = 1f
+    const val minUnderlineStrokeWidth = 0.5f
+    const val maxUnderlineStrokeWidth = 4f
+    const val defaultUnderlineDashLength = 6f
+    const val minUnderlineDashLength = 2f
+    const val maxUnderlineDashLength = 30f
     val configFilePath = FileUtils.getPath(appCtx.filesDir, configFileName)
     val shareConfigFilePath = FileUtils.getPath(appCtx.filesDir, shareConfigFileName)
-    val configList: ArrayList<Config> = arrayListOf()
-    lateinit var shareConfig: Config
+    val epubConfigFilePath = FileUtils.getPath(appCtx.filesDir, epubConfigFileName)
+    val epubShareConfigFilePath = FileUtils.getPath(appCtx.filesDir, epubShareConfigFileName)
+    private val nativeConfigs = arrayListOf<Config>()
+    private val epubConfigs = arrayListOf<Config>()
+    private lateinit var nativeSharedConfig: Config
+    private lateinit var epubSharedConfig: Config
+
+    @Volatile
+    var usingEpubLayout: Boolean = false
+        private set
+
+    val configList: ArrayList<Config> get() = if (usingEpubLayout) epubConfigs else nativeConfigs
+    var shareConfig: Config
+        get() = if (usingEpubLayout) epubSharedConfig else nativeSharedConfig
+        set(value) {
+            if (usingEpubLayout) epubSharedConfig = value else nativeSharedConfig = value
+        }
+
+    fun selectLayout(epub: Boolean): Boolean {
+        if (usingEpubLayout == epub) return false
+        usingEpubLayout = epub
+        bg = null
+        isNineBgImg = false
+        return true
+    }
+
+    fun layoutPreferenceKey(key: String): String = if (usingEpubLayout) "epubLayout." + key else key
+
+    data class RepairResult(
+        val readConfigChanged: Boolean,
+        val shareConfigChanged: Boolean
+    )
     var durConfig
         get() = getConfig(styleSelect)
         set(value) {
+            value.normalizeUnderlineStyle()
             configList[styleSelect] = value
             if (shareLayout) {
                 shareConfig = value
@@ -83,12 +128,25 @@ object ReadBookConfig {
                 val json = configFile.readText()
                 configs = GSON.fromJsonArray<Config>(json).getOrThrow()
             } catch (e: Exception) {
-                AppLog.put("读取排版配置文件出错", e)
+                Log.e(TAG, "read config failed", e)
             }
         }
         (configs ?: DefaultData.readConfigs).let {
-            configList.clear()
-            configList.addAll(it)
+            nativeConfigs.clear()
+            nativeConfigs.addAll(it.map { config -> config.copy().normalizeUnderlineStyle() })
+        }
+        val epubFile = File(epubConfigFilePath)
+        val epub = runCatching {
+            GSON.fromJsonArray<Config>(epubFile.readText()).getOrThrow()
+        }.getOrNull()
+        epubConfigs.clear()
+        epubConfigs.addAll((epub ?: nativeConfigs).map { it.copy().normalizeUnderlineStyle() })
+        if (!epubFile.exists()) {
+            atomicWrite(epubFile, GSON.toJson(epubConfigs))
+            appCtx.putPrefInt(PreferKey.epubReadStyleSelect, appCtx.getPrefInt(PreferKey.readStyleSelect))
+            appCtx.putPrefBoolean(PreferKey.epubShareLayout, appCtx.getPrefBoolean(PreferKey.shareLayout))
+            appCtx.putPrefBoolean("epubLayout." + PreferKey.textFullJustify,
+                appCtx.getPrefBoolean(PreferKey.textFullJustify, true))
         }
     }
 
@@ -103,7 +161,39 @@ object ReadBookConfig {
                 e.printOnDebug()
             }
         }
-        shareConfig = c ?: configList.getOrNull(5) ?: Config()
+        nativeSharedConfig = (c ?: nativeConfigs.getOrNull(5)?.copy() ?: Config()).normalizeUnderlineStyle()
+        val epubFile = File(epubShareConfigFilePath)
+        epubSharedConfig = (runCatching {
+            GSON.fromJsonObject<Config>(epubFile.readText()).getOrThrow()
+        }.getOrNull() ?: nativeSharedConfig.copy()).normalizeUnderlineStyle()
+        if (!epubFile.exists()) atomicWrite(epubFile, GSON.toJson(epubSharedConfig))
+    }
+
+    @Synchronized
+    fun repairAndReload(): RepairResult {
+        val readRepair = repairConfigListFile(File(configFilePath))
+        nativeConfigs.clear()
+        nativeConfigs.addAll(readRepair.configs)
+
+        val shareRepair = repairShareConfigFile(File(shareConfigFilePath), nativeConfigs)
+        nativeSharedConfig = shareRepair.config
+        val epubRepair = repairConfigListFile(File(epubConfigFilePath))
+        epubConfigs.clear()
+        epubConfigs.addAll(epubRepair.configs)
+        val epubShareRepair = repairShareConfigFile(File(epubShareConfigFilePath), epubConfigs)
+        epubSharedConfig = epubShareRepair.config
+
+        listOf(PreferKey.readStyleSelect to nativeConfigs, PreferKey.epubReadStyleSelect to epubConfigs).forEach { (key, configs) ->
+            val oldIndex = appCtx.getPrefInt(key)
+            val index = oldIndex.coerceIn(0, configs.lastIndex.coerceAtLeast(0))
+            if (index != oldIndex) appCtx.putPrefInt(key, index)
+        }
+        comicStyleSelect = comicStyleSelect.coerceIn(0, nativeConfigs.lastIndex.coerceAtLeast(0))
+
+        return RepairResult(
+            readConfigChanged = readRepair.changed || epubRepair.changed,
+            shareConfigChanged = shareRepair.changed || epubShareRepair.changed
+        )
     }
 
     fun upBg(width: Int, height: Int) {
@@ -117,23 +207,73 @@ object ReadBookConfig {
     }
 
     fun save() {
-        Coroutine.async {
-            synchronized(this) {
-                GSON.toJson(configList).let {
-                    FileUtils.delete(configFilePath)
-                    FileUtils.createFileIfNotExist(configFilePath).writeText(it)
-                }
-                GSON.toJson(shareConfig).let {
-                    FileUtils.delete(shareConfigFilePath)
-                    FileUtils.createFileIfNotExist(shareConfigFilePath).writeText(it)
-                }
-            }
-        }
+        Coroutine.async { saveLayoutFiles() }
     }
+
+    @Synchronized
+    fun saveLayoutFiles() {
+        backupLayoutFiles().forEach { (name, json) -> atomicWrite(File(appCtx.filesDir, name), json) }
+    }
+
+    /** Commit the active EPUB profile before publishing its new template to the renderer. */
+    @Synchronized
+    fun saveReaderTemplateSelection(templateId: String) {
+        check(usingEpubLayout) { "页面模板仅用于 EPUB 排版配置" }
+        val shared = shareLayout
+        val current = config
+        val replacement = current.copy(readerTemplateId = templateId)
+        val file = File(if (shared) epubShareConfigFilePath else epubConfigFilePath)
+        val json = if (shared) {
+            GSON.toJson(replacement)
+        } else {
+            GSON.toJson(epubConfigs.map { if (it === current) replacement else it })
+        }
+        AtomicTextFileStore(file).writeVerified(json) { it == json }
+        current.readerTemplateId = templateId
+    }
+
+    /** Remove an ID from every profile before a template is deleted or hidden. */
+    @Synchronized
+    internal fun <T> withoutReaderTemplateReferences(ids: Set<String>, commitLibrary: () -> T): T {
+        val affected = allLayoutConfigs().filter { it.readerTemplateId.isNotEmpty() && it.readerTemplateId in ids }
+        if (affected.isEmpty()) return commitLibrary()
+        fun replacement(config: Config): Config = if (config.readerTemplateId in ids) {
+            config.copy(readerTemplateId = "")
+        } else config
+        val files = linkedMapOf<File, String>()
+        if (nativeConfigs.any { it.readerTemplateId in ids }) {
+            files[File(configFilePath)] = GSON.toJson(nativeConfigs.map(::replacement))
+        }
+        if (epubConfigs.any { it.readerTemplateId in ids }) {
+            files[File(epubConfigFilePath)] = GSON.toJson(epubConfigs.map(::replacement))
+        }
+        if (nativeSharedConfig.readerTemplateId in ids) {
+            files[File(shareConfigFilePath)] = GSON.toJson(replacement(nativeSharedConfig))
+        }
+        if (epubSharedConfig.readerTemplateId in ids) {
+            files[File(epubShareConfigFilePath)] = GSON.toJson(replacement(epubSharedConfig))
+        }
+        val result = ReaderTemplateReferenceFiles.withoutReferences(files, commitLibrary)
+        affected.forEach { it.readerTemplateId = "" }
+        return result
+    }
+
+    /** Always exports both profiles, regardless of which reader is currently visible. */
+    @Synchronized
+    fun backupLayoutFiles(): Map<String, String> = linkedMapOf(
+        configFileName to GSON.toJson(nativeConfigs),
+        shareConfigFileName to GSON.toJson(nativeSharedConfig),
+        epubConfigFileName to GSON.toJson(epubConfigs),
+        epubShareConfigFileName to GSON.toJson(epubSharedConfig)
+    )
+
+    fun allLayoutConfigs(): List<Config> = nativeConfigs + epubConfigs + nativeSharedConfig + epubSharedConfig
+
+    fun lastStyleIndex(epub: Boolean): Int = (if (epub) epubConfigs else nativeConfigs).lastIndex.coerceAtLeast(0)
 
     fun getAllPicBgStr(): ArrayList<String> {
         val list = arrayListOf<String>()
-        configList.forEach {
+        allLayoutConfigs().forEach {
             if (it.bgType == 2) {
                 list.add(it.bgStr)
             }
@@ -154,7 +294,7 @@ object ReadBookConfig {
             if (removeIndex <= readStyleSelect) {
                 readStyleSelect -= 1
             }
-            if (removeIndex <= comicStyleSelect) {
+            if (!usingEpubLayout && removeIndex <= comicStyleSelect) {
                 comicStyleSelect -= 1
             }
             return true
@@ -164,7 +304,7 @@ object ReadBookConfig {
 
     fun clearBgAndCache() {
         val bgs = hashSetOf<String>()
-        configList.forEach { config ->
+        allLayoutConfigs().forEach { config ->
             repeat(3) {
                 config.getBgPath(it)?.let { path ->
                     bgs.add(path)
@@ -184,8 +324,173 @@ object ReadBookConfig {
     private fun resetAll() {
         DefaultData.readConfigs.let {
             configList.clear()
-            configList.addAll(it)
+            configList.addAll(it.map { config -> config.copy() })
             save()
+        }
+    }
+
+    private data class ListRepair(val configs: List<Config>, val changed: Boolean)
+    private data class ConfigRepair(val config: Config, val changed: Boolean)
+
+    private fun repairConfigListFile(file: File): ListRepair {
+        val defaults = defaultConfigList()
+        val loaded = if (file.exists()) {
+            runCatching {
+                GSON.fromJsonArray<Config>(file.readText(Charsets.UTF_8)).getOrThrow()
+            }.onFailure {
+                backupCorruptFile(file)
+                Log.e(TAG, "repair read config parse failed", it)
+            }.getOrNull()
+        } else {
+            null
+        }
+        var changed = loaded == null
+        val repaired = loaded?.mapIndexed { index, config ->
+            val default = defaults.getOrNull(index) ?: Config()
+            val fixed = config.repair(default)
+            if (fixed != config) changed = true
+            fixed
+        }?.toMutableList() ?: defaults.map { it.copy() }.toMutableList()
+        if (repaired.size < defaults.size) {
+            for (index in repaired.size until defaults.size) {
+                repaired.add(defaults[index].copy())
+            }
+            changed = true
+        }
+        if (repaired.isEmpty()) {
+            repaired.addAll(defaults.ifEmpty { listOf(Config()) }.map { it.copy() })
+            changed = true
+        }
+        if (changed) {
+            atomicWrite(file, GSON.toJson(repaired))
+        }
+        return ListRepair(repaired, changed)
+    }
+
+    private fun repairShareConfigFile(file: File, configs: List<Config>): ConfigRepair {
+        val default = configs.getOrNull(5)?.copy()
+            ?: defaultConfigList().getOrNull(5)?.copy()
+            ?: Config()
+        val loaded = if (file.exists()) {
+            runCatching {
+                GSON.fromJsonObject<Config>(file.readText(Charsets.UTF_8)).getOrThrow()
+            }.onFailure {
+                backupCorruptFile(file)
+                Log.e(TAG, "repair share read config parse failed", it)
+            }.getOrNull()
+        } else {
+            null
+        }
+        val repaired = (loaded ?: default).repair(default)
+        val changed = loaded == null || repaired != loaded
+        if (changed) {
+            atomicWrite(file, GSON.toJson(repaired))
+        }
+        return ConfigRepair(repaired, changed)
+    }
+
+    private fun defaultConfigList(): List<Config> {
+        return DefaultData.readConfigs.ifEmpty { listOf(Config()) }.map { it.copy() }
+    }
+
+    private fun Config.repair(default: Config): Config = copy().apply {
+        if (name.length > 100) name = name.take(100)
+        bgAlpha = bgAlpha.coerceIn(0, 100)
+        bgType = bgType.coerceIn(0, 2)
+        bgTypeNight = bgTypeNight.coerceIn(0, 2)
+        bgTypeEInk = bgTypeEInk.coerceIn(0, 2)
+        if (bgType == 0 && !isColor(bgStr)) bgStr = default.bgStr.takeIf(::isColor) ?: "#EEEEEE"
+        if (bgTypeNight == 0 && !isColor(bgStrNight)) {
+            bgStrNight = default.bgStrNight.takeIf(::isColor) ?: "#000000"
+        }
+        if (bgTypeEInk == 0 && !isColor(bgStrEInk)) {
+            bgStrEInk = default.bgStrEInk.takeIf(::isColor) ?: "#FFFFFF"
+        }
+        repairPrivateColors(default)
+        pageAnim = pageAnim.coerceIn(PageAnim.coverPageAnim, PageAnim.linkedCoverPageAnim)
+        repairPrivatePageAnim()
+        textBold = ReaderFontWeight.normalize(textBold)
+        textSize = textSize.coerceIn(5, 80)
+        if (!letterSpacing.isFinite()) letterSpacing = default.letterSpacing.takeIf { it.isFinite() } ?: 0.1f
+        letterSpacing = letterSpacing.coerceIn(-1f, 2f)
+        lineSpacingExtra = lineSpacingExtra.coerceIn(0, 120)
+        paragraphSpacing = paragraphSpacing.coerceIn(0, 120)
+        paperInkStrength = paperInkStrength.coerceIn(0, 100)
+        titleMode = when (titleMode) {
+            0, 1, 2, AdvancedTitleConfig.TITLE_MODE_ADVANCED -> titleMode
+            else -> default.titleMode.takeIf { it in setOf(0, 1, 2, AdvancedTitleConfig.TITLE_MODE_ADVANCED) } ?: 0
+        }
+        titleSize = titleSize.coerceIn(0, 60)
+        titleTopSpacing = titleTopSpacing.coerceIn(0, 300)
+        titleBottomSpacing = titleBottomSpacing.coerceIn(0, 300)
+        underlineMode = underlineMode.coerceIn(0, 2)
+        normalizeUnderlineStyle()
+        paddingTop = paddingTop.coerceIn(0, 300)
+        paddingBottom = paddingBottom.coerceIn(0, 300)
+        paddingLeft = paddingLeft.coerceIn(0, 200)
+        paddingRight = paddingRight.coerceIn(0, 200)
+        headerPaddingTop = headerPaddingTop.coerceIn(0, 150)
+        headerPaddingBottom = headerPaddingBottom.coerceIn(0, 150)
+        headerPaddingLeft = headerPaddingLeft.coerceIn(0, 200)
+        headerPaddingRight = headerPaddingRight.coerceIn(0, 200)
+        footerPaddingTop = footerPaddingTop.coerceIn(0, 150)
+        footerPaddingBottom = footerPaddingBottom.coerceIn(0, 150)
+        footerPaddingLeft = footerPaddingLeft.coerceIn(0, 200)
+        footerPaddingRight = footerPaddingRight.coerceIn(0, 200)
+        tipHeaderLeft = normalizeTipSlot(tipHeaderLeft, default.tipHeaderLeft)
+        tipHeaderMiddle = normalizeTipSlot(tipHeaderMiddle, default.tipHeaderMiddle)
+        tipHeaderRight = normalizeTipSlot(tipHeaderRight, default.tipHeaderRight)
+        tipFooterLeft = normalizeTipSlot(tipFooterLeft, default.tipFooterLeft)
+        tipFooterMiddle = normalizeTipSlot(tipFooterMiddle, default.tipFooterMiddle)
+        tipFooterRight = normalizeTipSlot(tipFooterRight, default.tipFooterRight)
+        // These fields store Android ColorInt values, not bounded option indexes.
+        // Keep the complete ARGB int; only 0 has a semantic meaning for tipColor
+        // (follow the body text), while -1/0 are reserved meanings for the divider.
+        // Clamping here turns every normal dark color into -1/2 and makes the
+        // EPUB reader chrome appear white or otherwise incorrect after a repair.
+        headerMode = headerMode.coerceIn(
+            ReadTipConfig.HEADER_MODE_STATUS,
+            ReadTipConfig.HEADER_MODE_ADVANCED
+        )
+        footerMode = footerMode.coerceIn(
+            ReadTipConfig.FOOTER_MODE_SHOW,
+            ReadTipConfig.FOOTER_MODE_ADVANCED
+        )
+    }
+
+    private fun isColor(value: String): Boolean {
+        return runCatching { value.toColorInt() }.isSuccess
+    }
+
+    private fun normalizeTipSlot(value: Int, default: Int): Int {
+        if (value in ReadTipConfig.tipValues) return value
+        return default.takeIf { it in ReadTipConfig.tipValues } ?: ReadTipConfig.none
+    }
+
+    private fun backupCorruptFile(file: File) {
+        if (!file.exists()) return
+        runCatching {
+            file.copyTo(
+                File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"),
+                overwrite = false
+            )
+        }
+    }
+
+    private fun atomicWrite(file: File, text: String) {
+        file.parentFile?.mkdirs()
+        if (file.exists() && runCatching { file.readText(Charsets.UTF_8) == text }.getOrDefault(false)) {
+            return
+        }
+        val tmp = File(file.parentFile, ".${file.name}.${UUID.randomUUID()}.tmp")
+        tmp.writeText(text, Charsets.UTF_8)
+        if (file.exists() && !file.delete()) {
+            tmp.delete()
+            error("Unable to replace ${file.name}")
+        }
+        if (!tmp.renameTo(file)) {
+            tmp.delete()
+            error("Unable to rename ${file.name}")
         }
     }
 
@@ -202,19 +507,20 @@ object ReadBookConfig {
             appCtx.putPrefInt(PreferKey.autoReadMode, value)
         }
     var styleSelect: Int
-        get() = if (isComic) comicStyleSelect else readStyleSelect
+        get() = if (isComic && !usingEpubLayout) comicStyleSelect else readStyleSelect
         set(value) {
-            if (isComic) {
+            if (isComic && !usingEpubLayout) {
                 comicStyleSelect = value
             } else {
                 readStyleSelect = value
             }
         }
-    var readStyleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
+    var readStyleSelect: Int
+        get() = appCtx.getPrefInt(if (usingEpubLayout) PreferKey.epubReadStyleSelect else PreferKey.readStyleSelect)
         set(value) {
-            field = value
-            if (appCtx.getPrefInt(PreferKey.readStyleSelect) != value) {
-                appCtx.putPrefInt(PreferKey.readStyleSelect, value)
+            val key = if (usingEpubLayout) PreferKey.epubReadStyleSelect else PreferKey.readStyleSelect
+            if (appCtx.getPrefInt(key) != value) {
+                appCtx.putPrefInt(key, value)
             }
         }
     var comicStyleSelect = appCtx.getPrefInt(PreferKey.comicStyleSelect, readStyleSelect)
@@ -224,18 +530,19 @@ object ReadBookConfig {
                 appCtx.putPrefInt(PreferKey.comicStyleSelect, value)
             }
         }
-    var shareLayout = appCtx.getPrefBoolean(PreferKey.shareLayout)
+    var shareLayout: Boolean
+        get() = appCtx.getPrefBoolean(if (usingEpubLayout) PreferKey.epubShareLayout else PreferKey.shareLayout)
         set(value) {
-            field = value
-            if (appCtx.getPrefBoolean(PreferKey.shareLayout) != value) {
-                appCtx.putPrefBoolean(PreferKey.shareLayout, value)
+            val key = if (usingEpubLayout) PreferKey.epubShareLayout else PreferKey.shareLayout
+            if (appCtx.getPrefBoolean(key) != value) {
+                appCtx.putPrefBoolean(key, value)
             }
         }
 
     /**
      * 两端对齐
      */
-    val textFullJustify get() = appCtx.getPrefBoolean(PreferKey.textFullJustify, true)
+    val textFullJustify get() = appCtx.getPrefBoolean(layoutPreferenceKey(PreferKey.textFullJustify), true)
 
     /**
      * 底部对齐
@@ -258,6 +565,17 @@ object ReadBookConfig {
         get() = config.curPageAnim()
         set(@PageAnim.Anim value) {
             config.setCurPageAnim(value)
+        }
+
+    var pageAnimationSpeed: PageAnimationSpeed
+        get() = PageAnimationSpeed.fromPreference(
+            appCtx.getPrefInt(
+                PreferKey.pageAnimationSpeed,
+                PageAnimationSpeed.STANDARD.preferenceValue
+            )
+        )
+        set(value) {
+            appCtx.putPrefInt(PreferKey.pageAnimationSpeed, value.preferenceValue)
         }
 
     const val AUTO_READ_MODE_SCROLL = 0
@@ -353,6 +671,18 @@ object ReadBookConfig {
         get() = config.underlineMode
         set(value) {
             config.underlineMode = value
+        }
+
+    var underlineStrokeWidth: Float
+        get() = normalizeUnderlineStrokeWidth(config.underlineStrokeWidth)
+        set(value) {
+            config.underlineStrokeWidth = normalizeUnderlineStrokeWidth(value)
+        }
+
+    var underlineDashLength: Float
+        get() = normalizeUnderlineDashLength(config.underlineDashLength)
+        set(value) {
+            config.underlineDashLength = normalizeUnderlineDashLength(value)
         }
 
     var paddingBottom: Int
@@ -454,6 +784,11 @@ object ReadBookConfig {
             exportConfig.titleSize = shareConfig.titleSize
             exportConfig.titleTopSpacing = shareConfig.titleTopSpacing
             exportConfig.titleBottomSpacing = shareConfig.titleBottomSpacing
+            exportConfig.paragraphIndent = shareConfig.paragraphIndent
+            exportConfig.readerTemplateId = shareConfig.readerTemplateId
+            exportConfig.underlineMode = shareConfig.underlineMode
+            exportConfig.underlineStrokeWidth = shareConfig.normalizedUnderlineStrokeWidth()
+            exportConfig.underlineDashLength = shareConfig.normalizedUnderlineDashLength()
             exportConfig.paddingBottom = shareConfig.paddingBottom
             exportConfig.paddingLeft = shareConfig.paddingLeft
             exportConfig.paddingRight = shareConfig.paddingRight
@@ -478,6 +813,9 @@ object ReadBookConfig {
             exportConfig.headerMode = shareConfig.headerMode
             exportConfig.footerMode = shareConfig.footerMode
         }
+        if (EpubReaderTemplateStore.isRetiredBuiltIn(exportConfig.readerTemplateId)) {
+            exportConfig.readerTemplateId = ""
+        }
         return exportConfig
     }
 
@@ -499,6 +837,7 @@ object ReadBookConfig {
             if (fontFile.exists()) {
                 if (!FileUtils.exist(fontPath)) {
                     fontFile.copyTo(File(fontPath))
+                    io.legado.app.help.AppFont.invalidateFontList()
                 }
                 config.textFont = fontPath
             } else {
@@ -549,8 +888,36 @@ object ReadBookConfig {
         }
         config.curTextColor()
         config.curTextAccentColor()
-        return config
+        if (config.readerTemplateId.isNotEmpty()) {
+            val templateFile = configDir.getFile(EpubReaderTemplateStore.singleTemplateFileName)
+            if (templateFile.isFile) {
+                config.readerTemplateId = EpubReaderTemplateStore.importForLayout(
+                    templateFile.readText(Charsets.UTF_8), config.readerTemplateId
+                ).id
+            } else if (EpubReaderTemplateStore.isRetiredBuiltIn(config.readerTemplateId)) {
+                config.readerTemplateId = ""
+            } else {
+                requireNotNull(EpubReaderTemplateStore.resolve(config.readerTemplateId)) {
+                    "阅读样式缺少页面模板文件：" + config.readerTemplateId
+                }
+            }
+        }
+        return config.normalizeUnderlineStyle()
     }
+
+    fun normalizeUnderlineStrokeWidth(value: Float): Float =
+        if (value.isFinite() && value > 0f) {
+            value.coerceIn(minUnderlineStrokeWidth, maxUnderlineStrokeWidth)
+        } else {
+            defaultUnderlineStrokeWidth
+        }
+
+    fun normalizeUnderlineDashLength(value: Float): Float =
+        if (value.isFinite() && value > 0f) {
+            value.coerceIn(minUnderlineDashLength, maxUnderlineDashLength)
+        } else {
+            defaultUnderlineDashLength
+        }
 
     @Keep
     data class Config(
@@ -589,7 +956,10 @@ object ReadBookConfig {
         var titleTopSpacing: Int = 0,
         var titleBottomSpacing: Int = 0,
         var paragraphIndent: String = "　　",//段落缩进
+        var readerTemplateId: String = "",//EPUB 页面模板；空值沿用原排版
         var underlineMode: Int = 0, //下划线
+        var underlineStrokeWidth: Float = defaultUnderlineStrokeWidth,
+        var underlineDashLength: Float = defaultUnderlineDashLength,
         var paddingBottom: Int = 6,
         var paddingLeft: Int = 16,
         var paddingRight: Int = 16,
@@ -615,6 +985,44 @@ object ReadBookConfig {
         var headerMode: Int = 0,
         var footerMode: Int = 0
     ) {
+
+        fun repairPrivateColors(default: Config) {
+            fun isValidColor(value: String): Boolean {
+                return runCatching { value.toColorInt() }.isSuccess
+            }
+
+            fun repairColor(value: String, fallbackConfig: String, fallback: String): String {
+                return when {
+                    isValidColor(value) -> value
+                    isValidColor(fallbackConfig) -> fallbackConfig
+                    else -> fallback
+                }
+            }
+
+            textColor = repairColor(textColor, default.textColor, "#3E3D3B")
+            textColorNight = repairColor(textColorNight, default.textColorNight, "#ADADAD")
+            textColorEInk = repairColor(textColorEInk, default.textColorEInk, "#000000")
+            textAccentColor = repairColor(textAccentColor, default.textAccentColor, "#E53935")
+            textAccentColorNight = repairColor(textAccentColorNight, default.textAccentColorNight, "#FE4D55")
+            textAccentColorEInk = repairColor(textAccentColorEInk, default.textAccentColorEInk, "#000000")
+            initColorInt = false
+            initAccentColorInt = false
+        }
+
+        fun repairPrivatePageAnim() {
+            pageAnimEInk = pageAnimEInk.coerceIn(PageAnim.coverPageAnim, PageAnim.linkedCoverPageAnim)
+        }
+
+        fun normalizedUnderlineStrokeWidth(): Float =
+            normalizeUnderlineStrokeWidth(underlineStrokeWidth)
+
+        fun normalizedUnderlineDashLength(): Float =
+            normalizeUnderlineDashLength(underlineDashLength)
+
+        fun normalizeUnderlineStyle(): Config = apply {
+            underlineStrokeWidth = normalizedUnderlineStrokeWidth()
+            underlineDashLength = normalizedUnderlineDashLength()
+        }
 
         @Transient
         private var textColorIntEInk = -1
@@ -904,6 +1312,8 @@ object ReadBookConfig {
             "titleBottomSpacing" to titleBottomSpacing,
             "paragraphIndent" to paragraphIndent,
             "underlineMode" to underlineMode,
+            "underlineStrokeWidth" to normalizedUnderlineStrokeWidth(),
+            "underlineDashLength" to normalizedUnderlineDashLength(),
             "paddingBottom" to paddingBottom,
             "paddingLeft" to paddingLeft,
             "paddingRight" to paddingRight,

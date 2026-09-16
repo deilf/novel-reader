@@ -1,5 +1,6 @@
 package io.legado.app.help.book
 
+import io.legado.app.help.http.dns.DnsScope
 import android.graphics.BitmapFactory
 import android.os.ParcelFileDescriptor
 import androidx.documentfile.provider.DocumentFile
@@ -15,7 +16,6 @@ import io.legado.app.help.ai.AiImageGalleryManager
 import io.legado.app.help.book.library.LibraryCloudSync
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
@@ -66,12 +66,16 @@ object BookHelp {
     val cachePath = FileUtils.getPath(downloadDir, cacheFolderName)
 
     fun clearCache() {
+        io.legado.app.model.ReadBook.book?.bookUrl?.let {
+            io.legado.app.model.ReadBook.invalidateDirectTextContent(it)
+        }
         FileUtils.delete(
             FileUtils.getPath(downloadDir, cacheFolderName)
         )
     }
 
     fun clearCache(book: Book) {
+        io.legado.app.model.ReadBook.invalidateDirectTextContent(book.bookUrl)
         val filePath = FileUtils.getPath(downloadDir, cacheFolderName, book.getFolderName())
         FileUtils.delete(filePath)
     }
@@ -190,6 +194,13 @@ object BookHelp {
         content: String
     ) {
         if (content.isEmpty()) return
+        if (EpubContentCachePolicy.isFailurePayload(book.isEpub, content)) {
+            delContent(book, bookChapter)
+            AppLog.put(
+                "拒绝缓存 EPUB 错误正文: book=${book.name}, chapter=${bookChapter.index}:${bookChapter.title}"
+            )
+            return
+        }
         //保存文本
         getPrimaryContentFile(book, bookChapter).createFileIfNotExist().writeText(content)
         // 清理旧的 index 型文件，避免重复占用和命中过期缓存
@@ -270,7 +281,8 @@ object BookHelp {
                 return
             }
             val analyzeUrl = AnalyzeUrl(
-                src, source = bookSource, coroutineContext = currentCoroutineContext()
+                dnsScope = DnsScope.IMAGE,
+                mUrl = src, source = bookSource, coroutineContext = currentCoroutineContext()
             )
             val bytes = analyzeUrl.getByteArrayAwait()
             //某些图片被加密，需要进一步解密
@@ -441,37 +453,42 @@ object BookHelp {
      */
     fun getContent(book: Book, bookChapter: BookChapter): String? {
         val primaryFile = getPrimaryContentFile(book, bookChapter)
-        val file = getContentFileCandidates(book, bookChapter).firstOrNull { it.exists() }
+        val candidates = getContentFileCandidates(book, bookChapter)
+        val file = candidates.firstOrNull { it.exists() }
         if (file != null) {
             val string = file.readText()
-            if (string.isEmpty()) {
-                return null
-            }
-            if (file.absolutePath != primaryFile.absolutePath) {
-                primaryFile.parentFile?.mkdirs()
-                kotlin.runCatching {
-                    file.copyTo(primaryFile, overwrite = true)
-                    file.delete()
+            if (EpubContentCachePolicy.isFailurePayload(book.isEpub, string)) {
+                candidates.forEach { cached -> cached.delete() }
+                AppLog.put(
+                    "已删除 EPUB 错误正文缓存: book=${book.name}, " +
+                        "chapter=${bookChapter.index}:${bookChapter.title}"
+                )
+            } else {
+                if (string.isEmpty()) {
+                    return null
                 }
-            }
-            val needRefreshEpubContent = book.isEpub &&
-                AppConfig.adaptSpecialStyle &&
-                if (AppConfig.useExperimentalEpubCore) {
-                    !string.contains(EpubFile.NATIVE_CONTENT_FLAG) ||
-                        !string.contains(EpubFile.NATIVE_LAYOUT_FLAG) ||
-                        !string.contains(EpubFile.NATIVE_CONTENT_VERSION_FLAG)
-                } else {
-                    string.contains(EpubFile.NATIVE_CONTENT_FLAG) ||
-                        !string.contains(EpubFile.TEXT_CONTENT_VERSION_FLAG)
+                if (file.absolutePath != primaryFile.absolutePath) {
+                    primaryFile.parentFile?.mkdirs()
+                    kotlin.runCatching {
+                        file.copyTo(primaryFile, overwrite = true)
+                        file.delete()
+                    }
                 }
-            if (needRefreshEpubContent) {
-                val epubContent = LocalBook.getContent(book, bookChapter)
-                if (epubContent != null) {
-                    saveText(book, bookChapter, epubContent)
-                    return epubContent
+                val needRefreshEpubContent = EpubContentCachePolicy.needsRendererRefresh(
+                    isEpub = book.isEpub,
+                    adaptSpecialStyle = AppConfig.adaptSpecialStyle,
+                    useEpubCore = AppConfig.useEpubCore,
+                    content = string
+                )
+                if (needRefreshEpubContent) {
+                    val epubContent = LocalBook.getContent(book, bookChapter)
+                    if (epubContent != null) {
+                        saveText(book, bookChapter, epubContent)
+                        return epubContent
+                    }
                 }
+                return string
             }
-            return string
         }
         if (book.isLocal) {
             val string = LocalBook.getContent(book, bookChapter)
@@ -487,6 +504,7 @@ object BookHelp {
      * 删除章节内容
      */
     fun delContent(book: Book, bookChapter: BookChapter) {
+        io.legado.app.model.ReadBook.invalidateDirectTextContent(book.bookUrl)
         getContentFileCandidates(book, bookChapter).forEach {
             if (it.exists()) it.delete()
         }

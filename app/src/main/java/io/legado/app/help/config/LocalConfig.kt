@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import io.legado.app.utils.getBoolean
 import io.legado.app.utils.putBoolean
+import io.legado.app.utils.putInt
 import io.legado.app.utils.putLong
 import io.legado.app.utils.putString
 import io.legado.app.utils.remove
@@ -120,6 +121,13 @@ by appCtx.getSharedPreferences("local", Context.MODE_PRIVATE) {
         get() = getBoolean("deleteBookOriginal")
         set(value) {
             putBoolean("deleteBookOriginal", value)
+        }
+
+    /** Last interval used by the per-book scheduled update dialog. */
+    var bookAutoTaskIntervalHours: Int
+        get() = getInt("bookAutoTaskIntervalHours", 1)
+        set(value) {
+            putInt("bookAutoTaskIntervalHours", value)
         }
 
     var appCrash: Boolean

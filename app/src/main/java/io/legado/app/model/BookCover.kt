@@ -1,5 +1,6 @@
 package io.legado.app.model
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
@@ -258,6 +259,7 @@ object BookCover {
         override var jsLib: String? = null,
         override var enabledCookieJar: Boolean? = false,
     ) : BaseSource {
+        override fun getNetworkDnsScope(): DnsScope = DnsScope.IMAGE
 
         override fun getTag(): String {
             return "CoverRule"

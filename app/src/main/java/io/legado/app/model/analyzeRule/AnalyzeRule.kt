@@ -20,6 +20,7 @@ import io.legado.app.help.JsExtensions
 import io.legado.app.help.http.BackstageWebView
 import io.legado.app.help.http.CookieStore
 import io.legado.app.help.source.getShareScope
+import io.legado.app.help.http.dns.DnsScope
 import io.legado.app.model.Debug
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
@@ -867,6 +868,8 @@ class AnalyzeRule(
     override fun getSource(): BaseSource? {
         return source
     }
+
+    override fun getNetworkDnsScope(): DnsScope = source?.getNetworkDnsScope() ?: DnsScope.READING
 
     override fun getTag(): String? {
         return source?.getTag() ?: ruleName

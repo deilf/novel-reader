@@ -7,7 +7,20 @@ data class EpubPackage(
     val spine: List<EpubSpineItem>,
     val navHref: String?,
     val ncxHref: String?,
-    val coverHref: String?
+    val coverHref: String?,
+    val rendition: EpubRendition,
+    val pageProgressionDirection: String?
+) {
+    val renditionLayout: String?
+        get() = rendition.layout
+}
+
+data class EpubRendition(
+    val layout: String? = null,
+    val orientation: String = "auto",
+    val spread: String = "auto",
+    val viewportWidth: Float? = null,
+    val viewportHeight: Float? = null
 )
 
 data class EpubMetadata(
@@ -28,5 +41,7 @@ data class EpubSpineItem(
     val index: Int,
     val idRef: String,
     val href: String,
-    val linear: Boolean
+    val linear: Boolean,
+    val properties: Set<String>,
+    val rendition: EpubRendition = EpubRendition()
 )

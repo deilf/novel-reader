@@ -386,8 +386,15 @@ class RssFragment() : VMBaseFragment<RssViewModel>(R.layout.fragment_rss), MainF
             ).catch {
                 AppLog.put("订阅页面更新数据出错\n${it.localizedMessage}", it)
             }.flowOn(IO).collect {
+                val currentItems = adapter.getItems()
+                if (currentItems.size != it.size || currentItems.zip(it).any { (current, next) ->
+                        current.sourceUrl != next.sourceUrl ||
+                            current.sourceName != next.sourceName ||
+                            current.sourceIcon != next.sourceIcon
+                    }) {
+                    adapter.setItems(it)
+                }
                 binding.swipeRefreshLayout.isRefreshing = false
-                adapter.setItems(it)
                 binding.tvEmptyMsg.visibility = if (it.isEmpty()) View.VISIBLE else View.GONE
             }
         }
@@ -634,9 +641,20 @@ class RssFragment() : VMBaseFragment<RssViewModel>(R.layout.fragment_rss), MainF
                 }
                 renderWebSource(source)
             } else {
-                viewLifecycleOwner.lifecycleScope.launch {
-                    presentSource(source)
-                    binding.swipeRefreshLayout.isRefreshing = false
+                val articlesFragment = childFragmentManager.findFragmentById(
+                    R.id.rss_fragment_container
+                ) as? RssArticlesFragment
+                if (binding.rssFragmentContainer.isVisible && articlesFragment != null) {
+                    articlesFragment.refreshFromParent {
+                        if (view != null) {
+                            binding.swipeRefreshLayout.isRefreshing = false
+                        }
+                    }
+                } else {
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        presentSource(source)
+                        binding.swipeRefreshLayout.isRefreshing = false
+                    }
                 }
             }
         } ?: run {

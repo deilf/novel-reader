@@ -2,12 +2,15 @@ package io.legado.app.ui.book.read.epub
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Region
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.widget.Scroller
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -20,9 +23,6 @@ internal class EpubSimulationTurnRenderer {
 
     private var viewWidth = 1
     private var viewHeight = 1
-    private var direction = 0
-    private var startX = 0f
-    private var startY = 0f
     private var touchX = 0.1f
     private var touchY = 0.1f
     private var cornerX = 1
@@ -36,6 +36,11 @@ internal class EpubSimulationTurnRenderer {
 
     private val path0 = Path()
     private val path1 = Path()
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val bitmapSource = Rect()
+    private val bitmapDestination = RectF()
+    private val reflectionMatrix = Matrix()
+    private val reflectionValues = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     private val bezierStart1 = PointF()
     private val bezierControl1 = PointF()
     private val bezierVertex1 = PointF()
@@ -79,85 +84,44 @@ internal class EpubSimulationTurnRenderer {
     ).apply { gradientType = GradientDrawable.LINEAR_GRADIENT }
 
     fun setViewSize(width: Int, height: Int) {
+        if (viewWidth == width && viewHeight == height) return
         viewWidth = width.coerceAtLeast(1)
         viewHeight = height.coerceAtLeast(1)
         maxLength = hypot(viewWidth.toDouble(), viewHeight.toDouble()).toFloat()
     }
 
-    fun start(direction: Int, startX: Float, startY: Float) {
-        this.direction = direction
-        this.startX = startX
-        this.startY = startY
-        calcCornerXY(startX, startY)
-        when {
-            direction < 0 && startX > viewWidth / 2f -> calcCornerXY(startX, viewHeight.toFloat())
-            direction < 0 -> calcCornerXY(viewWidth - startX, viewHeight.toFloat())
-            direction > 0 && viewWidth / 2f > startX -> calcCornerXY(viewWidth - startX, startY)
-        }
-        updateTouch(startX, startY)
-    }
-
-    fun updateTouch(x: Float, y: Float) {
-        var nextY = y
-        if ((startY > viewHeight / 3f && startY < viewHeight * 2f / 3f) || direction < 0) {
-            nextY = viewHeight.toFloat()
-        }
-        if (startY > viewHeight / 3f && startY < viewHeight / 2f && direction > 0) {
-            nextY = 1f
-        }
-        setTouchPoint(x, nextY)
-    }
-
-    fun setTouchPoint(x: Float, y: Float) {
-        touchX = x.takeIf { it.isFinite() } ?: 0.1f
-        touchY = y.takeIf { it.isFinite() } ?: 0.1f
-        if (abs(touchX) < 0.1f) touchX = 0.1f
-        if (abs(touchY) < 0.1f) touchY = 0.1f
-    }
-
-    fun startCompleteAnimation(scroller: Scroller, animationSpeed: Int): Boolean {
-        if (direction == 0) return false
-        val dx = if (cornerX > 0 && direction > 0) {
-            -(viewWidth + touchX)
+    fun setGeometry(frame: EpubSimulationPageMotion.Frame, width: Int, height: Int) {
+        setViewSize(width, height)
+        cornerX = frame.cornerX.toInt()
+        cornerY = frame.cornerY.toInt()
+        isRtOrLb = (cornerX == 0 && cornerY == viewHeight) ||
+            (cornerY == 0 && cornerX == viewWidth)
+        touchX = if (abs(frame.touchX - cornerX) < 0.1f) {
+            cornerX + if (cornerX == 0) 0.1f else -0.1f
         } else {
-            viewWidth - touchX
+            frame.touchX
         }
-        val dy = if (cornerY > 0) {
-            viewHeight - touchY
-        } else {
-            1f - touchY
-        }
-        val duration = if (dx != 0f) {
-            (animationSpeed * abs(dx) / viewWidth).toInt()
-        } else {
-            (animationSpeed * abs(dy) / viewHeight).toInt()
-        }.coerceAtLeast(80)
-        scroller.startScroll(touchX.toInt(), touchY.toInt(), dx.toInt(), dy.toInt(), duration)
-        return true
+        touchY = frame.touchY.coerceIn(0.1f, viewHeight - 0.1f)
     }
 
     fun draw(
         canvas: Canvas,
-        currentBitmap: Bitmap?,
-        targetBitmap: Bitmap?,
+        foldingBitmap: Bitmap,
+        underlyingBitmap: Bitmap?,
         backgroundColor: Int
     ) {
-        if (direction == 0 || currentBitmap == null || targetBitmap == null) return
+        if (foldingBitmap.isRecycled) return
         calcPoints()
-        if (direction > 0) {
-            drawCurrentPageArea(canvas, currentBitmap)
-            drawNextPageAreaAndShadow(canvas, targetBitmap)
-            drawCurrentPageShadow(canvas)
-            drawCurrentBackArea(canvas, backgroundColor)
-        } else {
-            drawCurrentPageArea(canvas, targetBitmap)
-            drawNextPageAreaAndShadow(canvas, currentBitmap)
-            drawCurrentPageShadow(canvas)
-            drawCurrentBackArea(canvas, backgroundColor)
-        }
+        drawCurrentPageArea(canvas, foldingBitmap)
+        drawNextPageAreaAndShadow(
+            canvas,
+            underlyingBitmap?.takeUnless { it.isRecycled }
+        )
+        drawCurrentPageShadow(canvas)
+        drawCurrentBackArea(canvas, foldingBitmap, backgroundColor)
     }
 
-    private fun drawCurrentBackArea(canvas: Canvas, backgroundColor: Int) {
+    private fun drawCurrentBackArea(canvas: Canvas, bitmap: Bitmap, backgroundColor: Int) {
         val i = ((bezierStart1.x + bezierControl1.x) / 2).toInt()
         val f1 = abs(i - bezierControl1.x)
         val i1 = ((bezierStart2.y + bezierControl2.y) / 2).toInt()
@@ -190,6 +154,27 @@ internal class EpubSimulationTurnRenderer {
             canvas.clipPath(path1, Region.Op.INTERSECT)
         }
         canvas.drawColor(backgroundColor)
+        // Match the ordinary text reader: the back carries the reflected page content,
+        // including its background and chrome, instead of becoming a blank solid sheet.
+        val distance = hypot(
+            cornerX - bezierControl1.x.toDouble(),
+            bezierControl2.y - cornerY.toDouble()
+        ).toFloat()
+        if (distance.isFinite() && distance > 0f) {
+            val horizontal = (cornerX - bezierControl1.x) / distance
+            val vertical = (bezierControl2.y - cornerY) / distance
+            reflectionValues[0] = 1f - 2f * vertical * vertical
+            reflectionValues[1] = 2f * horizontal * vertical
+            reflectionValues[3] = reflectionValues[1]
+            reflectionValues[4] = 1f - 2f * horizontal * horizontal
+            reflectionMatrix.setValues(reflectionValues)
+            reflectionMatrix.preTranslate(-bezierControl1.x, -bezierControl1.y)
+            reflectionMatrix.postTranslate(bezierControl1.x, bezierControl1.y)
+            val backSaveCount = canvas.save()
+            canvas.concat(reflectionMatrix)
+            drawPageBitmap(canvas, bitmap)
+            canvas.restoreToCount(backSaveCount)
+        }
         canvas.rotate(degrees, bezierStart1.x, bezierStart1.y)
         folderShadowDrawable.setBounds(
             left,
@@ -300,7 +285,7 @@ internal class EpubSimulationTurnRenderer {
         canvas.restoreToCount(saveCount2)
     }
 
-    private fun drawNextPageAreaAndShadow(canvas: Canvas, bitmap: Bitmap) {
+    private fun drawNextPageAreaAndShadow(canvas: Canvas, bitmap: Bitmap?) {
         path1.reset()
         path1.moveTo(bezierStart1.x, bezierStart1.y)
         path1.lineTo(bezierVertex1.x, bezierVertex1.y)
@@ -333,7 +318,7 @@ internal class EpubSimulationTurnRenderer {
         } else {
             canvas.clipPath(path1, Region.Op.INTERSECT)
         }
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        bitmap?.let { drawPageBitmap(canvas, it) }
         canvas.rotate(degrees, bezierStart1.x, bezierStart1.y)
         backShadowDrawable.setBounds(
             leftX,
@@ -345,7 +330,7 @@ internal class EpubSimulationTurnRenderer {
         canvas.restoreToCount(saveCount)
     }
 
-    private fun drawCurrentPageArea(canvas: Canvas, bitmap: Bitmap) {
+    private fun drawCurrentPageArea(canvas: Canvas, bitmap: Bitmap?) {
         path0.reset()
         path0.moveTo(bezierStart1.x, bezierStart1.y)
         path0.quadTo(bezierControl1.x, bezierControl1.y, bezierEnd1.x, bezierEnd1.y)
@@ -360,15 +345,14 @@ internal class EpubSimulationTurnRenderer {
         } else {
             canvas.clipPath(path0, Region.Op.XOR)
         }
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        bitmap?.let { drawPageBitmap(canvas, it) }
         canvas.restoreToCount(saveCount)
     }
 
-    private fun calcCornerXY(x: Float, y: Float) {
-        cornerX = if (x <= viewWidth / 2f) 0 else viewWidth
-        cornerY = if (y <= viewHeight / 2f) 0 else viewHeight
-        isRtOrLb = (cornerX == 0 && cornerY == viewHeight) ||
-            (cornerY == 0 && cornerX == viewWidth)
+    private fun drawPageBitmap(canvas: Canvas, bitmap: Bitmap) {
+        bitmapSource.set(0, 0, bitmap.width, bitmap.height)
+        bitmapDestination.set(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+        canvas.drawBitmap(bitmap, bitmapSource, bitmapDestination, bitmapPaint)
     }
 
     private fun calcPoints() {
@@ -419,20 +403,29 @@ internal class EpubSimulationTurnRenderer {
         bezierStart2.x = cornerX.toFloat()
         bezierStart2.y = bezierControl2.y - (cornerY - bezierControl2.y) / 2
         touchToCornerDis = hypot((touchX - cornerX).toDouble(), (touchY - cornerY).toDouble()).toFloat()
-        bezierEnd1.set(getCross(PointF(touchX, touchY), bezierControl1, bezierStart1, bezierStart2))
-        bezierEnd2.set(getCross(PointF(touchX, touchY), bezierControl2, bezierStart1, bezierStart2))
+        getCross(bezierEnd1, bezierControl1, bezierStart1, bezierStart2)
+        getCross(bezierEnd2, bezierControl2, bezierStart1, bezierStart2)
         bezierVertex1.x = (bezierStart1.x + 2 * bezierControl1.x + bezierEnd1.x) / 4
         bezierVertex1.y = (2 * bezierControl1.y + bezierStart1.y + bezierEnd1.y) / 4
         bezierVertex2.x = (bezierStart2.x + 2 * bezierControl2.x + bezierEnd2.x) / 4
         bezierVertex2.y = (2 * bezierControl2.y + bezierStart2.y + bezierEnd2.y) / 4
     }
 
-    private fun getCross(p1: PointF, p2: PointF, p3: PointF, p4: PointF): PointF {
-        val a1 = (p2.y - p1.y) / (p2.x - p1.x)
-        val b1 = (p1.x * p2.y - p2.x * p1.y) / (p1.x - p2.x)
-        val a2 = (p4.y - p3.y) / (p4.x - p3.x)
-        val b2 = (p3.x * p4.y - p4.x * p3.y) / (p3.x - p4.x)
-        val x = (b2 - b1) / (a1 - a2)
-        return PointF(x, a1 * x + b1)
+    private fun getCross(out: PointF, p2: PointF, p3: PointF, p4: PointF) {
+        // Determinants also handle vertical lines. Reuse the output points on every
+        // frame instead of allocating PointFs in the finger-movement draw path.
+        val dx1 = p2.x.toDouble() - touchX
+        val dy1 = p2.y.toDouble() - touchY
+        val dx2 = p4.x.toDouble() - p3.x
+        val dy2 = p4.y.toDouble() - p3.y
+        val determinant = dx1 * dy2 - dy1 * dx2
+        if (abs(determinant) < 1e-8) {
+            out.set(touchX, touchY)
+            return
+        }
+        val fraction = ((p3.x - touchX) * dy2 - (p3.y - touchY) * dx2) / determinant
+        val x = (touchX + fraction * dx1).toFloat()
+        val y = (touchY + fraction * dy1).toFloat()
+        if (x.isFinite() && y.isFinite()) out.set(x, y) else out.set(touchX, touchY)
     }
 }

@@ -1,5 +1,6 @@
 package io.legado.app.ui.book.cache
 
+import io.legado.app.help.http.dns.DnsScope
 import android.app.Application
 import androidx.annotation.StringRes
 import androidx.lifecycle.MutableLiveData
@@ -1038,7 +1039,7 @@ class CacheManageViewModel(application: Application) : BaseViewModel(application
                     return ExoPlayerHelper.MediaRequest(content)
                 }
                 return AnalyzeUrl(
-                    content,
+                    content, dnsScope = DnsScope.MEDIA,
                     source = source,
                     ruleData = book,
                     chapter = chapter,

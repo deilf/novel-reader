@@ -12,7 +12,7 @@ import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.ReplaceAnalyzer
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.model.RuleUpdate
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isJsonArray

@@ -7,7 +7,7 @@ import io.legado.app.constant.AppConst
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.http.decompressed
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.help.http.text
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.externalCache

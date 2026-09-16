@@ -2,354 +2,541 @@ package io.legado.app.model.localBook.epubcore.facade
 
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.model.localBook.epubcore.EpubRegex
 import io.legado.app.model.localBook.epubcore.archive.EpubArchive
+import io.legado.app.model.localBook.epubcore.archive.EpubArchiveLeaseGate
 import io.legado.app.model.localBook.epubcore.archive.EpubPath
+import io.legado.app.model.localBook.epubcore.archive.AndroidZipEpubArchive
 import io.legado.app.model.localBook.epubcore.archive.ZipEpubArchive
-import io.legado.app.model.localBook.epubcore.cache.EpubCoreMemoryCache
 import io.legado.app.model.localBook.epubcore.cache.EpubCoreDiskCache
-import io.legado.app.model.localBook.epubcore.font.EpubFontCatalog
-import io.legado.app.model.localBook.epubcore.font.EpubTypefaceResolver
-import io.legado.app.model.localBook.epubcore.image.EpubImageResolver
+import io.legado.app.model.localBook.epubcore.font.EpubFontDeobfuscatingArchive
 import io.legado.app.model.localBook.epubcore.layout.EpubCoreLayoutConfig
-import io.legado.app.model.localBook.epubcore.layout.EpubCorePage
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectChapter
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectContentClassifier
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectDocumentBuilder
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectDiskResourceCache
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectFragmentBoundary
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectFragmentIndex
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectResource
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectResourceCache
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectResourceFactory
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectRangePolicy
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectSourceCacheKey
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectLinkTarget
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectMediaDocument
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectParsedSource
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectPublisherCss
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectSession
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectTextCache
 import io.legado.app.model.localBook.epubcore.pkg.EpubPackage
 import io.legado.app.model.localBook.epubcore.pkg.EpubPackageParser
 import io.legado.app.model.localBook.epubcore.toc.EpubTocParser
 import io.legado.app.model.localBook.epubcore.toc.TocItem
-import io.legado.app.model.localBook.epubcore.web.EpubWebLayoutAdapter
-import io.legado.app.model.localBook.epubcore.web.EpubWebLayoutJsonParser
-import io.legado.app.model.localBook.epubcore.web.EpubWebLayoutRequest
-import io.legado.app.model.localBook.epubcore.web.EpubWebLayoutSession
-import io.legado.app.model.localBook.epubcore.web.EpubWebSelectionAction
-import io.legado.app.model.localBook.epubcore.web.EpubWebSelectionLayerSession
-import io.legado.app.model.localBook.epubcore.web.EpubWebSelectionPageContext
-import io.legado.app.model.localBook.epubcore.web.EpubWebSelectionPayload
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
-import android.os.SystemClock
+import io.legado.app.utils.decodeBase64DataUrlBytes
+import org.jsoup.Jsoup
 import splitties.init.appCtx
 import java.io.Closeable
 import java.io.File
+import java.util.LinkedHashSet
+import java.util.zip.ZipException
+import android.net.Uri
 
 class EpubCoreFacade private constructor(
-    private val archive: EpubArchive,
+    private val archive: EpubArchiveLeaseGate,
     private val bookUrl: String,
     private val bookSignature: String,
     private val bookCacheDir: File,
     private val pkg: EpubPackage,
-    private val toc: List<TocItem>,
-    private val cache: EpubCoreMemoryCache = EpubCoreMemoryCache()
+    private val toc: List<TocItem>
 ) : Closeable {
 
-    private val imageResolver = EpubImageResolver(archive)
-    private val webLayoutAdapter = EpubWebLayoutAdapter()
-    private var selectionLayerSession: EpubWebSelectionLayerSession? = null
-    private val webLayoutSessionLock = Any()
-    private var foregroundWebLayoutSession: EpubWebLayoutSession? = null
-    private val backgroundWebLayoutSessions = mutableMapOf<Int, EpubWebLayoutSession>()
-    private var typefaceResolver: EpubTypefaceResolver? = null
-    private val chapters: List<BookChapter> by lazy { buildChapters() }
-
-    fun book(): EpubCoreBook {
-        return EpubCoreBook(
-            bookUrl = bookUrl,
-            metadata = pkg.metadata,
-            chapters = chapters(),
-            coverHref = pkg.coverHref
+    private val directResourceCache = EpubDirectResourceCache()
+    private val directDiskResourceCache = EpubDirectDiskResourceCache(
+        File(
+            bookCacheDir,
+            "epub_core/direct/${MD5Utils.md5Encode16(bookSignature)}"
         )
+    )
+    private val chapters: List<BookChapter> by lazy { buildChapters() }
+    private val directSpineByHref by lazy {
+        pkg.spine.groupBy { EpubPath.stripFragment(it.href) }
+    }
+    private val directManifestByHref by lazy {
+        pkg.manifest.values.groupBy { EpubPath.stripFragment(it.href) }
+    }
+    private val directChaptersByHref by lazy {
+        val result = LinkedHashMap<String, MutableList<BookChapter>>()
+        chapters.filterNot { it.url.startsWith("skip:") }.forEach { chapter ->
+            (listOf(chapter.url) + continuationHrefs(chapter)).forEach { href ->
+                val path = EpubPath.stripFragment(href)
+                if (path.isNotBlank()) result.getOrPut(path) { arrayListOf() }.add(chapter)
+            }
+        }
+        result.mapValues { (_, candidates) -> candidates.distinctBy(BookChapter::index) }
+    }
+    private val directResourceHost = EpubDirectSession.HOST
+    private val directSourceCache = EpubDirectTextCache(
+        maxEntries = DIRECT_SOURCE_CACHE_ENTRIES,
+        maxEntryChars = DIRECT_SOURCE_CACHE_MAX_CHARS,
+        maxTotalChars = DIRECT_SOURCE_CACHE_TOTAL_CHARS
+    )
+    private val directFragmentIndexes = object : LinkedHashMap<String, EpubDirectFragmentIndex>(
+        DIRECT_FRAGMENT_INDEX_ENTRIES,
+        0.75f,
+        true
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, EpubDirectFragmentIndex>?
+        ): Boolean = size > DIRECT_FRAGMENT_INDEX_ENTRIES
     }
 
     fun chapters(): List<BookChapter> = chapters
 
-    suspend fun paginate(
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig,
-        backgroundSlot: Int? = null
-    ): List<EpubCorePage> {
-        val chapter = chapters.getOrNull(chapterIndex) ?: error("Chapter index out of range: $chapterIndex")
-        return paginateCanonical(chapter, config, backgroundSlot)
+    fun resolveReadableChapterIndex(index: Int, preferredDirection: Int = 1): Int? {
+        return EpubReadableChapterPolicy.resolve(chapters, index, preferredDirection)
     }
 
-    suspend fun paginate(
-        chapter: BookChapter,
-        config: EpubCoreLayoutConfig,
-        backgroundSlot: Int? = null
-    ): List<EpubCorePage> {
-        val canonicalChapter = chapters.getOrNull(chapter.index)?.takeIf {
-            it.bookUrl == bookUrl && !it.url.startsWith("skip:")
-        } ?: chapter
-        return paginateCanonical(canonicalChapter, config, backgroundSlot)
+    fun adjacentReadableChapterIndex(index: Int, direction: Int): Int? {
+        return EpubReadableChapterPolicy.adjacent(chapters, index, direction)
     }
 
-    fun peekPages(chapterIndex: Int, config: EpubCoreLayoutConfig): List<EpubCorePage>? {
-        val chapter = chapters.getOrNull(chapterIndex) ?: return null
-        return peekCanonicalPages(chapter, config)
+    fun adjacentLogicalChapterIndex(index: Int, direction: Int): Int? {
+        return EpubReadableChapterPolicy.adjacentLogical(chapters, index, direction)
     }
 
-    fun peekPages(chapter: BookChapter, config: EpubCoreLayoutConfig): List<EpubCorePage>? {
-        val canonicalChapter = chapters.getOrNull(chapter.index)?.takeIf {
-            it.bookUrl == bookUrl && !it.url.startsWith("skip:")
-        } ?: chapter
-        return peekCanonicalPages(canonicalChapter, config)
-    }
+    fun directResourceHost(): String = directResourceHost
 
-    private fun peekCanonicalPages(
-        chapter: BookChapter,
-        config: EpubCoreLayoutConfig
-    ): List<EpubCorePage>? {
-        val resolvedChapter = resolveChapter(chapter)
-        val key = pageCacheKey(resolvedChapter, config)
-        cache.getPages(key)?.let { return it }
-        EpubCoreDiskCache.readLayoutRaw(bookCacheDir, bookSignature, key)?.let { raw ->
-            EpubWebLayoutJsonParser.parseJson(raw)?.let { document ->
-                val pages = webLayoutAdapter.toPages(document)
-                if (pages.isNotEmpty()) {
-                    cache.putPages(key, pages)
-                    AppLog.putDebug(
-                        "EPUB Web layout peek disk hit: chapter=${chapter.index}, href=${EpubPath.stripFragment(resolvedChapter.url)}, pages=${pages.size}"
-                    )
-                    return pages
-                }
+    /**
+     * Resolve the package-declared cover through the Direct archive.  Keeping
+     * this lookup here makes the cover and reader use the same path/case and
+     * duplicate-entry handling.  A legacy guide may point at an XHTML/SVG
+     * cover document, so follow explicit image references in that document.
+     */
+    fun coverResource(): EpubCoreCoverResource? {
+        val candidates = LinkedHashSet<String>()
+        fun addCandidate(raw: String?) {
+            val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            if (value.startsWith("data:", true)) {
+                candidates += value
+                return
             }
+            if (value.startsWith("//") || COVER_SCHEME.containsMatchIn(value)) return
+            val path = canonicalArchivePath(value)
+            if (path.isNotBlank()) candidates += path
+        }
+
+        addCandidate(pkg.coverHref)
+        pkg.manifest.values
+            .filter { "cover-image" in it.properties }
+            .forEach { addCandidate(it.href) }
+        // Keep a conservative fallback for packages that omit all formal
+        // metadata. Only resources carrying an unambiguous cover hint qualify.
+        pkg.manifest.values
+            .filter { COVER_HINT.containsMatchIn(it.id) || COVER_HINT.containsMatchIn(it.href) }
+            .forEach { addCandidate(it.href) }
+
+        candidates.forEach { candidate ->
+            coverResourceAt(candidate, linkedSetOf(), depth = 0)?.let { return it }
         }
         return null
     }
 
-    private suspend fun paginateCanonical(
-        chapter: BookChapter,
-        config: EpubCoreLayoutConfig,
-        backgroundSlot: Int? = null
-    ): List<EpubCorePage> {
-        val resolvedChapter = resolveChapter(chapter)
-        val href = EpubPath.stripFragment(resolvedChapter.url)
-        val paint = config.textPaint
-        val key = pageCacheKey(resolvedChapter, config)
-        cache.getPages(key)?.let {
-            AppLog.putDebug("EPUB Web layout cache hit: chapter=${chapter.index}, href=$href, pages=${it.size}")
-            return it
+    private fun coverResourceAt(
+        path: String,
+        visited: MutableSet<String>,
+        depth: Int
+    ): EpubCoreCoverResource? {
+        if (depth > COVER_REFERENCE_DEPTH || !visited.add(path)) return null
+        if (path.startsWith("data:", true)) {
+            val bytes = path.decodeBase64DataUrlBytes(MAX_COVER_RESOURCE_BYTES) ?: return null
+            return EpubCoreCoverResource(
+                path = path,
+                mediaType = path.substring(5)
+                    .substringBefore(',')
+                    .substringBefore(';')
+                    .trim()
+                    .takeIf { it.isNotEmpty() },
+                bytes = bytes
+            )
         }
-        EpubCoreDiskCache.readLayoutRaw(bookCacheDir, bookSignature, key)
-            ?.let { raw ->
-                runCatching {
-                    val document = EpubWebLayoutJsonParser.parseJson(raw)
-                    document?.let {
-                        val pages = webLayoutAdapter.toPages(it)
-                        if (pages.isNotEmpty()) {
-                            cache.putPages(key, pages)
-                            AppLog.putDebug("EPUB Web layout disk hit: chapter=${chapter.index}, href=$href, pages=${pages.size}")
-                            return pages
-                        }
+        if (path.startsWith("//") || COVER_SCHEME.containsMatchIn(path)) return null
+        val canonicalPath = canonicalArchivePath(path)
+        if (canonicalPath.isBlank()) return null
+        val manifestItem = directManifestByHref[canonicalPath]?.firstOrNull()
+        val mediaType = manifestItem?.mediaType
+            ?.substringBefore(';')
+            ?.trim()
+            ?.lowercase()
+        val extension = canonicalPath.substringAfterLast('.', "").lowercase()
+        val isSvg = mediaType.equals("image/svg+xml", true) || extension == "svg" || extension == "svgz"
+        val isImage = mediaType?.startsWith("image/") == true || extension in COVER_IMAGE_EXTENSIONS
+        val bytes = readCoverBytes(canonicalPath, if (isImage) MAX_COVER_RESOURCE_BYTES else MAX_COVER_DOCUMENT_BYTES)
+            ?: return null
+        val resource = EpubCoreCoverResource(canonicalPath, mediaType, bytes)
+
+        // Raster images are already terminal resources. SVG and XHTML cover
+        // documents may wrap the actual artwork in a local image reference.
+        // Follow those references first so external SVG links do not render as
+        // a blank bitmap on the bookshelf.
+        if (isSvg || !isImage || looksLikeSvg(bytes)) {
+            val source = bytes.toString(Charsets.UTF_8)
+            extractCoverReferences(source).forEach { raw ->
+                val resolved = resolveCoverReference(canonicalPath, raw) ?: return@forEach
+                coverResourceAt(resolved, visited, depth + 1)?.let { return it }
+            }
+        }
+        return resource.takeIf { isImage || looksLikeImage(bytes) }
+    }
+
+    private fun readCoverBytes(path: String, maxBytes: Long): ByteArray? {
+        val size = archive.entrySize(path)
+        if (size != null && size >= 0L && size > maxBytes) return null
+        return runCatching { archive.readBytes(path, maxBytes) }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun resolveCoverReference(basePath: String, rawReference: String): String? {
+        val value = rawReference.trim().trim('"', '\'')
+        if (value.isBlank() || value.startsWith("//") || COVER_SCHEME.containsMatchIn(value)) {
+            return value.takeIf { it.startsWith("data:", true) }
+        }
+        return if (value.startsWith("data:", true)) {
+            value
+        } else {
+            canonicalArchivePath(EpubPath.resolve(basePath, value))
+        }
+    }
+
+    private fun extractCoverReferences(source: String): List<String> {
+        val references = LinkedHashSet<String>()
+        fun add(value: String?) {
+            value?.trim()?.takeIf { it.isNotEmpty() }?.let { references += it }
+        }
+        fun addSrcSet(value: String?) {
+            value.orEmpty().split(',').forEach { candidate ->
+                add(candidate.trim().split(Regex("\\s+"), limit = 2).firstOrNull())
+            }
+        }
+        fun addElementAttributes(element: org.jsoup.nodes.Element) {
+            add(element.attr("src"))
+            add(element.attr("href"))
+            add(element.attr("xlink:href"))
+            add(element.attr("data"))
+            addSrcSet(element.attr("srcset"))
+        }
+
+        val document = runCatching { Jsoup.parse(source) }.getOrNull()
+        if (document != null) {
+            listOf("img", "image", "use", "source", "object").forEach { tag ->
+                document.getElementsByTag(tag).forEach(::addElementAttributes)
+            }
+            document.select("link[href]").forEach { link ->
+                val rel = link.attr("rel").lowercase()
+                if (rel.isBlank() || rel.split(Regex("\\s+")).contains("stylesheet")) {
+                    add(link.attr("href"))
+                }
+            }
+            document.select("[style]").forEach { element ->
+                addCssReferences(element.attr("style"), ::add)
+            }
+            document.getElementsByTag("style").forEach { style ->
+                addCssReferences(style.data().ifBlank { style.text() }, ::add)
+            }
+        }
+        // This also covers a standalone CSS resource and malformed markup
+        // where Jsoup cannot expose the style element reliably.
+        addCssReferences(source, ::add)
+        return references.toList()
+    }
+
+    private fun addCssReferences(source: String, add: (String?) -> Unit) {
+        COVER_CSS_URL.findAll(source).forEach { match ->
+            add(match.groups[1]?.value ?: match.groups[2]?.value ?: match.groups[3]?.value)
+        }
+    }
+
+    private fun looksLikeImage(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        return (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()) ||
+            (bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) ||
+            (bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte()) ||
+            (bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()) ||
+            bytes.toString(Charsets.UTF_8).trimStart().startsWith("<svg", true)
+    }
+
+    private fun looksLikeSvg(bytes: ByteArray): Boolean {
+        return bytes.toString(Charsets.UTF_8).trimStart().let {
+            it.startsWith("<?xml", true) && it.contains("<svg", true) ||
+                it.startsWith("<svg", true)
+        }
+    }
+
+    fun prepareDirectChapter(
+        chapterIndex: Int,
+        config: EpubCoreLayoutConfig
+    ): EpubDirectChapter {
+        val chapter = chapters.getOrNull(chapterIndex) ?: error("Chapter index out of range: $chapterIndex")
+        return prepareDirectChapter(chapter, config)
+    }
+
+    fun prepareDirectChapter(
+        chapter: BookChapter,
+        config: EpubCoreLayoutConfig
+    ): EpubDirectChapter {
+        val canonical = canonicalChapter(chapter)
+            ?: error("Chapter cannot be resolved: index=${chapter.index}, url=${chapter.url}")
+        val resolved = resolveChapter(canonical)
+        val href = canonicalArchivePath(resolved.url)
+        val spineItem = directSpineByHref[href]?.firstOrNull()
+        val manifestItem = pkg.manifest[spineItem?.idRef]
+        val requestedHref = canonicalArchivePath(chapter.url)
+        val requestedFragment = EpubChapterIdentityPolicy.fragment(chapter)
+        // Resolve the logical window before parsing/classifying the document. A
+        // shared XHTML resource can contain hundreds of TOC fragments; feeding
+        // the complete resource to WebView for every fragment is both wasteful
+        // and a common cause of slow opens and unstable pagination.
+        val startFragmentId = EpubDirectChapterStartFragmentPolicy.resolve(
+            requestedUrl = chapter.url,
+            resolvedUrl = resolved.url,
+            requestedHref = requestedHref,
+            resolvedHref = href,
+            requestedFragment = requestedFragment,
+            normalizedStartFragmentId = resolved.startFragmentId
+        )
+        val endFragmentId = resolved.endFragmentId
+        val sourceHtml = preparedDirectChapterHtml(
+            chapter = resolved,
+            href = href,
+            mediaType = manifestItem?.mediaType,
+            startFragmentId = startFragmentId,
+            endFragmentId = endFragmentId
+        )
+        val parsedSource = EpubDirectParsedSource(sourceHtml)
+        val publisherCss = parsedSource.document()?.let { document ->
+            EpubDirectPublisherCss.collectForClassification(
+                document = document,
+                chapterHref = href,
+                resourceHost = directResourceHost,
+                load = ::loadDirectStylesheet
+            )
+        }.orEmpty()
+        val rendition = spineItem?.rendition ?: pkg.rendition
+        val profile = EpubDirectContentClassifier.analyze(
+            renditionLayout = rendition.layout,
+            spineProperties = spineItem?.properties.orEmpty(),
+            manifestProperties = manifestItem?.properties.orEmpty(),
+            mediaType = manifestItem?.mediaType,
+            parsedSource = parsedSource,
+            packageViewportWidth = rendition.viewportWidth,
+            packageViewportHeight = rendition.viewportHeight,
+            publisherCss = publisherCss
+        )
+        return EpubDirectDocumentBuilder.build(
+            // DirectChapter.chapterIndex is navigation identity, not the internal content
+            // owner selected while resolving a shared XHTML/fragment window.
+            chapterIndex = chapter.index,
+            href = href,
+            title = chapter.title.ifBlank { resolved.title },
+            parsedSource = parsedSource,
+            config = config,
+            density = appCtx.resources.displayMetrics.density,
+            startFragmentId = startFragmentId,
+            endFragmentId = resolved.endFragmentId,
+            layoutMode = profile.layoutMode,
+            publisherViewportWidth = profile.viewportWidth,
+            publisherViewportHeight = profile.viewportHeight,
+            publisherOrientation = rendition.orientation,
+            publisherSpread = rendition.spread,
+            publisherFullscreen = spineItem?.properties.orEmpty().any {
+                it.lowercase() in DIRECT_FULLSCREEN_PROPERTIES
+            },
+            fullPageArtwork = profile.fullPageArtwork,
+            implicitSinglePage = profile.implicitSinglePage,
+            duokanGallery = profile.duokanGallery,
+            scripted = profile.scripted,
+            publisherPageBackground = profile.publisherPageBackground,
+            resourceHost = directResourceHost,
+            pageProgressionDirection = pkg.pageProgressionDirection
+        )
+    }
+
+    private fun readDirectChapterHtml(chapter: BookChapter, href: String, mediaType: String?): String {
+        return EpubDirectMediaDocument.read(href, chapter.title, mediaType) {
+            readChapterHtml(chapter, href)
+        }
+    }
+
+    private fun preparedDirectChapterHtml(
+        chapter: BookChapter,
+        href: String,
+        mediaType: String?,
+        startFragmentId: String? = null,
+        endFragmentId: String? = null
+    ): String {
+        val continuationHrefs = continuationHrefs(chapter)
+        val key = EpubDirectSourceCacheKey.create(
+            href = href,
+            mediaType = mediaType,
+            title = chapter.title,
+            continuationHrefs = continuationHrefs
+        )
+        val prepared = directSourceCache[key] ?: run {
+            val source = readDirectChapterHtml(chapter, href, mediaType)
+            val inline = if (continuationHrefs.isEmpty()) {
+                source
+            } else {
+                EpubDirectPublisherCss.inline(
+                    sourceHtml = source,
+                    chapterHref = href,
+                    resourceHost = directResourceHost,
+                    load = ::loadDirectStylesheet
+                )
+            }
+            directSourceCache.put(key, inline)
+            inline
+        }
+        return EpubDirectFragmentWindowPolicy.apply(
+            sourceHtml = prepared,
+            startFragmentId = startFragmentId,
+            endFragmentId = endFragmentId
+        ).html
+    }
+
+    private fun loadDirectStylesheet(path: String, maxBytes: Long): ByteArray? {
+        val canonicalPath = canonicalArchivePath(path)
+        val size = archive.entrySize(canonicalPath)
+        if (size == null || size < 0L || size > maxBytes) return null
+        return runCatching {
+            directResourceCache.getOrLoad(canonicalPath, size) {
+                archive.readBytes(canonicalPath, maxBytes)
+            }
+        }.getOrNull()
+    }
+
+    fun openDirectResource(path: String, rangeHeader: String?): EpubDirectResource? {
+        return openDirectResource(path, rangeHeader, withBody = true)
+    }
+
+    fun openDirectResourceHead(path: String, rangeHeader: String?): EpubDirectResource? {
+        return openDirectResource(path, rangeHeader, withBody = false)
+    }
+
+    private fun openDirectResource(
+        path: String,
+        rangeHeader: String?,
+        withBody: Boolean
+    ): EpubDirectResource? {
+        val cleanPath = canonicalArchivePath(path)
+        val declaredType = directManifestByHref[cleanPath]?.firstOrNull()?.mediaType
+        val size = archive.entrySize(cleanPath)
+        val cachedBytes = if (withBody) {
+            directResourceCache.getOrLoad(cleanPath, size) {
+                archive.readBytes(cleanPath, DIRECT_RESOURCE_CACHE_ENTRY_BYTES)
+            }
+        } else {
+            null
+        }
+        val cachedFile = if (withBody && cachedBytes == null && !rangeHeader.isNullOrBlank()) {
+            directDiskResourceCache.get(cleanPath, size).also { file ->
+                if (file == null && EpubDirectRangePolicy.shouldPrepareDiskCache(rangeHeader, size)) {
+                    directDiskResourceCache.prepare(cleanPath, size) {
+                        archive.openStream(cleanPath)
                     }
                 }
             }
-        val startedAt = SystemClock.elapsedRealtime()
-        val html = readChapterHtml(resolvedChapter, href)
-        val readAt = SystemClock.elapsedRealtime()
-        val document = getWebLayoutSession(backgroundSlot).layout(
-            buildWebLayoutRequest(resolvedChapter, config, html)
-        ) ?: error("EPUB Web layout failed")
-        val layoutAt = SystemClock.elapsedRealtime()
-        val pages = webLayoutAdapter.toPages(document).takeIf { it.isNotEmpty() }
-            ?: error("EPUB Web layout returned empty page")
-        val adaptedAt = SystemClock.elapsedRealtime()
-        AppLog.putDebug(
-            "EPUB Web layout summary: chapter=${chapter.index}:${chapter.title}, " +
-                    "href=$href, pages=${pages.size}, fragments=${pages.sumOf { it.fragments.size }}, " +
-                    "read=${readAt - startedAt}ms, web=${layoutAt - readAt}ms, adapt=${adaptedAt - layoutAt}ms"
-        )
-        cache.putPages(key, pages)
-        EpubCoreDiskCache.writeLayoutRaw(bookCacheDir, bookSignature, key, io.legado.app.utils.GSON.toJson(document))
-        return pages
-    }
-
-    private fun buildWebLayoutRequest(
-        chapter: BookChapter,
-        config: EpubCoreLayoutConfig,
-        html: String = readChapterHtml(chapter, EpubPath.stripFragment(chapter.url))
-    ): EpubWebLayoutRequest {
-        val href = EpubPath.stripFragment(chapter.url)
-        val paint = config.textPaint
-        val lineHeight = (paint.textSize * config.lineSpacingMultiplier + config.lineSpacingExtraPx)
-            .coerceAtLeast(paint.textSize)
-        return EpubWebLayoutRequest(
-            chapterIndex = chapter.index,
-            chapterHref = href,
-            title = chapter.title,
-            html = html,
-            startFragmentId = chapter.startFragmentId,
-            endFragmentId = chapter.endFragmentId,
-            viewportWidthPx = config.pageWidthPx,
-            viewportHeightPx = config.pageHeightPx,
-            fontSizePx = paint.textSize,
-            textColor = paint.color,
-            lineHeightPx = lineHeight,
-            readerPaddingLeftPx = config.readerPaddingLeftPx,
-            readerPaddingTopPx = config.readerPaddingTopPx,
-            readerPaddingRightPx = config.readerPaddingRightPx,
-            readerPaddingBottomPx = config.readerPaddingBottomPx,
-            readerFontFamily = config.readerFontFamily,
-            readerFontUrl = config.readerFontUrl,
-            readerFontPath = config.readerFontPath,
-            letterSpacingEm = paint.letterSpacing,
-            textFullJustify = config.textFullJustify
-        )
-    }
-
-    private fun pageCacheKey(chapter: BookChapter, config: EpubCoreLayoutConfig): String {
-        val href = EpubPath.stripFragment(chapter.url)
-        val paint = config.textPaint
-        return buildString {
-            append(href)
-            append('|').append(chapter.startFragmentId.orEmpty())
-            append('|').append(chapter.endFragmentId.orEmpty())
-            append('|').append(continuationHrefs(chapter).joinToString(","))
-            append("|webLayout:v20-elastic-mono")
-            append('|').append(if (config.scrollMode) "scroll" else "paged")
-            append('|').append(config.pageWidthPx).append('x').append(config.pageHeightPx)
-            append('|').append(config.paddingLeftPx).append(',').append(config.paddingTopPx)
-            append(',').append(config.paddingRightPx).append(',').append(config.paddingBottomPx)
-            append('|').append(config.readerPaddingLeftPx).append(',').append(config.readerPaddingTopPx)
-            append(',').append(config.readerPaddingRightPx).append(',').append(config.readerPaddingBottomPx)
-            append('|').append(config.paragraphSpacingPx)
-            append('|').append(config.alignment)
-            append('|').append(config.textFullJustify)
-            append('|').append(config.lineSpacingMultiplier).append('|').append(config.lineSpacingExtraPx)
-            append('|').append(paint.textSize)
-            append('|').append(paint.letterSpacing).append('|').append(paint.typeface?.style ?: 0)
-            append('|').append(paint.color)
-            append('|').append(config.readerFontFamily.orEmpty())
-            append('|').append(config.readerFontUrl.orEmpty())
-            append('|').append(config.readerFontPath.orEmpty())
+        } else {
+            null
         }
-    }
-
-    suspend fun selectText(
-        page: EpubCorePage,
-        chapterIndex: Int,
-        pageIndex: Int,
-        config: EpubCoreLayoutConfig,
-        action: EpubWebSelectionAction,
-        x: Float,
-        y: Float
-    ): EpubWebSelectionPayload? {
-        val chapter = chapters.getOrNull(chapterIndex) ?: return null
-        val resolvedChapter = resolveChapter(chapter)
-        val href = EpubPath.stripFragment(resolvedChapter.url)
-        val paint = config.textPaint
-        val lineHeight = (paint.textSize * config.lineSpacingMultiplier + config.lineSpacingExtraPx)
-            .coerceAtLeast(paint.textSize)
-        val request = EpubWebLayoutRequest(
-            chapterIndex = chapter.index,
-            chapterHref = href,
-            title = chapter.title.ifBlank { resolvedChapter.title },
-            html = readChapterHtml(resolvedChapter, href),
-            startFragmentId = resolvedChapter.startFragmentId,
-            endFragmentId = resolvedChapter.endFragmentId,
-            viewportWidthPx = config.pageWidthPx,
-            viewportHeightPx = config.pageHeightPx,
-            fontSizePx = paint.textSize,
-            textColor = paint.color,
-            lineHeightPx = lineHeight,
-            readerPaddingLeftPx = config.readerPaddingLeftPx,
-            readerPaddingTopPx = config.readerPaddingTopPx,
-            readerPaddingRightPx = config.readerPaddingRightPx,
-            readerPaddingBottomPx = config.readerPaddingBottomPx,
-            readerFontFamily = config.readerFontFamily,
-            readerFontUrl = config.readerFontUrl,
-            readerFontPath = config.readerFontPath,
-            letterSpacingEm = paint.letterSpacing,
-            textFullJustify = config.textFullJustify
-        )
-        return getSelectionLayerSession().select(
-            request = request,
-            pageIndex = pageIndex,
-            pageContext = EpubWebSelectionPageContext.from(page),
-            action = action,
-            x = x,
-            y = y
-        )
-    }
-
-    fun imageResolver(): EpubImageResolver = imageResolver
-
-    fun typefaceResolver(): EpubTypefaceResolver {
-        return typefaceResolver ?: EpubTypefaceResolver(
-            context = appCtx,
+        return EpubDirectResourceFactory.open(
             archive = archive,
-            fontFaces = EpubFontCatalog.fromPackage(archive, pkg)
-        ).also {
-            typefaceResolver = it
+            path = cleanPath,
+            declaredMimeType = declaredType,
+            rangeHeader = rangeHeader,
+            cachedBytes = cachedBytes,
+            cachedFile = cachedFile,
+            openBody = withBody
+        )
+    }
+
+    fun resolveDirectLink(url: String, currentChapterIndex: Int): EpubDirectLinkTarget? {
+        return resolveDirectLink(url, currentChapterIndex, chapters)
+    }
+
+    fun resolveDirectLink(
+        url: String,
+        currentChapterIndex: Int,
+        navigationChapters: List<BookChapter>
+    ): EpubDirectLinkTarget? {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", true) || !uri.host.equals(directResourceHost, true)) return null
+        val path = canonicalArchivePath(
+            EpubPath.normalize(Uri.decode(uri.encodedPath.orEmpty().removePrefix("/")))
+        )
+        if (path.isBlank()) return null
+        val fragment = uri.encodedFragment
+            ?.let(Uri::decode)
+            ?.takeIf { it.isNotBlank() }
+        val persistedCandidates = chapterCandidatesByHref(navigationChapters, path)
+        val candidates = persistedCandidates.ifEmpty { directChaptersByHref[path].orEmpty() }
+        if (candidates.isEmpty()) return null
+        val ownerIndex = if (fragment != null && candidates.size > 1) {
+            val boundaries = candidates.map {
+                EpubDirectFragmentBoundary(it.index, it.startFragmentId, it.endFragmentId)
+            }
+            fragmentIndex(path).owner(fragment, boundaries, currentChapterIndex)
+        } else {
+            null
+        }
+        val target = EpubChapterIdentityPolicy.select(
+            candidates = candidates,
+            fragmentId = fragment,
+            requestedIndex = currentChapterIndex,
+            ownerIndex = ownerIndex
+        ) ?: return null
+        return EpubDirectLinkTarget(target.index, fragment)
+    }
+
+    private fun chapterCandidatesByHref(
+        source: List<BookChapter>,
+        href: String
+    ): List<BookChapter> {
+        if (source.isEmpty()) return emptyList()
+        return source.filterNot { it.url.startsWith("skip:") }.filter { chapter ->
+            (listOf(chapter.url) + continuationHrefs(chapter)).any {
+                canonicalArchivePath(it) == href
+            }
         }
     }
 
-    fun cancelBackgroundLayouts() {
-        synchronized(webLayoutSessionLock) {
-            // Prefetch coroutines own active layout cancellation. Keep the background
-            // WebViews warm so page-budget reschedules can reuse the same slots.
-            pruneBackgroundWebLayoutSessions()
+    private fun fragmentIndex(path: String): EpubDirectFragmentIndex {
+        synchronized(directFragmentIndexes) {
+            directFragmentIndexes[path]?.let { return it }
         }
-    }
-
-    fun cancelForegroundLayout() {
-        synchronized(webLayoutSessionLock) {
-            foregroundWebLayoutSession?.close()
-            foregroundWebLayoutSession = null
+        val source = runCatching {
+            archive.readBytes(path, DIRECT_FRAGMENT_INDEX_MAX_BYTES).toString(Charsets.UTF_8)
+        }.getOrElse {
+            AppLog.putDebug("EPUB direct fragment index failed: path=$path", it)
+            ""
+        }
+        val parsed = EpubDirectFragmentIndex.parse(source)
+        return synchronized(directFragmentIndexes) {
+            directFragmentIndexes[path] ?: parsed.also { directFragmentIndexes[path] = it }
         }
     }
 
     override fun close() {
-        cache.clear()
-        imageResolver.clear()
-        typefaceResolver?.clear()
-        typefaceResolver = null
-        selectionLayerSession?.close()
-        selectionLayerSession = null
-        cancelForegroundLayout()
-        closeBackgroundLayoutSessions()
-        archive.close()
-    }
-
-    private fun getSelectionLayerSession(): EpubWebSelectionLayerSession {
-        return selectionLayerSession ?: EpubWebSelectionLayerSession(archive).also {
-            selectionLayerSession = it
-        }
-    }
-
-    private fun getWebLayoutSession(backgroundSlot: Int?): EpubWebLayoutSession {
-        return synchronized(webLayoutSessionLock) {
-            if (backgroundSlot == null) {
-                foregroundWebLayoutSession ?: EpubWebLayoutSession(archive).also {
-                    foregroundWebLayoutSession = it
-                }
-            } else {
-                val slot = backgroundWebLayoutSlot(backgroundSlot)
-                backgroundWebLayoutSessions[slot] ?: EpubWebLayoutSession(archive).also {
-                    backgroundWebLayoutSessions[slot] = it
-                    pruneBackgroundWebLayoutSessions()
+        directSourceCache.clear()
+        synchronized(directFragmentIndexes) { directFragmentIndexes.clear() }
+        directResourceCache.clear()
+        directDiskResourceCache.closeWhenDrained {
+            archive.closeWhenDrained { error ->
+                if (error != null) {
+                    AppLog.putDebug("EPUB archive close failed: ${error.localizedMessage}", error)
                 }
             }
-        }
-    }
-
-    private fun backgroundWebLayoutSlot(backgroundSlot: Int): Int {
-        return backgroundSlot.coerceAtLeast(0) % MaxBackgroundWebLayoutSessions
-    }
-
-    private fun pruneBackgroundWebLayoutSessions() {
-        if (backgroundWebLayoutSessions.size <= MaxBackgroundWebLayoutSessions) return
-        val overflowSlots = backgroundWebLayoutSessions.keys
-            .sorted()
-            .drop(MaxBackgroundWebLayoutSessions)
-        overflowSlots.forEach { slot ->
-            backgroundWebLayoutSessions.remove(slot)?.close()
-        }
-    }
-
-    private fun closeBackgroundLayoutSessions() {
-        synchronized(webLayoutSessionLock) {
-            if (backgroundWebLayoutSessions.isEmpty()) return
-            backgroundWebLayoutSessions.values.forEach { it.close() }
-            backgroundWebLayoutSessions.clear()
         }
     }
 
@@ -362,9 +549,11 @@ class EpubCoreFacade private constructor(
             val clean = EpubPath.stripFragment(href)
             if (clean.isBlank()) return false
             if (clean == navHref || clean == ncxHref) return false
-            if (clean == coverHref) return false
+            // The spine is the publication's authoritative reading order. Keep
+            // cover/title-page documents (and the rare image spine item) instead
+            // of treating the cover resource as navigation metadata.
             val fileName = clean.substringAfterLast('/').lowercase()
-            if (fileName in setOf("nav.xhtml", "toc.xhtml", "toc.html", "toc.htm", "cover.xhtml", "cover.html", "cover.htm")) {
+            if (fileName in setOf("nav.xhtml", "toc.xhtml", "toc.html", "toc.htm")) {
                 return false
             }
             return true
@@ -400,7 +589,7 @@ class EpubCoreFacade private constructor(
                         isVolume = item.children.isNotEmpty(),
                         baseUrl = pkg.opfPath,
                         bookUrl = bookUrl,
-                        startFragmentId = item.fragment ?: EpubPath.fragment(href)
+                        startFragmentId = item.fragment ?: EpubPath.decodedFragment(href)
                     )
                 } else {
                     BookChapter(
@@ -424,6 +613,19 @@ class EpubCoreFacade private constructor(
         val entriesBySpineOrder = tocEntries
             .sortedWith(compareBy<TocChapterEntry> { it.spineOrder }.thenBy { it.tocOrder })
             .groupBy { it.spineOrder }
+        val logicalOwners = tocEntries
+            .asSequence()
+            .filter { it.cleanHref != null && !it.chapter.url.startsWith("skip:") }
+            .map { entry ->
+                EpubSpineOwnershipPolicy.Owner(
+                    spineOrder = entry.spineOrder,
+                    tocOrder = entry.tocOrder,
+                    url = entry.chapter.url,
+                    title = entry.chapter.title
+                )
+            }
+            .distinctBy { "${it.spineOrder}|${it.url}" }
+            .toList()
         val chapters = if (readableSpine.isNotEmpty()) {
             val result = arrayListOf<BookChapter>()
             val addedUrls = hashSetOf<String>()
@@ -431,36 +633,32 @@ class EpubCoreFacade private constructor(
                 if (!addedUrls.add(chapter.url)) return
                 result += chapter
             }
-            fun attachContinuationToPrevious(href: String): Boolean {
-                val targetIndex = result.indexOfLast { !it.url.startsWith("skip:") && !it.isVolume }
-                if (targetIndex < 0) return false
-                val target = result[targetIndex]
-                val hrefs = (continuationHrefs(target) + href)
-                    .map { EpubPath.stripFragment(it) }
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                val variables = target.variableMap.toMutableMap()
-                variables[ContinuationHrefsKey] = hrefs.joinToString("\n")
-                result[targetIndex] = target.copy(variable = GSON.toJson(variables))
-                addedUrls.add(href)
-                return true
-            }
             readableSpine.forEachIndexed { order, spineItem ->
                 val cleanHref = EpubPath.stripFragment(spineItem.href)
                 val entries = entriesBySpineOrder[order].orEmpty()
                 entries.forEach { addChapter(it.chapter) }
                 val hasSpineContent = entries.any { it.cleanHref == cleanHref }
                 if (!hasSpineContent) {
-                    if (!shouldAttachFallbackSpine(order, cleanHref) || !attachContinuationToPrevious(spineItem.href)) {
-                        addChapter(
-                            BookChapter(
-                                url = spineItem.href,
-                                title = "Chapter ${spineItem.index + 1}",
-                                baseUrl = pkg.opfPath,
-                                bookUrl = bookUrl
-                            )
+                    // The spine is the only authoritative reading order.  A missing TOC
+                    // entry does not prove that this XHTML is a continuation of the previous
+                    // chapter; merging it would silently swallow a real chapter and make the
+                    // next boundary unreachable.  Keep every physical linear resource as a
+                    // separate readable chapter.  Explicit same-document TOC fragments are
+                    // normalized later and remain a single logical document window.
+                    val physical = BookChapter(
+                        url = spineItem.href,
+                        title = "Chapter ${spineItem.index + 1}",
+                        baseUrl = pkg.opfPath,
+                        bookUrl = bookUrl
+                    )
+                    val owner = EpubSpineOwnershipPolicy.ownerAt(order, logicalOwners)
+                    addChapter(
+                        EpubChapterMetadata.markPhysicalContinuation(
+                            chapter = physical,
+                            ownerUrl = owner?.url,
+                            ownerTitle = owner?.title
                         )
-                    }
+                    )
                 }
             }
             result
@@ -473,7 +671,7 @@ class EpubCoreFacade private constructor(
                         isVolume = item.children.isNotEmpty(),
                         baseUrl = pkg.opfPath,
                         bookUrl = bookUrl,
-                        startFragmentId = item.fragment ?: EpubPath.fragment(item.href)
+                        startFragmentId = item.fragment ?: EpubPath.decodedFragment(item.href)
                     )
                     item.title.isNotBlank() -> BookChapter(
                         url = "skip:0:${item.title}",
@@ -487,41 +685,79 @@ class EpubCoreFacade private constructor(
             }
         }
         return normalizeChapters(chapters).also {
-            AppLog.putDebug(
-                "EPUB core chapters built: count=${it.size}, " +
-                        "nav=$navHref ncx=$ncxHref cover=$coverHref"
-            )
+            // Diagnostics must never make a valid EPUB unopenable when the host
+            // application context is still being initialized.
+            runCatching {
+                AppLog.putDebug(
+                    "EPUB core chapters built: count=${it.size}, " +
+                            "nav=$navHref ncx=$ncxHref cover=$coverHref"
+                )
+            }
         }
     }
 
-    private fun shouldAttachFallbackSpine(spineOrder: Int, href: String): Boolean {
-        if (spineOrder >= FrontMatterFallbackSpineLimit) return false
-        val fileName = href.substringAfterLast('/').lowercase()
-        return fileName.matches(Regex("""(top|qmp|front|frontmatter|preface|intro|insert)\d*\.(xhtml|html|htm)"""))
-    }
-
     private fun normalizeChapters(chapters: List<BookChapter>): List<BookChapter> {
+        val nextRawReadable = arrayOfNulls<BookChapter>(chapters.size)
+        var nextRaw: BookChapter? = null
+        for (index in chapters.indices.reversed()) {
+            nextRawReadable[index] = nextRaw
+            chapters[index].takeUnless { it.url.startsWith("skip:") }?.let { nextRaw = it }
+        }
+        val structural = BooleanArray(chapters.size) { index ->
+            val chapter = chapters[index]
+            EpubTocParentHrefPolicy.shouldBecomeStructural(
+                isVolume = chapter.isVolume,
+                parentUrl = chapter.url,
+                nextChapterUrl = nextRawReadable[index]?.url
+            )
+        }
+        val nextReadableIndex = IntArray(chapters.size) { -1 }
+        var nextEffectiveIndex = -1
+        for (index in chapters.indices.reversed()) {
+            nextReadableIndex[index] = nextEffectiveIndex
+            if (!chapters[index].url.startsWith("skip:") && !structural[index]) {
+                nextEffectiveIndex = index
+            }
+        }
+        // A structural TOC parent can still own the opening range before its first
+        // child anchor. Give that range to the first readable child instead of losing it.
+        val inheritedStartFragments = mutableMapOf<Int, String?>()
+        chapters.indices.forEach { index ->
+            if (!structural[index]) return@forEach
+            val nextIndex = nextReadableIndex[index]
+            val parent = chapters[index]
+            val next = chapters.getOrNull(nextIndex)
+            if (nextIndex >= 0 && EpubTocParentHrefPolicy.sharesResource(parent.url, next?.url)) {
+                if (nextIndex !in inheritedStartFragments) {
+                    inheritedStartFragments[nextIndex] = parent.startFragmentId
+                }
+            }
+        }
         return chapters.mapIndexed { index, chapter ->
-            val next = chapters.drop(index + 1).firstOrNull { !it.url.startsWith("skip:") }
-            val normalizedUrl = if (
-                chapter.isVolume &&
-                next != null &&
-                !chapter.url.startsWith("skip:") &&
-                EpubPath.stripFragment(chapter.url) == EpubPath.stripFragment(next.url)
-            ) {
+            val nextChapter = chapters.getOrNull(nextReadableIndex[index])
+            val normalizedUrl = if (structural[index]) {
                 "skip:$index:${chapter.url}"
             } else {
                 chapter.url
+            }
+            val startFragmentId = when {
+                normalizedUrl.startsWith("skip:") -> null
+                inheritedStartFragments.containsKey(index) -> inheritedStartFragments[index]
+                else -> chapter.startFragmentId
             }
             chapter.copy(
                 index = index,
                 bookUrl = bookUrl,
                 url = normalizedUrl,
-                startFragmentId = if (normalizedUrl.startsWith("skip:")) null else chapter.startFragmentId,
-                endFragmentId = next?.startFragmentId,
+                startFragmentId = startFragmentId,
+                endFragmentId = EpubChapterFragmentRangePolicy.endFragmentId(
+                    chapterUrl = normalizedUrl,
+                    nextChapterUrl = nextChapter?.url,
+                    nextStartFragmentId = nextChapter?.startFragmentId
+                ),
                 variable = GSON.toJson(
                     chapter.variableMap.toMutableMap().apply {
-                        val nextUrl = next?.url
+                        val nextUrl = nextChapter?.url
                         if (nextUrl.isNullOrBlank()) remove("nextUrl") else put("nextUrl", nextUrl)
                     }
                 )
@@ -538,6 +774,39 @@ class EpubCoreFacade private constructor(
         return chapter
     }
 
+    private fun canonicalChapter(requested: BookChapter): BookChapter? {
+        val canUseIdentity = requested.url.isNotBlank() &&
+            !requested.url.startsWith("skip:") &&
+            (requested.bookUrl.isBlank() || requested.bookUrl == bookUrl)
+        if (canUseIdentity) {
+            val path = canonicalArchivePath(requested.url)
+            val candidates = directChaptersByHref[path].orEmpty()
+            if (candidates.isNotEmpty()) {
+                val fragment = EpubChapterIdentityPolicy.fragment(requested)
+                val ownerIndex = if (fragment != null && candidates.size > 1) {
+                    val boundaries = candidates.map {
+                        EpubDirectFragmentBoundary(it.index, it.startFragmentId, it.endFragmentId)
+                    }
+                    fragmentIndex(path).owner(fragment, boundaries, requested.index)
+                } else {
+                    null
+                }
+                EpubChapterIdentityPolicy.select(
+                    candidates = candidates,
+                    fragmentId = fragment,
+                    requestedIndex = requested.index,
+                    ownerIndex = ownerIndex
+                )?.let { return it }
+            }
+        }
+        return chapters.getOrNull(requested.index)
+    }
+
+    private fun canonicalArchivePath(path: String): String {
+        val normalized = EpubPath.normalize(EpubPath.stripFragment(path))
+        return archive.canonicalPath(normalized) ?: normalized
+    }
+
     private fun readChapterHtml(chapter: BookChapter, href: String): String {
         val primaryHtml = archive.readText(href)
         val continuationHrefs = continuationHrefs(chapter)
@@ -547,9 +816,9 @@ class EpubCoreFacade private constructor(
             val html = archive.readText(cleanHref)
             val head = extractHeadContent(html)
             val body = extractBodyContent(html)
-            """$head<section data-epub-continuation-href="${escapeHtmlAttr(cleanHref)}">$body</section>"""
+            """<section data-epub-continuation-href="${escapeHtmlAttr(cleanHref)}">$head$body</section>"""
         }
-        val bodyClose = Regex("</body\\s*>", RegexOption.IGNORE_CASE)
+        val bodyClose = EpubRegex.compile("</body\\s*>", RegexOption.IGNORE_CASE)
         val bodyCloseMatch = bodyClose.find(primaryHtml)
         return if (bodyCloseMatch != null) {
             primaryHtml.substring(0, bodyCloseMatch.range.first) +
@@ -571,12 +840,18 @@ class EpubCoreFacade private constructor(
     }
 
     private fun extractBodyContent(html: String): String {
-        val match = Regex("<body\\b[^>]*>([\\s\\S]*?)</body\\s*>", RegexOption.IGNORE_CASE).find(html)
+        val match = EpubRegex.compile(
+            "<body\\b[^>]*>([\\s\\S]*?)</body\\s*>",
+            RegexOption.IGNORE_CASE
+        ).find(html)
         return match?.groupValues?.getOrNull(1) ?: html
     }
 
     private fun extractHeadContent(html: String): String {
-        val match = Regex("<head\\b[^>]*>([\\s\\S]*?)</head\\s*>", RegexOption.IGNORE_CASE).find(html)
+        val match = EpubRegex.compile(
+            "<head\\b[^>]*>([\\s\\S]*?)</head\\s*>",
+            RegexOption.IGNORE_CASE
+        ).find(html)
         return match?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }.orEmpty()
     }
 
@@ -599,32 +874,82 @@ class EpubCoreFacade private constructor(
     }
 
     companion object {
-        private const val MaxBackgroundWebLayoutSessions = 5
+        private const val DIRECT_SOURCE_CACHE_ENTRIES = 4
+        private const val DIRECT_SOURCE_CACHE_MAX_CHARS = 4 * 1024 * 1024
+        private const val DIRECT_SOURCE_CACHE_TOTAL_CHARS = 8 * 1024 * 1024
+        private const val DIRECT_FRAGMENT_INDEX_ENTRIES = 8
+        private const val DIRECT_FRAGMENT_INDEX_MAX_BYTES = 8L * 1024L * 1024L
         private const val ContinuationHrefsKey = "epubContinuationHrefs"
-        private const val FrontMatterFallbackSpineLimit = 20
+        private const val DIRECT_RESOURCE_CACHE_ENTRY_BYTES = 8L * 1024L * 1024L
+        private const val MAX_COVER_RESOURCE_BYTES = 32L * 1024L * 1024L
+        private const val MAX_COVER_DOCUMENT_BYTES = 2L * 1024L * 1024L
+        private const val COVER_REFERENCE_DEPTH = 2
+        private val COVER_IMAGE_EXTENSIONS = setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "avif", "svg", "svgz"
+        )
+        private val COVER_HINT = EpubRegex.compile(
+            "(?:^|[/_.~\\-])(cover|frontcover|titlepage|title-page)(?:$|[/_.~\\-])",
+            RegexOption.IGNORE_CASE
+        )
+        private val COVER_SCHEME = EpubRegex.compile("^[a-zA-Z][a-zA-Z0-9+.-]*:")
+        private val COVER_CSS_URL = EpubRegex.compile(
+            "url\\(\\s*(?:'([^']*)'|\"([^\"]*)\"|([^)]*))\\s*\\)",
+            RegexOption.IGNORE_CASE
+        )
+        private val DIRECT_FULLSCREEN_PROPERTIES = setOf(
+            "duokan-page-fullscreen",
+            "duokan-page-fullscreen-spread",
+            "duokan-page-fullscreen-spread-left",
+            "duokan-page-fullscreen-spread-right"
+        )
 
         fun open(
             file: File,
             bookUrl: String = file.absolutePath,
-            bookCacheDir: File
+            bookCacheDir: File,
+            bookSignature: String
         ): EpubCoreFacade {
-            val archive = ZipEpubArchive(file)
+            val rawArchive = openArchive(file)
+            var archive: EpubArchiveLeaseGate? = null
             return try {
-                val pkg = EpubPackageParser().parse(archive)
-                val toc = EpubTocParser().parse(archive, pkg)
+                val pkg = EpubPackageParser().parse(rawArchive)
+                val leasedArchive = EpubArchiveLeaseGate(
+                    EpubFontDeobfuscatingArchive.wrap(rawArchive, pkg.metadata.identifier)
+                )
+                archive = leasedArchive
+                val toc = EpubTocParser().parse(leasedArchive, pkg)
                 EpubCoreFacade(
-                    archive = archive,
+                    archive = leasedArchive,
                     bookUrl = bookUrl,
-                    bookSignature = MD5Utils.md5Encode16("${file.absolutePath}|${file.length()}|${file.lastModified()}|epubCoreSchema=2"),
+                    bookSignature = bookSignature,
                     bookCacheDir = bookCacheDir,
                     pkg = pkg,
                     toc = toc
                 )
             } catch (throwable: Throwable) {
-                archive.close()
+                (archive ?: rawArchive).close()
                 throw throwable
             }
         }
+
+        private fun openArchive(file: File): EpubArchive {
+            return try {
+                ZipEpubArchive(file)
+            } catch (error: ZipException) {
+                if (!isDuplicateEntryFailure(error)) throw error
+                AppLog.putDebug(
+                    "EPUB duplicate ZIP entry detected; using tolerant archive: ${file.name}"
+                )
+                AndroidZipEpubArchive(file)
+            }
+        }
+
+        private fun isDuplicateEntryFailure(error: ZipException): Boolean {
+            val message = error.message.orEmpty()
+            return message.contains("duplicate", ignoreCase = true) ||
+                message.contains("entry name", ignoreCase = true) ||
+                message.contains("entries in archive", ignoreCase = true) ||
+                message.contains("hash table", ignoreCase = true)
+        }
     }
 }
-

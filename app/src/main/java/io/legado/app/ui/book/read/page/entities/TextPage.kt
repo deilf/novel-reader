@@ -529,34 +529,24 @@ data class TextPage(
 
     fun draw(view: ContentTextView, canvas: Canvas, relativeOffset: Float) {
         if (AppConfig.optimizeRender) {
-            render(view)
-            canvas.withTranslation(0f, relativeOffset) {
-                if (hasEpubBackground()) {
-                    epubBackgroundRecorder.draw(this)
+            try {
+                render(view)
+                canvas.withTranslation(0f, relativeOffset) {
+                    if (hasEpubBackground()) {
+                        epubBackgroundRecorder.draw(this)
+                    }
+                    canvasRecorder.draw(this)
                 }
-                canvasRecorder.draw(this)
+                return
+            } catch (error: Throwable) {
+                AppConfig.disableOptimizeRender(error)
             }
-        } else {
-            canvas.withTranslation(0f, relativeOffset) {
-                drawPage(view, this)
-            }
+        }
+        canvas.withTranslation(0f, relativeOffset) {
+            drawPage(view, this)
         }
     }
 
-    private fun drawDebugInfo(canvas: Canvas) {
-        ChapterProvider.run {
-            val paint = PaintPool.obtain()
-            paint.style = Paint.Style.STROKE
-            canvas.drawRect(
-                paddingLeft.toFloat(),
-                0f,
-                (paddingLeft + visibleWidth).toFloat(),
-                height - 1.dpToPx(),
-                paint
-            )
-            PaintPool.recycle(paint)
-        }
-    }
 
     private fun drawPage(view: ContentTextView, canvas: Canvas) {
         drawEpubBackground(view, canvas)
@@ -569,6 +559,7 @@ data class TextPage(
         drawEpubDecorations(canvas)
         for (i in lines.indices) {
             val line = lines[i]
+            if (line.isReadAloudOnly) continue
             canvas.withTranslation(0f, line.lineTop) {
                 line.draw(view, this)
             }
@@ -1261,6 +1252,7 @@ data class TextPage(
         val height: Float,
         val commands: List<EpubDrawCommand>,
         val role: String? = null,
-        val payload: String? = null
+        val payload: String? = null,
+        val lottieFallbackAssets: Map<String, String> = emptyMap()
     )
 }

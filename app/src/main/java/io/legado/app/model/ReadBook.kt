@@ -16,8 +16,11 @@ import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.ParagraphRuleProcessor
 import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.usesDirectReader
+import io.legado.app.help.book.ReaderTextPositionStore
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.readSimulating
@@ -64,19 +67,39 @@ import kotlin.math.min
 
 @Suppress("MemberVisibilityCanBePrivate")
 object ReadBook : CoroutineScope by MainScope() {
+    @Volatile
     var book: Book? = null
+        set(value) {
+            field = value
+            if (ReadBookConfig.selectLayout(value?.usesDirectReader == true)) {
+                clearTextChapter()
+                ChapterProvider.upStyle()
+            }
+        }
     var callBack: CallBack? = null
     var inBookshelf = false
     var chapterSize = 0
     var simulatedChapterSize = 0
     var durChapterIndex = 0
     var durChapterPos = 0
+    private val directTextRevisionSeed = AtomicLong(0L)
+    val directTextRevision: Long get() = directTextRevisionSeed.get()
+
+    fun invalidateDirectTextContent(bookUrl: String) {
+        if (book?.bookUrl == bookUrl) directTextRevisionSeed.incrementAndGet()
+    }
     var isLocalBook = true
     var chapterChanged = false
     var prevTextChapter: TextChapter? = null
     var curTextChapter: TextChapter? = null
     var nextTextChapter: TextChapter? = null
+    @Volatile
     var bookSource: BookSource? = null
+        set(value) {
+            if (field === value) return
+            field = value
+            directTextRevisionSeed.incrementAndGet()
+        }
     var msg: String? = null
     private val loadingChapters = arrayListOf<Int>()
     private val readRecord = ReadRecord()
@@ -115,10 +138,13 @@ object ReadBook : CoroutineScope by MainScope() {
     val executor = globalExecutor
 
     private fun markReadAloudUserNavigation(fromReadAloud: Boolean) {
-        if (!fromReadAloud && BaseReadAloudService.isRun) {
-            readAloudUserNavigationUntil =
-                System.currentTimeMillis() + READ_ALOUD_USER_NAVIGATION_LOCK_MS
-        }
+        if (!fromReadAloud) markReadAloudUserNavigation()
+    }
+
+    fun markReadAloudUserNavigation() {
+        if (!BaseReadAloudService.isRun) return
+        readAloudUserNavigationUntil =
+            System.currentTimeMillis() + READ_ALOUD_USER_NAVIGATION_LOCK_MS
     }
 
     fun isReadAloudUserNavigationActive(): Boolean {
@@ -126,11 +152,22 @@ object ReadBook : CoroutineScope by MainScope() {
                 System.currentTimeMillis() < readAloudUserNavigationUntil
     }
 
+    fun isDirectEpubCoreBook(): Boolean {
+        return book?.usesDirectReader == true
+    }
+
+    private fun suppressDirectReadAloudContent(fromReadAloud: Boolean): Boolean {
+        return fromReadAloud && isDirectEpubCoreBook()
+    }
+
     fun markRecentRead(book: Book, readTime: Long = System.currentTimeMillis()) {
         executor.execute {
             kotlin.runCatching {
                 book.durChapterTime = readTime
-                book.update()
+                // Only the timestamp belongs here. A whole-row write would also carry this
+                // instance's `type`, which the init path is concurrently rewriting, and
+                // could drop the notShelf flag that marks a book as merely being sampled.
+                appDb.bookDao.updateReadTime(book.bookUrl, readTime)
                 appDb.readRecentBookDao.insert(ReadRecentBook(book.bookUrl, readTime))
                 ReadRecordWidgetStore.updateRecentSnapshot(book, readTime)
             }.onFailure {
@@ -139,7 +176,7 @@ object ReadBook : CoroutineScope by MainScope() {
         }
     }
 
-    fun resetData(book: Book) {
+    fun resetData(book: Book, notifyContent: Boolean = true) {
         stopReadAloudForBookSwitch(book)
         releaseAndCancel()
         ReadBook.book = book
@@ -152,12 +189,16 @@ object ReadBook : CoroutineScope by MainScope() {
         } else {
             chapterSize
         }
-        contentProcessor = ContentProcessor.get(book)
+        contentProcessor = ContentProcessor.get(book).also {
+            if (!book.isEpub && book.usesDirectReader) it.upReplaceRules()
+        }
         durChapterIndex = book.durChapterIndex
         durChapterPos = book.durChapterPos
         isLocalBook = book.isLocal
         clearTextChapter()
-        callBack?.upContent()
+        if (notifyContent) {
+            callBack?.upContent()
+        }
         callBack?.upMenuView()
         callBack?.upPageAnim()
         upWebBook(book)
@@ -265,10 +306,16 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun setProgress(progress: BookProgress) {
-        if (progress.durChapterIndex < chapterSize &&
+        if (ReadBookChapterIndexPolicy.canSelect(progress.durChapterIndex, chapterSize) &&
             (durChapterIndex != progress.durChapterIndex
                     || durChapterPos != progress.durChapterPos)
         ) {
+            val callback = callBack
+            if (book?.let { !it.isEpub && it.usesDirectReader } == true && callback != null) {
+                clearTextChapter()
+                callback.openDirectTextChapter(progress.durChapterIndex, progress.durChapterPos)
+                return
+            }
             durChapterIndex = progress.durChapterIndex
             durChapterPos = progress.durChapterPos
             saveRead()
@@ -308,6 +355,13 @@ object ReadBook : CoroutineScope by MainScope() {
         val chapterIndex = durChapterIndex
         if (chapterIndex !in 0 until chapterSize) return
         AppLog.putDebug("reloadCurrentContent: reason=$reason, chapter=$chapterIndex")
+        val currentBook = book
+        if (currentBook != null && !currentBook.isEpub && currentBook.usesDirectReader && callBack != null) {
+            invalidateDirectTextContent(currentBook.bookUrl)
+            clearTextChapter()
+            callBack?.upContent(resetPageOffset = !keepPosition)
+            return
+        }
         refreshParagraphRuleLayoutKey()
         cancelChapterLoading(chapterIndex)
         chapterLayoutKeys.remove(chapterIndex)
@@ -328,6 +382,8 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun invalidateParagraphRuleLayout() {
+        paragraphRuleRefreshJob?.cancel()
+        paragraphRuleRefreshJob = null
         ParagraphRuleProcessor.clearProcessCache(book?.bookUrl)
         refreshParagraphRuleLayoutKey()
         clearTextChapter()
@@ -335,7 +391,7 @@ object ReadBook : CoroutineScope by MainScope() {
 
     fun refreshCurrentParagraphRuleResult(): Boolean {
         val currentBook = book ?: return false
-        if (currentBook.isEpub) return false
+        if (currentBook.isEpub || currentBook.usesDirectReader) return false
         val chapterIndex = durChapterIndex
         if (chapterIndex !in 0 until chapterSize) return false
         if (paragraphRuleRefreshJob?.isActive == true) return true
@@ -443,7 +499,9 @@ object ReadBook : CoroutineScope by MainScope() {
                 it.getPage(durPageIndex)?.removePageAloudSpan()
                 durChapterPos = nextPagePos
                 callBack?.cancelSelect()
-                callBack?.upContent()
+                if (!fromReadAloud || !isDirectEpubCoreBook()) {
+                    callBack?.upContent()
+                }
                 saveRead(true)
             }
         }
@@ -458,7 +516,9 @@ object ReadBook : CoroutineScope by MainScope() {
             if (prevPagePos >= 0) {
                 hasPrevPage = true
                 durChapterPos = prevPagePos
-                callBack?.upContent()
+                if (!fromReadAloud || !isDirectEpubCoreBook()) {
+                    callBack?.upContent()
+                }
                 saveRead(true)
             }
         }
@@ -472,6 +532,7 @@ object ReadBook : CoroutineScope by MainScope() {
     ): Boolean {
         if (durChapterIndex < simulatedChapterSize - 1) {
             markReadAloudUserNavigation(fromReadAloud)
+            val suppressVisualContent = suppressDirectReadAloudContent(fromReadAloud)
             val targetIndex = durChapterIndex + 1
             val loadedNextChapter = nextTextChapter?.takeIf { it.isCompleted }
             if (loadedNextChapter == null) cancelChapterLoading(targetIndex)
@@ -481,18 +542,25 @@ object ReadBook : CoroutineScope by MainScope() {
             prevTextChapter = curTextChapter
             curTextChapter = loadedNextChapter
             nextTextChapter = null
+            if (suppressVisualContent) {
+                callBack?.onReadAloudChapterChanged(durChapterIndex, 1)
+            }
             if (curTextChapter == null) {
                 AppLog.putDebug("moveToNextChapter-章节未加载,开始加载")
                 if (fromReadAloud) {
                     readAloudPendingLoadChapterIndex = durChapterIndex
                 }
-                if (upContentInPlace) callBack?.upContent()
-                loadContent(durChapterIndex, upContent, resetPageOffset = false)
-            } else if (upContent && upContentInPlace) {
+                if (upContentInPlace && !suppressVisualContent) callBack?.upContent()
+                loadContent(
+                    durChapterIndex,
+                    upContent = upContent && !suppressVisualContent,
+                    resetPageOffset = false
+                )
+            } else if (upContent && upContentInPlace && !suppressVisualContent) {
                 AppLog.putDebug("moveToNextChapter-章节已加载,刷新视图")
                 callBack?.upContent()
             }
-            loadContent(durChapterIndex.plus(1), upContent, false)
+            loadContent(durChapterIndex.plus(1), upContent = false, resetPageOffset = false)
             saveRead()
             callBack?.upMenuView()
             AppLog.putDebug("moveToNextChapter-curPageChanged()")
@@ -511,6 +579,7 @@ object ReadBook : CoroutineScope by MainScope() {
     ): Boolean {
         if (durChapterIndex < simulatedChapterSize - 1) {
             markReadAloudUserNavigation(fromReadAloud)
+            val suppressVisualContent = suppressDirectReadAloudContent(fromReadAloud)
             val targetIndex = durChapterIndex + 1
             val loadedNextChapter = nextTextChapter?.takeIf { it.isCompleted }
             if (loadedNextChapter == null) cancelChapterLoading(targetIndex)
@@ -520,18 +589,25 @@ object ReadBook : CoroutineScope by MainScope() {
             prevTextChapter = curTextChapter
             curTextChapter = loadedNextChapter
             nextTextChapter = null
+            if (suppressVisualContent) {
+                callBack?.onReadAloudChapterChanged(durChapterIndex, 1)
+            }
             if (curTextChapter == null) {
                 AppLog.putDebug("moveToNextChapter-章节未加载,开始加载")
                 if (fromReadAloud) {
                     readAloudPendingLoadChapterIndex = durChapterIndex
                 }
-                if (upContentInPlace) callBack?.upContentAwait()
-                loadContentAwait(durChapterIndex, upContent, resetPageOffset = false)
-            } else if (upContent && upContentInPlace) {
+                if (upContentInPlace && !suppressVisualContent) callBack?.upContentAwait()
+                loadContentAwait(
+                    durChapterIndex,
+                    upContent = upContent && !suppressVisualContent,
+                    resetPageOffset = false
+                )
+            } else if (upContent && upContentInPlace && !suppressVisualContent) {
                 AppLog.putDebug("moveToNextChapter-章节已加载,刷新视图")
                 callBack?.upContentAwait()
             }
-            loadContent(durChapterIndex.plus(1), upContent, false)
+            loadContent(durChapterIndex.plus(1), upContent = false, resetPageOffset = false)
             saveRead()
             callBack?.upMenuView()
             AppLog.putDebug("moveToNextChapter-curPageChanged()")
@@ -551,6 +627,7 @@ object ReadBook : CoroutineScope by MainScope() {
     ): Boolean {
         if (durChapterIndex > 0) {
             markReadAloudUserNavigation(fromReadAloud)
+            val suppressVisualContent = suppressDirectReadAloudContent(fromReadAloud)
             val targetIndex = durChapterIndex - 1
             val loadedPrevChapter = prevTextChapter?.takeIf { it.isCompleted }
             if (loadedPrevChapter == null) cancelChapterLoading(targetIndex)
@@ -560,16 +637,23 @@ object ReadBook : CoroutineScope by MainScope() {
             nextTextChapter = curTextChapter
             curTextChapter = loadedPrevChapter
             prevTextChapter = null
+            if (suppressVisualContent) {
+                callBack?.onReadAloudChapterChanged(durChapterIndex, -1)
+            }
             if (curTextChapter == null) {
                 if (fromReadAloud) {
                     readAloudPendingLoadChapterIndex = durChapterIndex
                 }
-                if (upContentInPlace) callBack?.upContent()
-                loadContent(durChapterIndex, upContent, resetPageOffset = false)
-            } else if (upContent && upContentInPlace) {
+                if (upContentInPlace && !suppressVisualContent) callBack?.upContent()
+                loadContent(
+                    durChapterIndex,
+                    upContent = upContent && !suppressVisualContent,
+                    resetPageOffset = false
+                )
+            } else if (upContent && upContentInPlace && !suppressVisualContent) {
                 callBack?.upContent()
             }
-            loadContent(durChapterIndex.minus(1), upContent, false)
+            loadContent(durChapterIndex.minus(1), upContent = false, resetPageOffset = false)
             saveRead()
             callBack?.upMenuView()
             curPageChanged(fromReadAloud = fromReadAloud)
@@ -582,8 +666,10 @@ object ReadBook : CoroutineScope by MainScope() {
     fun skipToPage(index: Int, fromReadAloud: Boolean = false, success: (() -> Unit)? = null) {
         markReadAloudUserNavigation(fromReadAloud)
         durChapterPos = curTextChapter?.getReadLength(index) ?: index
-        callBack?.upContent {
+        if (suppressDirectReadAloudContent(fromReadAloud)) {
             success?.invoke()
+        } else {
+            callBack?.upContent { success?.invoke() }
         }
         curPageChanged(fromReadAloud = fromReadAloud)
         saveRead(true)
@@ -616,17 +702,36 @@ object ReadBook : CoroutineScope by MainScope() {
         index: Int,
         durChapterPos: Int = 0,
         upContent: Boolean = true,
+        fromReadAloud: Boolean = false,
         success: (() -> Unit)? = null
     ) {
-        if (index < chapterSize) {
+        if (ReadBookChapterIndexPolicy.canSelect(index, chapterSize)) {
+            val callback = callBack
+            if (upContent && !fromReadAloud && callback != null &&
+                book?.let { !it.isEpub && it.usesDirectReader } == true) {
+                clearTextChapter()
+                callback.openDirectTextChapter(index, durChapterPos, success)
+                return
+            }
+            val oldChapterIndex = this.durChapterIndex
+            val suppressVisualContent = suppressDirectReadAloudContent(fromReadAloud)
             clearTextChapter()
-            if (upContent) callBack?.upContent()
             durChapterIndex = index
             ReadBook.durChapterPos = durChapterPos
-            saveRead()
-            loadContent(resetPageOffset = true) {
-                success?.invoke()
+            if (suppressVisualContent && index != oldChapterIndex) {
+                callBack?.onReadAloudChapterChanged(
+                    index,
+                    if (index >= oldChapterIndex) 1 else -1
+                )
+                readAloudPendingLoadChapterIndex = index
             }
+            if (upContent && !suppressVisualContent) callBack?.upContent()
+            saveRead()
+            loadContent(
+                resetPageOffset = true,
+                upContent = upContent && !suppressVisualContent,
+                success = { success?.invoke() }
+            )
         }
     }
 
@@ -634,7 +739,9 @@ object ReadBook : CoroutineScope by MainScope() {
      * 当前页面变化
      */
     private fun curPageChanged(pageChanged: Boolean = false, fromReadAloud: Boolean = false) {
-        callBack?.pageChanged()
+        if (!suppressDirectReadAloudContent(fromReadAloud)) {
+            callBack?.pageChanged()
+        }
         curTextChapter?.let {
             if (fromReadAloud && BaseReadAloudService.isRun && it.isCompleted) {
                 val scrollPageAnim = pageAnim() == 3
@@ -696,10 +803,11 @@ object ReadBook : CoroutineScope by MainScope() {
      */
     fun loadContent(
         resetPageOffset: Boolean,
+        upContent: Boolean = true,
         success: (() -> Unit)? = null
     ) {
         val isEpub = book?.isEpub == true
-        loadContent(durChapterIndex, resetPageOffset = resetPageOffset) {
+        loadContent(durChapterIndex, upContent = upContent, resetPageOffset = resetPageOffset) {
             success?.invoke()
             if (isEpub) {
                 loadContent(durChapterIndex + 1, upContent = false, resetPageOffset = false)
@@ -738,6 +846,7 @@ object ReadBook : CoroutineScope by MainScope() {
                 "${it.id}:${it.pattern.hashCode()}:${it.replacement.hashCode()}:${it.isRegex}:${it.timeoutMillisecond}"
             }.orEmpty()
         return buildString {
+            append(currentBook?.usesDirectReader == true).append('|')
             append(ChapterProvider.viewWidth).append('x').append(ChapterProvider.viewHeight)
             append('|').append(ChapterProvider.visibleWidth).append('x').append(ChapterProvider.visibleHeight)
             append('|').append(paint.textSize).append('|').append(paint.color)
@@ -759,13 +868,17 @@ object ReadBook : CoroutineScope by MainScope() {
                 append('|').append(currentBook.getImageStyle())
             }
             append('|').append(replaceRuleKey)
+            if (currentBook != null && !currentBook.isEpub && currentBook.usesDirectReader) {
+                append('|').append(processor?.directReplacementRevision(currentBook))
+            }
             append('|').append(paragraphRuleLayoutKey)
+            append("|highlight:").append(io.legado.app.help.book.highlight.HighlightRules.store.revision())
         }
     }
 
     private fun refreshParagraphRuleLayoutKey() {
         val currentBook = book
-        paragraphRuleLayoutKey = if (currentBook == null || currentBook.isEpub) {
+        paragraphRuleLayoutKey = if (currentBook == null || currentBook.isEpub || currentBook.usesDirectReader) {
             ""
         } else {
             appDb.paragraphRuleDao.enabledRulesForBook(currentBook.bookUrl)
@@ -801,8 +914,16 @@ object ReadBook : CoroutineScope by MainScope() {
         forceReload: Boolean = false,
         success: (() -> Unit)? = null
     ) {
+        if (!ReadBookChapterIndexPolicy.canLoad(index, chapterSize)) {
+            if (index == durChapterIndex) {
+                logContentLoadSkip("chapter_index_out_of_range", index)
+                showCurrentChapterLoadError(index, "Current chapter index is outside the chapter list")
+            }
+            return
+        }
         var requestGeneration: Long? = null
         if (forceReload) {
+            book?.let { invalidateDirectTextContent(it.bookUrl) }
             refreshParagraphRuleLayoutKey()
             cancelChapterLoading(index)
             chapterLayoutKeys.remove(index)
@@ -872,6 +993,13 @@ object ReadBook : CoroutineScope by MainScope() {
         resetPageOffset: Boolean = false,
         success: (() -> Unit)? = null
     ) = withContext(IO) {
+        if (!ReadBookChapterIndexPolicy.canLoad(index, chapterSize)) {
+            if (index == durChapterIndex) {
+                logContentLoadSkip("chapter_index_out_of_range_await", index)
+                showCurrentChapterLoadError(index, "Current chapter index is outside the chapter list")
+            }
+            return@withContext
+        }
         val requestedLayoutKey = currentChapterLayoutKey()
         val initialGeneration = beginChapterLoad(index, requestedLayoutKey)
         if (initialGeneration != null) {
@@ -1217,18 +1345,19 @@ object ReadBook : CoroutineScope by MainScope() {
                 return@async false
             }
             val contentProcessor = ContentProcessor.get(book.name, book.origin)
-            val displayTitle = chapter.getDisplayTitle(
+            val fallbackDisplayTitle = if (book.usesDirectReader) chapter.title.trim() else chapter.getDisplayTitle(
                 contentProcessor.getTitleReplaceRules(),
-                book.getUseReplaceRule(),
+                book.getUseReplaceRule() && !book.usesDirectReader,
                 replaceBook = book.toReplaceBook()
             )
             val contents = paragraphRuleProcessingSemaphore.withPermit {
                 ParagraphRuleProcessor.process(
                     book,
                     chapter,
-                    contentProcessor.getContent(book, chapter, content, includeTitle = false)
+                    contentProcessor.getContent(book, chapter, content, includeTitle = false, checkActive = { ensureActive() })
                 )
             }
+            val displayTitle = contents.displayTitle ?: fallbackDisplayTitle
             ensureActive()
             if (!isChapterLoadRequestCurrent(
                     book.bookUrl,
@@ -1459,18 +1588,19 @@ object ReadBook : CoroutineScope by MainScope() {
         var applied = false
         try {
             val contentProcessor = ContentProcessor.get(book.name, book.origin)
-            val displayTitle = chapter.getDisplayTitle(
+            val fallbackDisplayTitle = if (book.usesDirectReader) chapter.title.trim() else chapter.getDisplayTitle(
                 contentProcessor.getTitleReplaceRules(),
-                book.getUseReplaceRule(),
+                book.getUseReplaceRule() && !book.usesDirectReader,
                 replaceBook = book.toReplaceBook()
             )
             val contents = paragraphRuleProcessingSemaphore.withPermit {
                 ParagraphRuleProcessor.process(
                     book,
                     chapter,
-                    contentProcessor.getContent(book, chapter, content, includeTitle = false)
+                    contentProcessor.getContent(book, chapter, content, includeTitle = false, checkActive = { ensureActive() })
                 )
             }
+            val displayTitle = contents.displayTitle ?: fallbackDisplayTitle
             ensureActive()
             if (!isChapterLoadRequestCurrent(
                     book.bookUrl,
@@ -1718,6 +1848,16 @@ object ReadBook : CoroutineScope by MainScope() {
         val targetBook = book ?: return
         val targetChapterIndex = durChapterIndex
         val targetChapterPos = durChapterPos
+        if (!targetBook.isEpub && !ReadBookConfig.usingEpubLayout) {
+            curTextChapter?.takeIf { it.chapter.index == targetChapterIndex }?.let { chapter ->
+                if (!ReaderTextPositionStore.needsNativeRestore(targetBook.bookUrl, chapter.chapter.url, targetChapterPos)) {
+                    chapter.getPageByReadPos(targetChapterPos)?.let { page ->
+                        ReaderTextPositionStore.remember(targetBook.bookUrl, chapter.chapter.url, "native",
+                            page.text, targetChapterPos, page.chapterPosition)
+                    }
+                }
+            }
+        }
         val targetBookSource = bookSource
         val durTime = System.currentTimeMillis()
         val chapterChanged = targetBook.durChapterIndex != targetChapterIndex
@@ -1825,6 +1965,7 @@ object ReadBook : CoroutineScope by MainScope() {
 
     fun onChapterListUpdated(newBook: Book, loadContent: Boolean = true) {
         if (newBook.isSameNameAuthor(book)) {
+            directTextRevisionSeed.incrementAndGet()
             book = newBook
             chapterSize = newBook.totalChapterNum
             simulatedChapterSize = newBook.simulatedTotalChapterNum()
@@ -1835,7 +1976,11 @@ object ReadBook : CoroutineScope by MainScope() {
             if (callBack == null) {
                 clearTextChapter()
             } else if (loadContent) {
-                loadContent(true)
+                if (newBook.usesDirectReader) {
+                    callBack?.upContent(resetPageOffset = false)
+                } else {
+                    loadContent(true)
+                }
             }
         }
     }
@@ -1890,6 +2035,8 @@ object ReadBook : CoroutineScope by MainScope() {
 
         fun loadChapterList(book: Book)
 
+        fun openDirectTextChapter(index: Int, characterPosition: Int, success: (() -> Unit)? = null)
+
         fun upContent(
             relativePosition: Int = 0,
             resetPageOffset: Boolean = true,
@@ -1903,6 +2050,8 @@ object ReadBook : CoroutineScope by MainScope() {
         )
 
         fun pageChanged()
+
+        fun onReadAloudChapterChanged(chapterIndex: Int, direction: Int) = Unit
 
         fun contentLoadFinish()
 

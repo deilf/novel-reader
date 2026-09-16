@@ -7,7 +7,9 @@ data class BookContent(
     val textList: List<String>,
     //起效的替换规则
     val effectiveReplaceRules: List<ReplaceRule>?,
-    val sourceIndexes: List<Int> = textList.indices.toList()
+    val sourceIndexes: List<Int> = textList.indices.toList(),
+    // Direct rendering and read aloud share the title produced with this body.
+    val displayTitle: String? = null
 ) {
 
     override fun toString(): String {

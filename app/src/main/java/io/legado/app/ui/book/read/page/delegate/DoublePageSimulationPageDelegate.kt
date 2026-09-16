@@ -8,7 +8,6 @@ import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.entities.PageDirection
-import io.legado.app.utils.screenshot
 import kotlin.math.abs
 import kotlin.math.cos
 
@@ -32,19 +31,25 @@ class DoublePageSimulationPageDelegate(readView: ReadView) : HorizontalPageDeleg
     private var nextBitmap: Bitmap? = null
     private val bitmapCanvas = Canvas()
 
-    override fun setBitmap() {
-        when (mDirection) {
+    override fun setBitmap(): Boolean {
+        return when (mDirection) {
             PageDirection.PREV -> {
-                prevBitmap = prevPage.screenshot(prevBitmap, bitmapCanvas)
-                curBitmap = curPage.screenshot(curBitmap, bitmapCanvas)
+                val previous = captureBitmapSnapshot(prevPage, prevBitmap, bitmapCanvas)
+                prevBitmap = previous
+                val current = captureBitmapSnapshot(curPage, curBitmap, bitmapCanvas)
+                curBitmap = current
+                previous != null && current != null
             }
 
             PageDirection.NEXT -> {
-                nextBitmap = nextPage.screenshot(nextBitmap, bitmapCanvas)
-                curBitmap = curPage.screenshot(curBitmap, bitmapCanvas)
+                val next = captureBitmapSnapshot(nextPage, nextBitmap, bitmapCanvas)
+                nextBitmap = next
+                val current = captureBitmapSnapshot(curPage, curBitmap, bitmapCanvas)
+                curBitmap = current
+                next != null && current != null
             }
 
-            else -> Unit
+            else -> true
         }
     }
 

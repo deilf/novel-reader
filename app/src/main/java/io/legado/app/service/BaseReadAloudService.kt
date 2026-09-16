@@ -831,6 +831,7 @@ abstract class BaseReadAloudService : BaseService(),
     abstract fun upSpeechRate(reset: Boolean = false)
 
     fun upTtsProgress(progress: Int) {
+        val cue = readAloudCues.getOrNull(nowSpeak)
         postEvent(
             EventBus.READ_ALOUD_PROGRESS,
             ReadAloudProgressState(
@@ -839,6 +840,8 @@ abstract class BaseReadAloudService : BaseService(),
                 chapterUrl = playbackChapterUrl,
                 chapterPosition = progress.coerceAtLeast(0),
                 cueIndex = nowSpeak,
+                cueText = cue?.text.orEmpty(),
+                cueStartPosition = cue?.chapterPosition ?: -1,
                 sessionId = activeSessionId,
                 planKey = readAloudPlanKey
             )
@@ -1171,6 +1174,7 @@ abstract class BaseReadAloudService : BaseService(),
                 index = chapterIndex,
                 durChapterPos = chapterPosition,
                 upContent = true,
+                fromReadAloud = true,
                 success = ::startWhenReady
             )
         }
@@ -1536,7 +1540,12 @@ abstract class BaseReadAloudService : BaseService(),
     open fun selectChapter(chapterIndex: Int, continuePlayback: Boolean = true) {
         if (chapterIndex !in 0 until ReadBook.chapterSize) return
         prepareChapterTransition(continuePlayback)
-        ReadBook.openChapter(chapterIndex, durChapterPos = 0, upContent = true) {
+        ReadBook.openChapter(
+            chapterIndex,
+            durChapterPos = 0,
+            upContent = true,
+            fromReadAloud = true
+        ) {
             ReadBook.readAloud(play = continuePlayback, startPos = 0)
         }
     }

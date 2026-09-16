@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -64,6 +66,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,6 +90,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -102,7 +106,6 @@ import androidx.compose.ui.window.DialogProperties
 import io.legado.app.ui.widget.compose.BookCoverImage
 import io.legado.app.ui.widget.compose.releaseComposeImage
 import androidx.compose.ui.zIndex
-import androidx.core.text.HtmlCompat
 import io.legado.app.R
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.BookInfoQuickActionConfig
@@ -110,6 +113,7 @@ import io.legado.app.help.config.BookInfoQuickActionItem
 import io.legado.app.help.config.BookInfoQuickActionType
 import io.legado.app.help.book.BookCloudEntryMode
 import io.legado.app.help.glide.ImageLoader
+import io.legado.app.help.glide.OkHttpModelLoader
 import io.legado.app.help.webView.WebJsExtensions.Companion.getInjectionString
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.composeActionRadius
@@ -119,10 +123,19 @@ import io.legado.app.lib.theme.secondaryTextColor
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.book.info.BookInfoUseWebHost
 import io.legado.app.ui.widget.image.CoverImageView
+import io.legado.app.help.GlideImageGetter
+import io.legado.app.help.TextViewTagHandler
 import io.legado.app.utils.ColorUtils
+import io.legado.app.utils.dpToPx
 import io.legado.app.utils.openUrl
+import io.legado.app.utils.setHtml
+import io.legado.app.utils.setMarkdown
+import com.bumptech.glide.Glide
+import com.bumptech.glide.request.RequestOptions
 import io.noties.markwon.Markwon
+import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.html.HtmlPlugin
+import io.noties.markwon.image.glide.GlideImagesPlugin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -149,6 +162,7 @@ data class BookInfoUiState(
     val coverPath: String? = null,
     val intro: String = "",
     val kinds: List<String> = emptyList(),
+    val customTags: List<String> = emptyList(),
     val groupText: String = "",
     val tocText: String = "",
     val chapterCount: Int = 0,
@@ -165,7 +179,9 @@ data class BookInfoUiState(
     val canUpdate: Boolean = true,
     val cloudEntryMode: BookCloudEntryMode = BookCloudEntryMode.CACHE_PACKAGE,
     val loading: Boolean = false
-)
+) {
+    val canScheduleUpdate: Boolean get() = inBookshelf && hasBookSource
+}
 
 @Immutable
 data class BookInfoActions(
@@ -191,6 +207,7 @@ data class BookInfoActions(
     val onLogin: () -> Unit = {},
     val onCloudBackup: () -> Unit = {},
     val onOpenLibraryContainer: () -> Unit = {},
+    val onBookAutoTask: () -> Unit = {},
     val onAllowUpdateChanged: (Boolean) -> Unit = {},
     val onSetSourceVariable: () -> Unit = {},
     val onSetBookVariable: () -> Unit = {},
@@ -199,7 +216,10 @@ data class BookInfoActions(
     val onClearCache: () -> Unit = {},
     val onSetupWebIntro: (WebView) -> Unit = {},
     val onRefreshEnabledChanged: (Boolean) -> Unit = {},
-    val onQuickActionsChanged: () -> Unit = {}
+    val onQuickActionsChanged: () -> Unit = {},
+    val onIntroButtonClick: (String, String) -> Unit = { _, _ -> },
+    val onIntroImageClick: (String) -> Unit = {},
+    val onIntroImageLongClick: (String) -> Unit = {}
 )
 
 @Immutable
@@ -345,11 +365,13 @@ fun BookInfoComposeRoute(
     val context = LocalContext.current
     var coverColor by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(state.coverPath) {
-        loadCoverThemeColor(context, state.coverPath)?.let { color ->
-            coverColor = color
-        }
+        coverColor = loadCoverThemeColor(context, state.coverPath)
     }
-    val style = remember(context, coverColor) { bookInfoComposeStyle(context, coverColor) }
+    val configuration = LocalConfiguration.current
+    val night = AppConfig.isNightTheme
+    val style = remember(context, coverColor, configuration, night) {
+        bookInfoComposeStyle(context, coverColor)
+    }
     var showMoreMenu by remember { mutableStateOf(false) }
     var showQuickActionEditor by remember { mutableStateOf(false) }
     var showCloudEntrySelector by remember { mutableStateOf(false) }
@@ -407,18 +429,20 @@ fun BookInfoComposeRoute(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(548.dp)
+                    .heightIn(min = 548.dp)
             ) {
                 BookInfoCoverBackdrop(
                     coverPath = state.coverPath,
                     style = style,
                     scrollOffset = pageScrollState.value,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.matchParentSize()
                 )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
+                        .statusBarsPadding()
+                        .padding(top = 72.dp)
                         .padding(horizontal = 18.dp)
                         .padding(bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -441,13 +465,22 @@ fun BookInfoComposeRoute(
                 }
             }
             BookInfoContentPanel(style = style) {
-                BookInfoIntroPanel(
-                    intro = state.intro,
-                    state = state,
-                    actions = actions,
-                    style = style,
-                    webIntroExpandPages = webIntroExpandPages
-                )
+                Column {
+                    if (state.canScheduleUpdate) {
+                        Box(modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) {
+                            BookInfoMoreActionItem(stringResource(R.string.auto_task_book_update), style) {
+                                actions.onBookAutoTask()
+                            }
+                        }
+                    }
+                    BookInfoIntroPanel(
+                        intro = state.intro,
+                        state = state,
+                        actions = actions,
+                        style = style,
+                        webIntroExpandPages = webIntroExpandPages
+                    )
+                }
             }
             Spacer(
                 modifier = Modifier
@@ -1060,6 +1093,7 @@ private fun BookInfoMoreActionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1100,6 +1134,12 @@ private fun BookInfoMoreActionSheet(
                 }
                 BookInfoMoreActionItem(stringResource(R.string.book_cloud_entry_mode), style) {
                     showCloudOptions = true
+                }
+                if (state.canScheduleUpdate) {
+                    BookInfoMoreActionItem(stringResource(R.string.auto_task_book_update), style) {
+                        onDismiss()
+                        actions.onBookAutoTask()
+                    }
                 }
                 BookInfoMoreActionItem(stringResource(R.string.book_info_quick_action_edit), style) {
                     onEditQuickActions()
@@ -1167,13 +1207,14 @@ private fun BookInfoMoreActionItem(
     Text(
         text = text,
         color = if (danger) Color(0xffd64545) else style.colors.primaryText,
-        fontSize = 15.sp,
+        fontSize = 16.sp,
         fontWeight = FontWeight.Medium,
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(style.metrics.actionRadius))
             .background(style.colors.surfaceVariant.copy(alpha = 0.72f))
             .clickable(onClick = onClick)
+            .heightIn(min = 52.dp)
             .padding(horizontal = 16.dp, vertical = 13.dp)
     )
 }
@@ -1191,13 +1232,14 @@ private fun BookInfoToggleActionItem(
             .clip(RoundedCornerShape(style.metrics.actionRadius))
             .background(style.colors.surfaceVariant.copy(alpha = 0.72f))
             .clickable(onClick = onClick)
+            .heightIn(min = 52.dp)
             .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = text,
             color = style.colors.primaryText,
-            fontSize = 15.sp,
+            fontSize = 16.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f)
         )
@@ -1655,7 +1697,7 @@ private fun BookInfoCoverBackdrop(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun BookInfoPosterHero(
     state: BookInfoUiState,
@@ -1730,15 +1772,20 @@ private fun BookInfoPosterHero(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            if (state.kinds.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            val tags = remember(state.kinds, state.customTags) {
+                (state.kinds + state.customTags)
+                    .map(String::trim)
+                    .filter(String::isNotEmpty)
+                    .distinctBy { it.lowercase(Locale.ROOT) }
+            }
+            if (tags.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    state.kinds.take(6).forEach { kind ->
-                        BookInfoPosterChip(kind, style)
+                    tags.forEach { tag ->
+                        BookInfoPosterChip(tag, style)
                     }
                 }
             }
@@ -1755,11 +1802,10 @@ private fun BookInfoPosterChip(
         text = text,
         color = Color.White,
         fontSize = 12.sp,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+        lineHeight = 17.sp,
         modifier = Modifier
             .clip(RoundedCornerShape(style.metrics.actionRadius))
-            .background(style.colors.scrim.copy(alpha = 0.28f))
+            .background(style.colors.scrim.copy(alpha = 0.64f))
             .padding(horizontal = 10.dp, vertical = 5.dp)
     )
 }
@@ -1969,16 +2015,44 @@ private fun BookInfoPreviewImage(
 @Composable
 private fun BookInfoRichIntro(
     rawIntro: String,
+    sourceUrl: String,
+    actions: BookInfoActions,
     style: BookInfoComposeStyle
 ) {
     val context = LocalContext.current
-    val markwon = remember(context) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val currentActions by rememberUpdatedState(actions)
+    var contentWidth by remember { mutableStateOf(0) }
+    val fallbackImageWidth = remember(context) {
+        (context.resources.displayMetrics.widthPixels - 44.dpToPx()).coerceAtLeast(1)
+    }
+    val imageMaxWidth = contentWidth.takeIf { it > 0 } ?: fallbackImageWidth
+    val markwon = remember(context, sourceUrl, imageMaxWidth) {
+        val requestOptions = RequestOptions()
+            .override(imageMaxWidth)
+            .encodeQuality(88)
+        if (sourceUrl.isNotBlank()) {
+            requestOptions.set(
+                OkHttpModelLoader.sourceOriginOption,
+                sourceUrl
+            )
+        }
         Markwon.builder(context)
+            .usePlugin(
+                GlideImagesPlugin.create(
+                    Glide.with(context).applyDefaultRequestOptions(requestOptions)
+                )
+            )
             .usePlugin(HtmlPlugin.create())
+            .usePlugin(TablePlugin.create(context))
             .build()
     }
     AndroidView(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { size ->
+                if (contentWidth != size.width) contentWidth = size.width
+            },
         factory = {
             TextView(it).apply {
                 includeFontPadding = true
@@ -1989,28 +2063,93 @@ private fun BookInfoRichIntro(
         },
         update = { textView ->
             textView.setTextColor(style.colors.primaryText.toArgb())
-            if (textView.tag != rawIntro) {
-                textView.tag = rawIntro
+            val availableWidth = (contentWidth.takeIf { it > 0 } ?: textView.width)
+                .minus(textView.paddingLeft + textView.paddingRight)
+                .coerceAtLeast(1)
+            val oldTag = textView.getTag(R.id.book_info_rich_intro_image_getter)
+                as? BookInfoRichIntroTag
+            val imageGetter = if (
+                oldTag?.sourceUrl == sourceUrl && oldTag.width == availableWidth
+            ) {
+                oldTag.imageGetter
+            } else {
+                oldTag?.imageGetter?.clear()
+                GlideImageGetter(
+                    context = textView.context,
+                    textView = textView,
+                    lifecycle = lifecycle,
+                    availableWidth = availableWidth,
+                    sourceOrigin = sourceUrl
+                )
+            }
+            if (oldTag == null ||
+                oldTag.rawIntro != rawIntro ||
+                oldTag.sourceUrl != sourceUrl ||
+                oldTag.width != availableWidth
+            ) {
                 when {
                     rawIntro.startsWith("<md>", ignoreCase = true) -> {
-                        markwon.setMarkdown(textView, rawIntro.extractWrappedIntro(4))
+                        val markdown = markwon.toMarkdown(rawIntro.extractWrappedIntro(4))
+                        textView.setMarkdown(
+                            markwon,
+                            markdown,
+                            imgOnLongClickListener = { source ->
+                                currentActions.onIntroImageLongClick(source)
+                            },
+                            imgOnClickListener = { click ->
+                                currentActions.onIntroImageClick(click)
+                            }
+                        )
                     }
 
                     rawIntro.startsWith("<usehtml>", ignoreCase = true) -> {
-                        textView.text = HtmlCompat.fromHtml(
+                        val tagHandler = TextViewTagHandler(
+                            object : TextViewTagHandler.OnButtonClickListener {
+                                override fun onButtonClick(name: String, click: String) {
+                                    currentActions.onIntroButtonClick(name, click)
+                                }
+                            }
+                        )
+                        textView.setHtml(
                             rawIntro.extractWrappedIntro(9),
-                            HtmlCompat.FROM_HTML_MODE_LEGACY
+                            imageGetter,
+                            tagHandler,
+                            imgOnLongClickListener = { source ->
+                                currentActions.onIntroImageLongClick(source)
+                            },
+                            imgOnClickListener = { click ->
+                                currentActions.onIntroImageClick(click)
+                            }
                         )
                     }
 
                     else -> {
+                        textView.movementMethod = null
+                        textView.setTextIsSelectable(true)
                         textView.text = rawIntro
                     }
                 }
             }
+            textView.setTag(
+                R.id.book_info_rich_intro_image_getter,
+                BookInfoRichIntroTag(rawIntro, sourceUrl, availableWidth, imageGetter)
+            )
+        },
+        onRelease = { textView ->
+            (textView.getTag(R.id.book_info_rich_intro_image_getter) as? BookInfoRichIntroTag)
+                ?.imageGetter
+                ?.clear()
+            textView.setTag(R.id.book_info_rich_intro_image_getter, null)
         }
     )
 }
+
+private data class BookInfoRichIntroTag(
+    val rawIntro: String,
+    val sourceUrl: String,
+    val width: Int,
+    val imageGetter: GlideImageGetter
+)
 
 @Composable
 private fun BookInfoIntroContent(
@@ -2029,7 +2168,7 @@ private fun BookInfoIntroContent(
             expandPages = webIntroExpandPages
         )
     } else {
-        BookInfoRichIntro(rawIntro, style)
+        BookInfoRichIntro(rawIntro, state.sourceUrl, actions, style)
     }
 }
 

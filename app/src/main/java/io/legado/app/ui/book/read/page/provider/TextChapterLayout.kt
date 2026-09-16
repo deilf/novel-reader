@@ -1,10 +1,12 @@
 package io.legado.app.ui.book.read.page.provider
 
+import io.legado.app.help.http.dns.DnsScope
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.net.Uri
 import android.text.Layout
+import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -71,6 +73,7 @@ import io.legado.app.utils.StringUtils
 import androidx.core.text.parseAsHtml
 import androidx.core.util.component1
 import androidx.core.util.component2
+import io.legado.app.help.HtmlAppFont
 import io.legado.app.help.TextViewTagHandler
 import io.legado.app.help.TextViewTagHandler.Companion.HR_PLACE_CHAR
 import io.legado.app.help.TextViewTagHandler.Companion.HR_PLACE_STR
@@ -90,6 +93,9 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+import io.legado.app.help.book.usesDirectReader
+import io.legado.app.help.book.highlight.HighlightRules
+import io.legado.app.help.book.highlight.NativeHighlights
 
 class TextChapterLayout(
     scope: CoroutineScope,
@@ -129,12 +135,16 @@ class TextChapterLayout(
     private val indentCharWidth = ChapterProvider.indentCharWidth
     private val stringBuilder = StringBuilder()
 
-    private val paragraphIndent = ReadBookConfig.paragraphIndent
-    private val titleMode = ReadBookConfig.titleMode
-    private val useZhLayout = ReadBookConfig.useZhLayout
+    private val nativeHighlights by lazy {
+        NativeHighlights(HighlightRules.store.active(book.bookUrl, book.isEpub), HighlightRules.palette())
+    }
+    private val directText = !book.isEpub && book.usesDirectReader
+    private val paragraphIndent = if (directText) "" else ReadBookConfig.paragraphIndent
+    private val titleMode = if (directText) 0 else ReadBookConfig.titleMode
+    private val useZhLayout = !directText && ReadBookConfig.useZhLayout
     private val isMiddleTitle = ReadBookConfig.isMiddleTitle
     private val textFullJustify = ReadBookConfig.textFullJustify
-    private val adaptSpecialStyle = AppConfig.adaptSpecialStyle
+    private val adaptSpecialStyle = !directText && AppConfig.adaptSpecialStyle
     private val pageAnim = book.getPageAnim()
 
     private var pendingTextPage = TextPage()
@@ -267,7 +277,7 @@ class TextChapterLayout(
             //标题非隐藏
             val advancedTitleHandled = titleMode == AdvancedTitleConfig.TITLE_MODE_ADVANCED &&
                 !bookChapter.isVolume &&
-                setTypeAdvancedTitle(book, displayTitle)
+                runCatching { setTypeAdvancedTitle(book, displayTitle) }.getOrDefault(false)
             val advancedTitleFallback = titleMode == AdvancedTitleConfig.TITLE_MODE_ADVANCED &&
                 !advancedTitleHandled
             val titleLines: Array<String> = if (advancedTitleHandled) {
@@ -280,7 +290,7 @@ class TextChapterLayout(
                 val clickList = LinkedList<String?>()
                 val titleImg = if (firstLine) {
                     firstLine = false
-                    bookChapter.imgUrl
+                    bookChapter.imgUrl.takeUnless { directText }
                 } else {
                     null
                 }
@@ -372,7 +382,7 @@ class TextChapterLayout(
                     val contentStart = text.indexOf('>')
                     val contentEnd = text.lastIndexOf("<")
                     if (contentStart >= 0 && contentEnd > contentStart) {
-                        if (book.isEpub && AppConfig.useExperimentalEpubCore) {
+                        if (book.isEpub && AppConfig.useEpubCore) {
                             setTypeEpubDiagnosticPage("旧 EPUB 缓存仍是 usehtml，请重新打开或刷新章节缓存", text.take(180))
                             return@forEachIndexed
                         }
@@ -382,21 +392,25 @@ class TextChapterLayout(
                 }
             }
             var text = content.replace(srcReplaceChar, srcReplacementChar)
-            if (isTextImageStyle) {
+            if (isTextImageStyle || directText) {
                 //图片样式为文字嵌入类型
                 val srcList = LinkedList<String>()
                 val clickList = LinkedList<String?>()
                 sb.setLength(0)
-                val matcher = AppPattern.imgPattern.matcher(text)
-                while (matcher.find()) {
-                    matcher.group(1)?.let { src ->
-                        val imageInfo = parseImageInfo(src)
-                        srcList.add(imageInfo.renderSrc)
-                        clickList.add(imageInfo.click)
-                        matcher.appendReplacement(sb, srcReplaceStr)
+                if (directText) {
+                    sb.append(text)
+                } else {
+                    val matcher = AppPattern.imgPattern.matcher(text)
+                    while (matcher.find()) {
+                        matcher.group(1)?.let { src ->
+                            val imageInfo = parseImageInfo(src)
+                            srcList.add(imageInfo.renderSrc)
+                            clickList.add(imageInfo.click)
+                            matcher.appendReplacement(sb, srcReplaceStr)
+                        }
                     }
+                    matcher.appendTail(sb)
                 }
-                matcher.appendTail(sb)
                 text = sb.toString()
                 wordCount += text.replace(noWordCountRegex,"").length
                 setTypeText(
@@ -728,9 +742,10 @@ class TextChapterLayout(
 
     private suspend fun setTypeAdvancedTitle(book: Book, title: String): Boolean {
         if (title.isBlank()) return false
-        if (pageAnim == PageAnim.scrollPageAnim) return false
+        // Scroll mode: still layout as embedded block; Lottie freezes and follows pageOffset.
         currentCoroutineContext().ensureActive()
-        val lottieJson = AdvancedTitleConfig.renderValidLottieJson(book, title) ?: return false
+        val document = AdvancedTitleConfig.renderValidLottieDocument(book, title) ?: return false
+        val lottieJson = document.json
         val layout = resolveAdvancedTitleLayout(lottieJson) ?: return false
         var startY = durY + titleTopSpacing
         if (startY + layout.requiredHeight > visibleHeight) {
@@ -746,7 +761,8 @@ class TextChapterLayout(
                 height = layout.blockHeight,
                 commands = emptyList(),
                 role = AdvancedTitleConfig.LOTTIE_BLOCK_ROLE,
-                payload = lottieJson
+                payload = lottieJson,
+                lottieFallbackAssets = document.fallbackAssets
             )
         )
         durY = startY + layout.requiredHeight
@@ -852,8 +868,32 @@ class TextChapterLayout(
                 }
             )
             pendingTextPage.height = layoutPage.height.coerceAtLeast(viewHeight.toFloat())
+            // Native EPUB pages are painted from epubNativeCommands. Keep a matching
+            // text line only as the stable character coordinate used by search/TTS;
+            // the line itself is never painted.
+            val nativeText = pendingTextPage.extractNativeText()
+            if (nativeText.isNotBlank()) {
+                val pagePrefix = if (textPages.isNotEmpty()) " " else ""
+                val chapterPosition = textPages.sumOf { it.text.length } + pagePrefix.length
+                val textLine = TextLine(
+                    text = pagePrefix + nativeText,
+                    lineTop = paddingTop.toFloat(),
+                    lineBase = paddingTop.toFloat(),
+                    lineBottom = paddingTop.toFloat() + pendingTextPage.height,
+                    paragraphNum = textPages.size + 1,
+                    chapterPosition = chapterPosition,
+                    isParagraphEnd = true,
+                    isHtml = true,
+                    isReadAloudOnly = true
+                )
+                pendingTextPage.addLine(textLine)
+                stringBuilder.append(textLine.text)
+            } else {
+                // Preserve the one-character page separator used by the legacy native
+                // layout for image-only pages, so later page positions remain monotonic.
+                stringBuilder.append(' ')
+            }
             durY = pendingTextPage.height
-            stringBuilder.append(' ')
             prepareNextPageIfNeed()
         }
     }
@@ -1008,35 +1048,6 @@ class TextChapterLayout(
         }
     }
 
-    private fun addEpubBlockDecorations(
-        startPageIndex: Int,
-        startLineIndex: Int,
-        style: EpubBlockDecorationStyle
-    ) {
-        val lastPageIndex = textPages.size
-        for (pageIndex in startPageIndex..lastPageIndex) {
-            val page = if (pageIndex < textPages.size) textPages[pageIndex] else pendingTextPage
-            val fromLine = if (pageIndex == startPageIndex) startLineIndex else 0
-            val targetLines = page.lines.drop(fromLine)
-            if (targetLines.isEmpty()) continue
-            val top = (targetLines.first().lineTop - style.paddingTop).coerceAtLeast(0f)
-            val bottom = (targetLines.last().lineBottom + style.paddingBottom).coerceAtMost(viewHeight.toFloat())
-            if (bottom <= top) continue
-            page.epubDecorations.add(
-                TextPage.EpubDecoration(
-                    left = (paddingLeft + style.marginLeft).coerceAtLeast(0f),
-                    top = top,
-                    right = (paddingLeft + visibleWidth - style.marginRight).coerceAtMost(viewWidth.toFloat()),
-                    bottom = bottom,
-                    backgroundColor = style.backgroundColor,
-                    borderColor = style.borderColor,
-                    borderWidth = style.borderWidth,
-                    radius = style.radius
-                )
-            )
-            page.invalidate()
-        }
-    }
 
     private fun upsertActiveEpubBlockDecoration(page: TextPage, pageIndex: Int) {
         val active = activeEpubBlockDecoration ?: return
@@ -1594,13 +1605,24 @@ class TextChapterLayout(
     ) {
         breakAfterSingleImageIfNeed()
         val textViewTagHandler = TextViewTagHandler()
-        val spanned = htmlContent.parseAsHtml(HtmlCompat.FROM_HTML_MODE_COMPACT, tagHandler = textViewTagHandler)
+        val preparedHtml = HtmlAppFont.prepare(htmlContent)
+        val spanned = SpannableStringBuilder(
+            preparedHtml.parseAsHtml(HtmlCompat.FROM_HTML_MODE_COMPACT, tagHandler = textViewTagHandler)
+        )
+        HtmlAppFont.applySpans(spanned)
         val width = layoutWidth.coerceIn(1, visibleWidth)
         val lineAbsStartX = absStartX + layoutStartOffset
-        val textPaint = contentPaint
+        // Copy: StaticLayout/AppFontSpan must not mutate shared ChapterProvider.contentPaint
+        val textPaint = TextPaint(contentPaint)
         val textColor = ReadBookConfig.textColor
         if (textPaint.color != textColor) {
             textPaint.color = textColor
+        }
+        val highlights = nativeHighlights.prepare(spanned.toString(), false, textPaint)
+        (highlights.text as? android.text.Spanned)?.let { styled ->
+            styled.getSpans(0, styled.length, android.text.style.MetricAffectingSpan::class.java).forEach { span ->
+                spanned.setSpan(span, styled.getSpanStart(span), styled.getSpanEnd(span), styled.getSpanFlags(span))
+            }
         }
         val alignment = htmlContent.epubResourceAlignment()
         val staticLayout = if (atLeastApi28) {
@@ -1720,6 +1742,8 @@ class TextChapterLayout(
                 }
                 spanned.getSpans(charIndex, charIndex + 1, ReplacementSpan::class.java).firstOrNull()?.let { _ -> //自定义标签
                     if (char == HR_PLACE_CHAR) {
+                        val isBold = spanned.hasStyleSpan(charIndex, Typeface.BOLD)
+                        val isItalic = spanned.hasStyleSpan(charIndex, Typeface.ITALIC)
                         columns.add(
                             TextHtmlColumn(
                                 lineAbsStartX,
@@ -1728,17 +1752,20 @@ class TextChapterLayout(
                                 textSize,
                                 textColor,
                                 linkUrl,
-                                isBold = spanned.hasStyleSpan(charIndex, Typeface.BOLD),
-                                isItalic = spanned.hasStyleSpan(charIndex, Typeface.ITALIC),
+                                isBold = isBold,
+                                isItalic = isItalic,
                                 isUnderline = spanned.hasSpan(charIndex, UnderlineSpan::class.java),
                                 isStrikethrough = spanned.hasSpan(charIndex, StrikethroughSpan::class.java),
-                                backgroundColor = extractBackgroundColor(spanned, charIndex)
+                                backgroundColor = extractBackgroundColor(spanned, charIndex),
+                                htmlTypeface = HtmlAppFont.resolveTypeface(spanned, charIndex, isBold, isItalic),
                             )
                         )
                         needAddText = false
                     }
                 }
                 if (needAddText) {
+                    val isBold = spanned.hasStyleSpan(charIndex, Typeface.BOLD)
+                    val isItalic = spanned.hasStyleSpan(charIndex, Typeface.ITALIC)
                     columns.add(
                         TextHtmlColumn(
                             lineAbsStartX + charX,
@@ -1747,11 +1774,12 @@ class TextChapterLayout(
                             textSize,
                             textColor,
                             linkUrl,
-                            isBold = spanned.hasStyleSpan(charIndex, Typeface.BOLD),
-                            isItalic = spanned.hasStyleSpan(charIndex, Typeface.ITALIC),
+                            isBold = isBold,
+                            isItalic = isItalic,
                             isUnderline = spanned.hasSpan(charIndex, UnderlineSpan::class.java),
                             isStrikethrough = spanned.hasSpan(charIndex, StrikethroughSpan::class.java),
-                            backgroundColor = extractBackgroundColor(spanned, charIndex)
+                            backgroundColor = extractBackgroundColor(spanned, charIndex),
+                            htmlTypeface = HtmlAppFont.resolveTypeface(spanned, charIndex, isBold, isItalic),
                         )
                     )
                 }
@@ -1767,6 +1795,7 @@ class TextChapterLayout(
             } else {
                 textLine.addColumns(columns)
             }
+            nativeHighlights.apply(textLine, lineStart, highlights, textPaint)
             calcTextLinePosition(textPages, textLine, stringBuilder.length)
             stringBuilder.append(lineText)
             val textPage = pendingTextPage
@@ -1958,25 +1987,30 @@ class TextChapterLayout(
         clickList: LinkedList<String?>?
     ) {
         breakAfterSingleImageIfNeed()
+        val highlights = nativeHighlights.prepare(text, isTitle, textPaint)
+        val layoutTextHeight = textHeight * highlights.scale
+        val layoutFontMetrics = if (highlights.scale == 1f) fontMetrics else
+            TextPaint(textPaint).apply { textSize *= highlights.scale }.fontMetrics
         val widthsArray = allocateFloatArray(text.length)
         textPaint.getTextWidthsCompat(text, widthsArray, reviewCharWidth)
+        nativeHighlights.measure(highlights, textPaint, widthsArray)
         applyInlineImageWidths(text, widthsArray, srcList)
-        val layout = if (useZhLayout) {
+        val layout = if (useZhLayout && !highlights.metricsChanged) {
             val (words, widths) = measureTextSplit(text, widthsArray)
             val indentSize = if (isFirstLine) paragraphIndent.length else 0
             ZhLayout(text, textPaint, visibleWidth, words, widths, indentSize)
         } else {
-            StaticLayout(text, textPaint, visibleWidth, Layout.Alignment.ALIGN_NORMAL, 0f, 0f, true)
+            StaticLayout(highlights.text, textPaint, visibleWidth, Layout.Alignment.ALIGN_NORMAL, 0f, 0f, true)
         }
         durY = when {
             //标题y轴居中
             emptyContent && textPages.isEmpty() -> {
                 val textPage = pendingTextPage
                 if (textPage.lineSize == 0) {
-                    val ty = (visibleHeight - layout.lineCount * textHeight) / 2
+                    val ty = (visibleHeight - layout.lineCount * layoutTextHeight) / 2
                     if (ty > titleTopSpacing) ty else titleTopSpacing.toFloat()
                 } else {
-                    var textLayoutHeight = layout.lineCount * textHeight
+                    var textLayoutHeight = layout.lineCount * layoutTextHeight
                     val fistLine = textPage.getLine(0)
                     if (fistLine.lineTop < textLayoutHeight + titleTopSpacing) {
                         textLayoutHeight = fistLine.lineTop - titleTopSpacing
@@ -1993,7 +2027,7 @@ class TextChapterLayout(
             isTitle && textPages.isEmpty() && pendingTextPage.lines.isEmpty() -> {
                 when (imageStyle?.uppercase()) {
                     Book.imgStyleSingle -> {
-                        val ty = (visibleHeight - layout.lineCount * textHeight) / 2
+                        val ty = (visibleHeight - layout.lineCount * layoutTextHeight) / 2
                         if (ty > titleTopSpacing) ty else titleTopSpacing.toFloat()
                     }
 
@@ -2005,7 +2039,7 @@ class TextChapterLayout(
         }
         for (lineIndex in 0 until layout.lineCount) {
             val textLine = TextLine(isTitle = isTitle)
-            prepareNextPageIfNeed(fullLineRequestHeight(textHeight, fontMetrics))
+            prepareNextPageIfNeed(fullLineRequestHeight(layoutTextHeight, layoutFontMetrics))
             val lineStart = layout.getLineStart(lineIndex)
             val lineEnd = layout.getLineEnd(lineIndex)
             val lineText = text.substring(lineStart, lineEnd)
@@ -2058,20 +2092,21 @@ class TextChapterLayout(
                     }
                 }
             }
+            nativeHighlights.apply(textLine, lineStart, highlights, textPaint)
             if (doublePage) {
                 textLine.isLeftLine = absStartX < viewWidth / 2
             }
             calcTextLinePosition(textPages, textLine, stringBuilder.length)
             stringBuilder.append(lineText)
-            textLine.upTopBottom(durY, textHeight, fontMetrics)
+            textLine.upTopBottom(durY, layoutTextHeight, layoutFontMetrics)
             val textPage = pendingTextPage
             textPage.addLine(textLine)
-            durY += textHeight * lineSpacingExtra
+            durY += layoutTextHeight * lineSpacingExtra
             if (textPage.height < durY) {
                 textPage.height = durY
             }
         }
-        durY += textHeight * paragraphSpacing / 10f
+        durY += layoutTextHeight * paragraphSpacing / 10f
     }
 
     private fun calcTextLinePosition(
@@ -2422,7 +2457,7 @@ class TextChapterLayout(
         } else {
             runCatching {
                 AnalyzeUrl(
-                    src,
+                    src, dnsScope = DnsScope.IMAGE,
                     baseUrl = bookChapter.baseUrl.ifBlank { bookChapter.url },
                     source = ReadBook.bookSource,
                     ruleData = book,

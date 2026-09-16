@@ -4,6 +4,7 @@ import android.graphics.Paint.FontMetrics
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Build
+import android.os.SystemClock
 import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.core.os.postDelayed
@@ -13,6 +14,7 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookContent
 import io.legado.app.help.book.isEpub
+import io.legado.app.help.AppFont
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReaderFontWeight
@@ -144,6 +146,32 @@ object ChapterProvider {
 
     private var upViewSizeRunnable: Runnable? = null
 
+    /**
+     * Deadline until which reported view sizes are adopted immediately.
+     *
+     * This object outlives the reader, so [viewWidth]/[viewHeight] still hold the size
+     * from the previous visit when a book is opened again. Opening always reports two
+     * sizes — first the full height, then the shorter one once the navigation-bar insets
+     * arrive and the bottom spacer expands — and the height-only debounce below made
+     * which of them won depend on how those passes interleaved with the stale value,
+     * so consecutive visits alternated between text running to the bottom edge and text
+     * stopping above the navigation bar. While the reader is still settling there is
+     * nothing laid out to protect from churn, so adopt every size as it arrives.
+     */
+    private var viewSizeSettleDeadline = 0L
+
+    private const val VIEW_SIZE_SETTLE_WINDOW = 1500L
+
+    private val isViewSizeSettling: Boolean
+        get() = SystemClock.uptimeMillis() < viewSizeSettleDeadline
+
+    /** Called when a reader view is attached, i.e. a fresh round of sizing begins. */
+    fun markViewSizeUnsettled() {
+        viewSizeSettleDeadline = SystemClock.uptimeMillis() + VIEW_SIZE_SETTLE_WINDOW
+        upViewSizeRunnable?.let(handler::removeCallbacks)
+        upViewSizeRunnable = null
+    }
+
     init {
         upStyle()
     }
@@ -176,6 +204,7 @@ object ChapterProvider {
      * 更新样式
      */
     fun upStyle() {
+        AppFont.onReaderFontChanged()
         typeface = getTypeface(ReadBookConfig.textFont)
         getPaints(typeface).let {
             titlePaint = it.first
@@ -284,13 +313,14 @@ object ChapterProvider {
             return
         }
         if (width != viewWidth || height != viewHeight) {
+            // Always drop a scheduled update first: without this a second size report
+            // leaves the first one pending as well, and the two land in whatever order
+            // the looper gets to them.
+            upViewSizeRunnable?.let(handler::removeCallbacks)
+            upViewSizeRunnable = null
             if (ReadBook.book?.isEpub == true) {
-                upViewSizeRunnable?.let {
-                    handler.removeCallbacks(it)
-                    upViewSizeRunnable = null
-                }
                 notifyViewSizeChange(width, height)
-            } else if (width == viewWidth) {
+            } else if (width == viewWidth && !isViewSizeSettling) {
                 upViewSizeRunnable = handler.postDelayed(300) {
                     upViewSizeRunnable = null
                     notifyViewSizeChange(width, height)

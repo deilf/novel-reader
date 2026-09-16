@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.os.Build
+import android.util.Log
 import com.github.liuyueyi.quick.transfer.constants.TransType
 import com.jeremyliao.liveeventbus.LiveEventBus
 import com.jeremyliao.liveeventbus.logger.DefaultLogger
@@ -52,8 +53,10 @@ import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.rhino.NativeBaseSource
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.storage.Backup
+import io.legado.app.help.storage.ReaderDataRepair
 import io.legado.app.help.storage.RestoreJournal
 import io.legado.app.model.BookCover
+import io.legado.app.service.AutoTaskService
 import io.legado.app.utils.ChineseUtils
 import io.legado.app.utils.LogUtils
 import io.legado.app.utils.defaultSharedPreferences
@@ -91,6 +94,7 @@ class App : Application() {
         if (isDebuggable) {
             ThreadUtils.setThreadAssertsDisabledForTesting(true)
         }
+        repairReaderDataBeforeUi()
         oldConfig = Configuration(resources.configuration)
         applyDayNightInit(this)
         registerActivityLifecycleCallbacks(LifecycleHelp)
@@ -144,7 +148,17 @@ class App : Application() {
             if (AppConfig.syncBookProgress) {
                 AppCloudStorage.downloadAllBookProgress()
             }
+            AutoTaskService.restoreSchedule(appCtx)
         }
+    }
+
+    private fun repairReaderDataBeforeUi() {
+        runCatching {
+            appDb.openHelper.writableDatabase
+        }.onFailure {
+            Log.e("App", "open database before reader data repair failed", it)
+        }
+        ReaderDataRepair.repairOnAppStart()
     }
 
     override fun attachBaseContext(base: Context) {

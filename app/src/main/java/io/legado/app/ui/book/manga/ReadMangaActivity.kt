@@ -40,6 +40,7 @@ import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.model.ReadManga
 import io.legado.app.receiver.NetworkChangedListener
+import io.legado.app.ui.book.ShelfExitRequestGate
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.info.BookInfoStartActivityContract
 import io.legado.app.ui.book.manga.config.MangaColorFilterConfig
@@ -126,6 +127,7 @@ class ReadMangaActivity : VMBaseActivity<ActivityMangaBinding, ReadMangaViewMode
 
     private var justInitData: Boolean = false
     private var syncDialog: AlertDialog? = null
+    private val shelfExitRequestGate = ShelfExitRequestGate()
     private val mScrollTimer by lazy {
         ScrollTimer(this, binding.recyclerView, lifecycleScope).apply {
             setSpeed(mangaAutoPageSpeed)
@@ -909,25 +911,29 @@ class ReadMangaActivity : VMBaseActivity<ActivityMangaBinding, ReadMangaViewMode
     }
 
     override fun finish() {
+        if (isFinishing) return
         val book = ReadManga.book ?: return super.finish()
 
         if (ReadManga.inBookshelf) {
             return super.finish()
         }
+        if (!shelfExitRequestGate.tryBegin()) return
 
         if (!AppConfig.showAddToShelfAlert) {
             viewModel.removeFromBookshelf { super.finish() }
         } else {
-            alert(title = getString(R.string.add_to_bookshelf)) {
+            val dialog = alert(title = getString(R.string.add_to_bookshelf)) {
                 setMessage(getString(R.string.check_add_bookshelf, book.name))
                 okButton {
                     ReadManga.book?.removeType(BookType.notShelf)
                     ReadManga.book?.save()
                     ReadManga.inBookshelf = true
                     setResult(RESULT_OK)
+                    super.finish()
                 }
                 noButton { viewModel.removeFromBookshelf { super.finish() } }
             }
+            dialog.setOnCancelListener { shelfExitRequestGate.cancel() }
         }
     }
 

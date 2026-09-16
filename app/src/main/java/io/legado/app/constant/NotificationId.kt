@@ -17,6 +17,9 @@ object NotificationId {
     const val WebDavTask = 109
     const val AiTaskService = 110
     const val PublicWebRelayService = 111
+    const val AutoTaskService = 112
+    const val AutoTaskBookUpdateBase = 14000
+    const val AutoTaskNotifyBase = 24000
     const val Download = 10000
     const val ExportBook = 201
     const val AudioCache = 202

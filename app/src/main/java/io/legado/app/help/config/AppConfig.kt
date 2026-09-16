@@ -190,6 +190,17 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         }
     }
 
+    fun disableOptimizeRender(error: Throwable) {
+        if (!optimizeRender) return
+        optimizeRender = false
+        runCatching {
+            appCtx.putPrefBoolean(PreferKey.optimizeRender, false)
+        }
+        runCatching {
+            AppLog.put("正文优化绘制失败，已回退为直接绘制\n${error.localizedMessage}", error)
+        }
+    }
+
     //dns配置
     private var _hostMap: Map<String, Any?>? = null
     val hostMap: Map<String, Any?>
@@ -2520,14 +2531,23 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         get() = appCtx.getPrefString(PreferKey.doublePageHorizontal)
 
     var epubReadEngine: String
-        get() = appCtx.getPrefString(PreferKey.epubReadEngine, "text") ?: "text"
-        set(value) = appCtx.putPrefString(PreferKey.epubReadEngine, value)
+        get() = EpubReadEnginePolicy.normalize(
+            appCtx.getPrefString(PreferKey.epubReadEngine, EpubReadEnginePolicy.DEFAULT)
+        )
+        set(value) = appCtx.putPrefString(
+            PreferKey.epubReadEngine,
+            EpubReadEnginePolicy.normalize(value)
+        )
 
-    val useExperimentalEpubCore: Boolean
-        get() = epubReadEngine == "core"
+    val useEpubCore: Boolean
+        get() = EpubReadEnginePolicy.usesCore(epubReadEngine)
+
+    var textReadEngine: String
+        get() = TextReadEnginePolicy.normalize(appCtx.getPrefString(PreferKey.textReadEngine))
+        set(value) = appCtx.putPrefString(PreferKey.textReadEngine, TextReadEnginePolicy.normalize(value))
 
     var epubCoreScheduleMode: String
-        get() = appCtx.getPrefString(PreferKey.epubCoreScheduleMode, "normal") ?: "normal"
+        get() = appCtx.getPrefString(PreferKey.epubCoreScheduleMode, "smart") ?: "smart"
         set(value) = appCtx.putPrefString(PreferKey.epubCoreScheduleMode, value)
 
     val progressBarBehavior: String?

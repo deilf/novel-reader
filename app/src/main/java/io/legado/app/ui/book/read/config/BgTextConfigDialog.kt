@@ -1,5 +1,6 @@
 package io.legado.app.ui.book.read.config
 
+import io.legado.app.help.http.dns.DnsScope
 import android.content.DialogInterface
 import android.net.Uri
 import android.os.Bundle
@@ -70,9 +71,11 @@ import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.newCallResponse
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.imageHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.model.ReadBook
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.ui.book.read.ReadBookActivity
 import io.legado.app.ui.file.HandleFileContract
@@ -110,6 +113,7 @@ import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toastOnUi
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.roundToInt
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import splitties.init.appCtx
@@ -315,7 +319,13 @@ class BgTextConfigDialog : BaseDialogFragment(0) {
             contentPadding = PaddingValues(8.dp)
         ) {
             var underlineMode by rememberSaveable(refreshTick) {
-                mutableIntStateOf(ReadBookConfig.durConfig.underlineMode)
+                mutableIntStateOf(ReadBookConfig.underlineMode)
+            }
+            var strokeWidthStep by rememberSaveable(refreshTick) {
+                mutableIntStateOf((ReadBookConfig.underlineStrokeWidth * 2f).roundToInt())
+            }
+            var dashLength by rememberSaveable(refreshTick) {
+                mutableIntStateOf(ReadBookConfig.underlineDashLength.roundToInt())
             }
             ReaderSegmentedOptions(
                 options = listOf(
@@ -330,8 +340,34 @@ class BgTextConfigDialog : BaseDialogFragment(0) {
                 val next = value.toIntOrNull() ?: return@ReaderSegmentedOptions
                 if (next == underlineMode) return@ReaderSegmentedOptions
                 underlineMode = next
-                ReadBookConfig.durConfig.underlineMode = next
-                postReadConfigChanged(6, 9, 11)
+                ReadBookConfig.underlineMode = next
+                postReadConfigChanged(9, 11)
+            }
+            if (underlineMode != 0) {
+                SliderRow(
+                    title = stringResource(R.string.underline_stroke_width),
+                    value = strokeWidthStep,
+                    range = 1..8,
+                    style = style,
+                    valueText = "${strokeWidthStep / 2f} dp"
+                ) {
+                    strokeWidthStep = it
+                    ReadBookConfig.underlineStrokeWidth = it / 2f
+                    postReadConfigChanged(9, 11)
+                }
+            }
+            if (underlineMode == 2) {
+                SliderRow(
+                    title = stringResource(R.string.underline_dash_length),
+                    value = dashLength,
+                    range = 2..30,
+                    style = style,
+                    valueText = "$dashLength dp"
+                ) {
+                    dashLength = it
+                    ReadBookConfig.underlineDashLength = it.toFloat()
+                    postReadConfigChanged(9, 11)
+                }
             }
         }
     }
@@ -448,9 +484,8 @@ class BgTextConfigDialog : BaseDialogFragment(0) {
         onClick: () -> Unit
     ) {
         Surface(
-            modifier = modifier
-                .heightIn(min = 42.dp)
-                .clickable(onClick = onClick),
+            onClick = onClick,
+            modifier = modifier.heightIn(min = 42.dp),
             shape = RoundedCornerShape(style.actionRadius),
             color = if (danger) style.danger.copy(alpha = 0.11f) else style.fieldSurface,
             contentColor = if (danger) style.danger else style.primaryText,
@@ -782,6 +817,11 @@ class BgTextConfigDialog : BaseDialogFragment(0) {
             val configFile = configDir.getFile("readConfig.json")
             configFile.createFileReplace()
             val config = ReadBookConfig.getExportConfig()
+            if (config.readerTemplateId.isNotEmpty()) {
+                val templateFile = configDir.getFile(EpubReaderTemplateStore.singleTemplateFileName)
+                templateFile.writeText(EpubReaderTemplateStore.exportJson(config.readerTemplateId), Charsets.UTF_8)
+                exportFiles.add(templateFile)
+            }
             val fontPath = ReadBookConfig.textFont
             if (fontPath.isNotEmpty()) {
                 val fontDoc = FileDoc.fromFile(fontPath)
@@ -887,10 +927,10 @@ class BgTextConfigDialog : BaseDialogFragment(0) {
             lifecycleScope.launch {
                 kotlin.runCatching {
                     appCtx.toastOnUi("下载图片中...")
-                    val analyzeUrl = AnalyzeUrl(uri.toString())
+                    val analyzeUrl = AnalyzeUrl(uri.toString(), dnsScope = DnsScope.IMAGE)
                     val url = analyzeUrl.urlNoQuery
                     var file = requireContext().externalFiles
-                    val res = okHttpClient.newCallResponse(0) {
+                    val res = imageHttpClient.newCallResponse(0) {
                         addHeaders(analyzeUrl.headerMap)
                         url(url)
                     }

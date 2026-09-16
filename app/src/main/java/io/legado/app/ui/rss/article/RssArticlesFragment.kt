@@ -75,6 +75,7 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
     private var fullRefresh = true
     private var topOverlaySpace = 0
     private var topOverlayEnabled = false
+    private var externalRefreshFinish: (() -> Unit)? = null
     private val embeddedInModernRss: Boolean
         get() = parentFragment is io.legado.app.ui.main.rss.RssFragment
 
@@ -254,15 +255,28 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
         articlesFlowJob?.cancel()
         articlesFlowJob = null
         viewModel.cancelLoading()
+        externalRefreshFinish?.invoke()
+        externalRefreshFinish = null
         WebViewPool.destroyScope(WebViewPool.Scope.RSS)
         super.onDestroyView()
     }
 
-    private fun loadArticles() {
-        fullRefresh = true
+    private fun loadArticles(useDiff: Boolean = false) {
+        fullRefresh = !useDiff
         activityViewModel.rssSource?.let {
             viewModel.loadArticles(it)
-        }
+        } ?: finishExternalRefresh()
+    }
+
+    fun refreshFromParent(onFinished: () -> Unit) {
+        externalRefreshFinish = onFinished
+        loadArticles(useDiff = true)
+    }
+
+    private fun finishExternalRefresh() {
+        val onFinished = externalRefreshFinish ?: return
+        externalRefreshFinish = null
+        binding.recyclerView.post(onFinished)
     }
 
     private fun scrollToBottom(forceLoad: Boolean = false) {
@@ -282,6 +296,7 @@ class RssArticlesFragment() : VMBaseFragment<RssArticlesViewModel>(R.layout.frag
         }
         viewModel.loadFinallyLiveData.observe(viewLifecycleOwner) { hasMore ->
             binding.refreshLayout.isRefreshing = false
+            finishExternalRefresh()
             if (!hasMore) {
                 loadMoreView.noMore()
             }

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,20 +77,11 @@ fun SearchBookListItem(
                 preferThumb = true,
                 onBoundsChanged = { coverBounds.value = it }
             )
-            if (inBookshelf) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(4.dp)
-                        .clip(CircleShape)
-                        .background(palette.accent)
-                        .size(10.dp)
-                )
-            }
         }
         Spacer(modifier = Modifier.width(12.dp))
         SearchBookListText(
             book = book,
+            inBookshelf = inBookshelf,
             rounded = rounded,
             palette = palette,
             showOriginCount = showOriginCount,
@@ -103,6 +93,7 @@ fun SearchBookListItem(
 @Composable
 private fun SearchBookListText(
     book: SearchBook,
+    inBookshelf: Boolean,
     rounded: Boolean,
     palette: BookshelfListPalette,
     showOriginCount: Boolean,
@@ -150,12 +141,19 @@ private fun SearchBookListText(
             overflow = TextOverflow.Ellipsis
         )
         val kinds = remember(book.kind) { book.getKindList() }
-        if (kinds.isNotEmpty()) {
+        if (inBookshelf || kinds.isNotEmpty()) {
             Spacer(modifier = Modifier.size(if (rounded) 4.dp else 1.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(if (rounded) 6.dp else 4.dp),
                 modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
+                if (inBookshelf) {
+                    SearchBookKindChip(
+                        text = "已在书架",
+                        rounded = rounded,
+                        palette = palette
+                    )
+                }
                 kinds.forEach { kind ->
                     SearchBookKindChip(
                         text = kind,

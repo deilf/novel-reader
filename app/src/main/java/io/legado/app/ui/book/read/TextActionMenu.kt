@@ -166,6 +166,9 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
         return allMenuItems.mapNotNull { item ->
             val actionId = menuItemToActionId(item.itemId) ?: return@mapNotNull null
             if (!configuredActionIds.contains(actionId)) return@mapNotNull null
+            if (actionId == ContentSelectConfig.ACTION_REPLACE && !callBack.supportsReplaceRules()) {
+                return@mapNotNull null
+            }
             TextMenuAction(
                 itemId = item.itemId,
                 actionId = actionId,
@@ -399,6 +402,8 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
 
     interface CallBack {
         val selectedText: String
+
+        fun supportsReplaceRules(): Boolean = true
 
         fun onMenuItemSelected(itemId: Int): Boolean
 

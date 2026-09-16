@@ -18,6 +18,7 @@ import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.permission.Permissions
 import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.ui.book.read.config.HighlightRuleManageActivity
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.buildMainHandler
 import io.legado.app.utils.canRead
@@ -72,6 +73,10 @@ class FileAssociationActivity :
         viewModel.importRedThemeLiveData.observe(this) { uri ->
             binding.rotateLoading.gone()
             showDialogFragment(ImportRedThemeDialog(uri, true))
+        }
+        viewModel.importHighlightLiveData.observe(this) { uri ->
+            startActivity<HighlightRuleManageActivity> { data = uri }
+            finish()
         }
         viewModel.importBubbleLiveData.observe(this) { uri ->
             importBubble(uri)

@@ -144,6 +144,8 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
                 RESULT_OK, Intent()
                     .putExtra("index", bookChapter.index)
                     .putExtra("chapterChanged", bookChapter.index != book.durChapterIndex)
+                    .putExtra("chapterUrl", bookChapter.url)
+                    .putExtra("chapterStartFragmentId", bookChapter.startFragmentId.orEmpty())
                     .putExtra("durVolumeIndex", durVolumeIndex)
                     .putExtra("chapterInVolumeIndex", chapterInVolumeIndex)
             )
@@ -154,6 +156,8 @@ class TocActivity : VMBaseActivity<ActivityChapterListBinding, TocViewModel>(),
             RESULT_OK, Intent()
                 .putExtra("index", bookChapter.index)
                 .putExtra("chapterChanged", bookChapter.index != book.durChapterIndex)
+                .putExtra("chapterUrl", bookChapter.url)
+                .putExtra("chapterStartFragmentId", bookChapter.startFragmentId.orEmpty())
         )
         finish()
     }

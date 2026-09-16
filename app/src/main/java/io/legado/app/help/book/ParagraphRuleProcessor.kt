@@ -1,10 +1,12 @@
 package io.legado.app.help.book
 
+import com.google.gson.GsonBuilder
 import com.google.gson.internal.LinkedTreeMap
 import com.script.ScriptBindings
 import com.script.buildScriptBindings
 import com.script.rhino.RhinoScriptEngine
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -12,6 +14,7 @@ import io.legado.app.data.entities.ParagraphRule
 import io.legado.app.data.entities.ParagraphRuleVar
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.CacheManager
+import io.legado.app.help.ImageSourceOptions
 import io.legado.app.help.http.CookieStore
 import io.legado.app.model.Debug
 import io.legado.app.utils.GSON
@@ -40,9 +43,21 @@ object ParagraphRuleProcessor {
     private val pclickImageRegex = Regex(
         """<img\b[^>]*(?:"pclick"\s*:\s*"((?:\\.|[^"\\])*)"|data-legado-pclick\s*=\s*"([^"]*)")[^>]*>"""
     )
+    private val paragraphClickAttributeRegex = Regex(
+        """\s+(?:click|onclick|data-click|data-legado-click)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val paragraphImageDoubleQuotedSrcPattern = Regex(
+        """(?i)\bsrc\s*=\s*"([^"]*(?:"[^>]+\})?)"""
+    )
+    private val paragraphImageSingleQuotedSrcPattern = Regex(
+        """(?i)\bsrc\s*=\s*'([^']*)'"""
+    )
+    private val singleQuotedImageOptionsPattern = Regex("""\{\s*'""")
     private val paragraphImageRegex = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE)
     private val paragraphHtmlTagRegex = Regex("""<[^>]+>""")
     private val paragraphWhitespaceRegex = Regex("""\s+""")
+    private val compactGson = GsonBuilder().disableHtmlEscaping().create()
     private val processCache = LinkedHashMap<String, CachedBookContent>(PROCESS_CACHE_MAX_SIZE, 0.75f, true)
     private var processCacheBytes = 0L
 
@@ -79,7 +94,7 @@ object ParagraphRuleProcessor {
     private fun wrapRuleClick(ruleId: Long, js: String): String = "$RULE_PREFIX$ruleId:$js"
 
     suspend fun process(book: Book, chapter: BookChapter, content: BookContent): BookContent {
-        if (book.isEpub || content.textList.isEmpty()) return content
+        if (book.isEpub || book.usesDirectReader || content.textList.isEmpty()) return content
         val rules = appDb.paragraphRuleDao.enabledRulesForBook(book.bookUrl)
         if (rules.isEmpty()) return content
         val ruleStates = rules.map { RuleState(it, readVars(it.id)) }
@@ -128,7 +143,7 @@ object ParagraphRuleProcessor {
     }
 
     suspend fun process(book: Book, chapter: BookChapter, content: String): String {
-        if (book.isEpub) return content
+        if (book.isEpub || book.usesDirectReader) return content
         val rules = appDb.paragraphRuleDao.enabledRulesForBook(book.bookUrl)
         if (rules.isEmpty()) return content
         val protectedContent = SpecialContentProtector.protect(content)
@@ -152,7 +167,7 @@ object ParagraphRuleProcessor {
     }
 
     suspend fun debug(rule: ParagraphRule, book: Book, chapter: BookChapter, content: String): DebugResult {
-        if (book.isEpub) {
+        if (book.isEpub || book.usesDirectReader) {
             throw NoStackTraceException("Paragraph rules do not run on EPUB books.")
         }
         if (rule.script.isBlank()) {
@@ -622,7 +637,8 @@ object ParagraphRuleProcessor {
     }
 
     private fun wrapPclicks(ruleId: Long, text: String): String {
-        return dedupeParagraphRuleImages(pclickAttributeRegex.replace(text) { match ->
+        val isolated = normalizeParagraphRuleImageClicks(text)
+        return dedupeParagraphRuleImages(pclickAttributeRegex.replace(isolated) { match ->
             val raw = match.groupValues[2]
             val decoded = kotlin.runCatching { GSON.fromJson("\"$raw\"", String::class.java) }.getOrNull() ?: raw
             if (isParagraphClick(decoded)) {
@@ -638,6 +654,120 @@ object ParagraphRuleProcessor {
         val wrapped = paragraphs.map { wrapPclicks(ruleId, it) }
         return ChapterResult(wrapped.joinToString("\n"), wrapped, sourceIndexes.normalizedSourceIndexes(wrapped.size))
     }
+
+    /**
+     * Paragraph-rule output has its own click namespace. Ordinary source-rule
+     * click handlers must not leak into it; only pclick is allowed to reach
+     * the paragraph-rule dispatcher.
+     */
+    internal fun normalizeParagraphRuleImageClicks(text: String): String {
+        return paragraphImageRegex.replace(text) { match ->
+            normalizeParagraphRuleImageTag(match.value)
+        }
+    }
+
+    private fun normalizeParagraphRuleImageTag(imageTag: String): String {
+        val sourceRange = findImageSourceRange(imageTag) ?: return imageTag
+        val rawSource = imageTag.substring(sourceRange.sourceStart, sourceRange.sourceEnd)
+        val parsed = ImageSourceOptions.parse(rawSource)
+        val normalizedSource = if (parsed == null) {
+            rawSource
+        } else {
+            val safeOptions = parsed.options.filterKeys { key ->
+                !key.equals("click", ignoreCase = true) &&
+                    !key.equals("onclick", ignoreCase = true)
+            }
+            if (safeOptions.size == parsed.options.size) {
+                rawSource
+            } else {
+                parsed.source + safeOptions.toOptionSuffix(rawSource)
+            }
+        }
+        val rebuilt = imageTag.replaceRange(
+            sourceRange.sourceStart,
+            sourceRange.sourceEnd,
+            normalizedSource
+        )
+        val normalizedEnd = sourceRange.sourceStart + normalizedSource.length
+        val prefix = paragraphClickAttributeRegex.replace(
+            rebuilt.substring(0, sourceRange.sourceStart),
+            ""
+        )
+        val suffix = paragraphClickAttributeRegex.replace(
+            rebuilt.substring(normalizedEnd),
+            ""
+        )
+        return prefix + normalizedSource + suffix
+    }
+
+    private fun findImageSourceRange(imageTag: String): SourceRange? {
+        val matcher = AppPattern.imgPattern.matcher(imageTag)
+        if (matcher.find()) return SourceRange(matcher.start(1), matcher.end(1))
+        val doubleQuoted = paragraphImageDoubleQuotedSrcPattern.find(imageTag)
+        val doubleRange = doubleQuoted?.groups?.get(1)?.range
+        if (doubleRange != null) return SourceRange(doubleRange.first, doubleRange.last + 1)
+        val singleQuoted = paragraphImageSingleQuotedSrcPattern.find(imageTag)
+        val range = singleQuoted?.groups?.get(1)?.range ?: return null
+        return SourceRange(range.first, range.last + 1)
+    }
+
+    private fun Map<String, String>.toOptionSuffix(rawSource: String): String {
+        if (isEmpty()) return ""
+        var json = compactGson.toJson(this)
+        if (singleQuotedImageOptionsPattern.containsMatchIn(rawSource)) {
+            json = json.toSingleQuotedJson()
+        } else if (rawSource.contains("\\\"")) {
+            json = json.replace("\"", "\\\"")
+        } else if (rawSource.contains("&quot;", ignoreCase = true)) {
+            json = json.replace("\"", "&quot;")
+            if (rawSource.contains("&#123;", ignoreCase = true)) {
+                json = json.replace("{", "&#123;").replace("}", "&#125;")
+            }
+        }
+        return "," + json
+    }
+
+    private fun String.toSingleQuotedJson(): String {
+        val result = StringBuilder(length)
+        var inString = false
+        var escaped = false
+        for (char in this) {
+            if (!inString) {
+                if (char == '\"') {
+                    result.append('\'')
+                    inString = true
+                } else {
+                    result.append(char)
+                }
+                continue
+            }
+            if (escaped) {
+                if (char == '\"') {
+                    result.append('\"')
+                } else {
+                    result.append('\\').append(char)
+                }
+                escaped = false
+            } else {
+                when (char) {
+                    '\\' -> escaped = true
+                    '\"' -> {
+                        result.append('\'')
+                        inString = false
+                    }
+                    '\'' -> result.append("\\'")
+                    else -> result.append(char)
+                }
+            }
+        }
+        if (escaped) result.append('\\')
+        return result.toString()
+    }
+
+    private data class SourceRange(
+        val sourceStart: Int,
+        val sourceEnd: Int
+    )
 
     private fun dedupeParagraphRuleImages(text: String): String {
         if (!text.contains("pclick") && !text.contains("data-legado-pclick")) return text

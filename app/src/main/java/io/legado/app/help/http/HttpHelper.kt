@@ -6,13 +6,16 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.glide.progress.ProgressManager.LISTENER
 import io.legado.app.help.glide.progress.ProgressResponseBody
 import io.legado.app.help.http.CookieManager.cookieJarHeader
+import io.legado.app.help.http.dns.AppDns
+import io.legado.app.help.http.dns.DnsScope
+import io.legado.app.help.http.dns.withDnsScope
+import io.legado.app.help.http.dns.withoutCronet
 import io.legado.app.model.ReadManga
 import io.legado.app.utils.NetworkUtils
 import okhttp3.ConnectionSpec
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.Credentials
-import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.net.InetSocketAddress
@@ -22,8 +25,22 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-private val proxyClientCache: ConcurrentHashMap<String, OkHttpClient> by lazy {
-    ConcurrentHashMap()
+private data class ProxyClientKey(val proxy: String, val scope: DnsScope)
+private val proxyClientCache = object : LinkedHashMap<ProxyClientKey, OkHttpClient>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ProxyClientKey, OkHttpClient>?): Boolean = size > 32
+}
+private val scopedClients = ConcurrentHashMap<DnsScope, OkHttpClient>()
+
+val okHttpClient: OkHttpClient get() = getHttpClient(DnsScope.OTHER)
+val readingHttpClient: OkHttpClient get() = getHttpClient(DnsScope.READING)
+val imageHttpClient: OkHttpClient get() = getHttpClient(DnsScope.IMAGE)
+val aiHttpClient: OkHttpClient get() = getHttpClient(DnsScope.AI)
+val mediaHttpClient: OkHttpClient get() = getHttpClient(DnsScope.MEDIA)
+val syncHttpClient: OkHttpClient get() = getHttpClient(DnsScope.SYNC)
+val importHttpClient: OkHttpClient get() = getHttpClient(DnsScope.IMPORT)
+
+fun getHttpClient(scope: DnsScope): OkHttpClient = scopedClients.getOrPut(scope) {
+    baseHttpClient.newBuilder().withDnsScope(scope).build()
 }
 
 val cookieJar by lazy {
@@ -48,7 +65,7 @@ val cookieJar by lazy {
     }
 }
 
-val okHttpClient: OkHttpClient by lazy {
+private val baseHttpClient: OkHttpClient by lazy {
     val specs = arrayListOf(
         ConnectionSpec.MODERN_TLS,
         ConnectionSpec.COMPATIBLE_TLS,
@@ -98,12 +115,7 @@ val okHttpClient: OkHttpClient by lazy {
             }
             networkResponse
         }
-    if (AppConfig.addressCache.isNotEmpty()) {
-        builder.dns { hostname ->
-            val cachedAddress = AppConfig.addressCache[hostname]
-            cachedAddress ?: Dns.SYSTEM.lookup(hostname)
-        }
-    }
+    builder.dns(AppDns.resolver(DnsScope.OTHER))
     if (AppConfig.isCronet) {
         if (Cronet.loader?.install() == true) {
             Cronet.interceptor?.let {
@@ -127,7 +139,7 @@ val okHttpClient: OkHttpClient by lazy {
 }
 
 val okHttpClientManga by lazy {
-    okHttpClient.newBuilder().run {
+    imageHttpClient.newBuilder().run {
         val interceptors = interceptors()
         interceptors.add(1) { chain ->
             val request = chain.request()
@@ -149,12 +161,14 @@ val okHttpClientManga by lazy {
 /**
  * 缓存代理okHttp
  */
-fun getProxyClient(proxy: String? = null): OkHttpClient {
+@JvmOverloads
+fun getProxyClient(proxy: String? = null, scope: DnsScope = DnsScope.OTHER): OkHttpClient {
     if (proxy.isNullOrBlank()) {
-        return okHttpClient
+        return getHttpClient(scope)
     }
-    proxyClientCache[proxy]?.let {
-        return it
+    val cacheKey = ProxyClientKey(proxy, scope)
+    synchronized(proxyClientCache) {
+        proxyClientCache[cacheKey]?.let { return it }
     }
     val r = Regex("(http|socks4|socks5)://(.*):(\\d{2,5})(@.*@.*)?")
     val ms = r.findAll(proxy)
@@ -169,14 +183,17 @@ fun getProxyClient(proxy: String? = null): OkHttpClient {
         password = group.groupValues[4].split("@")[2]
     }
     if (host != "") {
-        val builder = okHttpClient.newBuilder()
+        val builder = getHttpClient(scope).newBuilder().withoutCronet()
         if (type == "http") {
-            builder.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(host, port)))
+            // Let OkHttp resolve the proxy host using this client's DNS. The
+            // destination hostname still belongs to the proxy.
+            builder.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port)))
         } else {
             builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port)))
         }
         if (username != "" && password != "") {
             builder.proxyAuthenticator { _, response -> //设置代理服务器账号密码
+                if (response.request.header("Proxy-Authorization") != null) return@proxyAuthenticator null
                 val credential: String = Credentials.basic(username, password)
                 response.request.newBuilder()
                     .header("Proxy-Authorization", credential)
@@ -184,8 +201,9 @@ fun getProxyClient(proxy: String? = null): OkHttpClient {
             }
         }
         val proxyClient = builder.build()
-        proxyClientCache[proxy] = proxyClient
-        return proxyClient
+        return synchronized(proxyClientCache) {
+            proxyClientCache.getOrPut(cacheKey) { proxyClient }
+        }
     }
-    return okHttpClient
+    return getHttpClient(scope)
 }

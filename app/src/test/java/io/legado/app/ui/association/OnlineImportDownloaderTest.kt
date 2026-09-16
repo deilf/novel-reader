@@ -19,10 +19,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 class OnlineImportDownloaderTest {
 
     @Test
+    fun bubblePackagesUseSeparateSoftAndHardLimits() {
+        assertEquals(32L * 1024L * 1024L, OnlineImportPayloadType.BUBBLE_PACKAGE.softLimitBytes)
+        assertEquals(256L * 1024L * 1024L, OnlineImportPayloadType.BUBBLE_PACKAGE.maxDownloadBytes)
+    }
+
+    @Test
     fun productionClientUsesDirectConnectionsAndManualRedirects() {
-        assertEquals(Proxy.NO_PROXY, secureOnlineImportClient.proxy)
-        assertFalse(secureOnlineImportClient.followRedirects)
-        assertFalse(secureOnlineImportClient.followSslRedirects)
+        val resolver = Dns { listOf(InetAddress.getByAddress(byteArrayOf(93, 184.toByte(), 216.toByte(), 34))) }
+        val client = createSecureOnlineImportClient(resolver)
+        assertEquals(resolver, client.dns)
+        assertEquals(Proxy.NO_PROXY, client.proxy)
+        assertFalse(client.followRedirects)
+        assertFalse(client.followSslRedirects)
     }
 
     @Test

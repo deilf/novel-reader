@@ -7,6 +7,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.stream.JsonReader
 import io.legado.app.BuildConfig
 import io.legado.app.R
 import io.legado.app.constant.AppConst.androidId
@@ -39,6 +40,11 @@ import io.legado.app.help.LauncherIconHelp
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.upType
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.AdvancedTitleDirectoryRestorer
+import io.legado.app.help.config.AdvancedTitleDirectoryTree
+import io.legado.app.help.config.BubbleDirectoryTransaction
+import io.legado.app.help.config.AdvancedTitlePackageManager
+import io.legado.app.help.config.BubblePackageManager
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.CoverCollectionManager
 import io.legado.app.help.config.NavigationBarIconConfig
@@ -48,11 +54,13 @@ import io.legado.app.help.config.ThemePackageManager
 import io.legado.app.help.config.TopBarConfig
 import io.legado.app.model.VideoPlay.VIDEO_PREF_NAME
 import io.legado.app.model.BookCover
+import io.legado.app.model.AutoTask
+import io.legado.app.model.AutoTaskImport
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.LogUtils
-import io.legado.app.utils.compress.ZipUtils
 import io.legado.app.utils.defaultSharedPreferences
 import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
@@ -75,6 +83,8 @@ import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.UUID
 
 /**
  * 恢复
@@ -98,13 +108,18 @@ object Restore {
     suspend fun restore(context: Context, uri: Uri) {
         LogUtils.d(TAG, "开始恢复备份 uri:$uri")
         kotlin.runCatching {
-            FileUtils.delete(Backup.backupPath)
             if (uri.isContentScheme()) {
-                DocumentFile.fromSingleUri(context, uri)!!.openInputStream()!!.use {
-                    ZipUtils.unZipToPath(it, Backup.backupPath)
+                val tempArchive = File(context.cacheDir, "restore_${UUID.randomUUID()}.zip")
+                try {
+                    DocumentFile.fromSingleUri(context, uri)!!.openInputStream()!!.use { input ->
+                        BackupArchiveExtractor.copyToTemporaryFile(input, tempArchive)
+                    }
+                    BackupArchiveExtractor.extract(tempArchive, File(Backup.backupPath))
+                } finally {
+                    tempArchive.delete()
                 }
             } else {
-                ZipUtils.unZipToPath(File(uri.path!!), Backup.backupPath)
+                BackupArchiveExtractor.extract(File(uri.path!!), File(Backup.backupPath))
             }
         }.onFailure {
             AppLog.put("复制解压文件出错\n${it.localizedMessage}", it)
@@ -121,12 +136,15 @@ object Restore {
 
     suspend fun restoreLocked(path: String) {
         mutex.withLock {
-            RestoreJournal.begin(RestoreJournal.buildSnapshotTargets(path))
+            val journalGeneration = RestoreJournal.begin(RestoreJournal.buildSnapshotTargets(path))
             try {
                 restore(path)
-                RestoreJournal.markPendingValidation()
+                RestoreJournal.markPendingValidation(journalGeneration)
             } catch (e: Throwable) {
-                RestoreJournal.rollbackNow("恢复过程异常: ${e.localizedMessage}")
+                RestoreJournal.rollbackNow(
+                    "恢复过程异常: ${e.localizedMessage}",
+                    journalGeneration
+                )
                 throw e
             }
         }
@@ -134,32 +152,7 @@ object Restore {
 
     private suspend fun restore(path: String) {
         val aes = BackupAES()
-        fileToBookList(path)?.let {
-            it.forEach { book ->
-                book.upType()
-            }
-            it.filter { book -> book.isLocal }
-                .forEach { book ->
-                    book.coverUrl = LocalBook.getCoverPath(book)
-                }
-            val newBooks = arrayListOf<Book>()
-            val ignoreLocalBook = BackupConfig.ignoreLocalBook
-            it.forEach { book ->
-                if (ignoreLocalBook && book.isLocal) {
-                    return@forEach
-                }
-                if (appDb.bookDao.has(book.bookUrl)) {
-                    try {
-                        appDb.bookDao.update(book)
-                    } catch (_: SQLiteConstraintException) {
-                        appDb.bookDao.insert(book)
-                    }
-                } else {
-                    newBooks.add(book)
-                }
-            }
-            insertRestored(newBooks) { appDb.bookDao.insert(*it) }
-        }
+        restoreBooks(path)
         fileToListT<Bookmark>(path, "bookmark.json")?.let {
             insertRestored(it) { items -> appDb.bookmarkDao.insert(*items) }
         }
@@ -203,6 +196,7 @@ object Restore {
             appDb.keyboardAssistsDao.deleteAll() //先删除所有,保证和备份数据一样
             insertRestored(it) { items -> appDb.keyboardAssistsDao.insert(*items) }
         }
+        restoreAutoTasks(path)
         fileToListT<ReadRecord>(path, "readRecord.json")?.let {
             it.forEach { readRecord ->
                 //判断是不是本机记录
@@ -251,14 +245,8 @@ object Restore {
                 }
         }
         //恢复主题配置
-        File(path, ThemeConfig.configFileName).takeIf {
-            it.exists()
-        }?.runCatching {
-            FileUtils.delete(ThemeConfig.configFilePath)
-            copyTo(File(ThemeConfig.configFilePath))
+        restoreFile(File(path, ThemeConfig.configFileName), File(ThemeConfig.configFilePath)) {
             ThemeConfig.upConfig()
-        }?.onFailure {
-            AppLog.put("恢复主题出错\n${it.localizedMessage}", it)
         }
         File(path, BookCover.configFileName).takeIf {
             it.exists()
@@ -270,36 +258,38 @@ object Restore {
         }
         if (!BackupConfig.ignoreReadConfig) {
             //恢复阅读界面配置
-            File(path, ReadBookConfig.configFileName).takeIf {
-                it.exists()
-            }?.runCatching {
-                FileUtils.delete(ReadBookConfig.configFilePath)
-                copyTo(File(ReadBookConfig.configFilePath))
+            File(path, EpubReaderTemplateStore.fileName).takeIf { it.isFile }?.let {
+                EpubReaderTemplateStore.restoreJson(it.readText(Charsets.UTF_8))
+            }
+            restoreFile(File(path, ReadBookConfig.configFileName), File(ReadBookConfig.configFilePath)) {
                 ReadBookConfig.initConfigs()
-            }?.onFailure {
-                AppLog.put("恢复阅读界面出错\n${it.localizedMessage}", it)
             }
-            File(path, ReadBookConfig.shareConfigFileName).takeIf {
-                it.exists()
-            }?.runCatching {
-                FileUtils.delete(ReadBookConfig.shareConfigFilePath)
-                copyTo(File(ReadBookConfig.shareConfigFilePath))
+            restoreFile(File(path, ReadBookConfig.shareConfigFileName), File(ReadBookConfig.shareConfigFilePath)) {
                 ReadBookConfig.initShareConfig()
-            }?.onFailure {
-                AppLog.put("恢复阅读界面出错\n${it.localizedMessage}", it)
             }
+        }
+        if (!BackupConfig.ignoreReadConfig) {
+            listOf(ReadBookConfig.epubConfigFileName, ReadBookConfig.epubShareConfigFileName).forEach { name ->
+                restoreFile(File(path, name), File(appCtx.filesDir, name))
+            }
+            ReadBookConfig.initConfigs()
+            ReadBookConfig.initShareConfig()
         }
         restoreBackgroundAssets(path)
         restoreThemePackages(path)
         restoreNavigationIcons(path)
         restoreTopBarPackages(path)
         restoreCoverCollections(path)
+        restoreVisualResourcePackages(path)
         restoreSourceRuntime(path)
         appCtx.getSharedPreferences(path, "config")?.all?.let { map ->
             val edit = appCtx.defaultSharedPreferences.edit()
 
             map.forEach { (key, value) ->
-                if (BackupConfig.keyIsNotIgnore(key)) {
+                if (BackupConfig.keyIsNotIgnore(key) &&
+                    key != PreferKey.advancedTitleLottieJson &&
+                    key != PreferKey.advancedTitleLottiePath
+                ) {
                     when (key) {
                         PreferKey.webDavPassword, PreferKey.s3SecretKey, PreferKey.s3SessionToken -> {
                             kotlin.runCatching {
@@ -330,9 +320,13 @@ object Restore {
             edit.commit()
         }
         normalizeBackgroundPrefs()
-        normalizeStringPrefs()
+        // The restored preferences can point at a different font folder, and any cached
+        // lookup from before the restore would now be answering for the wrong one.
+        io.legado.app.help.AppFont.invalidateFontList()
+        ReaderDataRepair.repairAfterRestore()
         refreshWebDavAfterRestore()
         restoreReadConfigBackgrounds()
+        ReaderDataRepair.repairAfterRestore()
         restoreAppliedUiPackages()
         appCtx.getSharedPreferences(path, "videoConfig")?.all?.let { map ->
             appCtx.getSharedPreferences(VIDEO_PREF_NAME, Context.MODE_PRIVATE).edit().apply {
@@ -348,14 +342,7 @@ object Restore {
                 apply()
             }
         }
-        ReadBookConfig.apply {
-            comicStyleSelect = appCtx.getPrefInt(PreferKey.comicStyleSelect)
-            readStyleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
-            shareLayout = appCtx.getPrefBoolean(PreferKey.shareLayout)
-            hideStatusBar = appCtx.getPrefBoolean(PreferKey.hideStatusBar)
-            hideNavigationBar = appCtx.getPrefBoolean(PreferKey.hideNavigationBar)
-            autoReadSpeed = appCtx.getPrefInt(PreferKey.autoReadSpeed, 46)
-        }
+        AutoTask.refreshSchedule()
         appCtx.toastOnUi(R.string.restore_success)
         withContext(Main) {
             delay(100)
@@ -413,6 +400,20 @@ object Restore {
                 }
         }.onFailure {
             AppLog.put("恢复角色资料出错\n${it.localizedMessage}", it)
+        }
+    }
+
+    private fun restoreAutoTasks(path: String) {
+        val file = File(path, "autoTask.json")
+        if (!file.isFile) return
+        runCatching {
+            val rules = AutoTaskImport.parse(file.readText(Charsets.UTF_8)).getOrThrow()
+            if (rules.isNotEmpty()) {
+                AutoTask.upsert(rules)
+            }
+        }.onFailure {
+            AppLog.put("恢复定时任务出错\n${it.localizedMessage}", it)
+            appCtx.toastOnUi("恢复定时任务失败，已保留当前任务")
         }
     }
 
@@ -491,31 +492,42 @@ object Restore {
         return null
     }
 
-    private fun fileToBookList(path: String): List<Book>? {
+    private fun restoreBooks(path: String) {
         val fileName = "bookshelf.json"
         try {
             val file = File(path, fileName)
             if (file.exists()) {
                 LogUtils.d(TAG, "阅读恢复备份 $fileName 文件大小 ${file.length()}")
-                val list = arrayListOf<Book>()
-                file.reader().use { reader ->
-                    val jsonArray = JsonParser.parseReader(reader).asJsonArray
-                    jsonArray.forEachIndexed { index, element ->
-                        val bookJson = element.deepCopy()
-                        sanitizeBookJson(bookJson)
-                        runCatching {
-                            GSON.fromJson(bookJson, Book::class.java)
-                        }.onSuccess { book ->
-                            if (book != null) {
-                                list.add(book)
-                            }
-                        }.onFailure {
-                            AppLog.put("$fileName 第${index + 1}项读取失败\n${it.localizedMessage}", it)
+                val pendingNewBooks = ArrayList<Book>(RESTORE_INSERT_BATCH_SIZE)
+                val ignoreLocalBook = BackupConfig.ignoreLocalBook
+                var restoredCount = 0
+                fun flushNewBooks() {
+                    if (pendingNewBooks.isEmpty()) return
+                    appDb.bookDao.insert(*pendingNewBooks.toTypedArray())
+                    pendingNewBooks.clear()
+                }
+                forEachBookBackup(file) { index, book ->
+                    book.upType()
+                    if (book.isLocal) {
+                        book.coverUrl = LocalBook.getCoverPath(book)
+                        if (ignoreLocalBook) return@forEachBookBackup
+                    }
+                    if (appDb.bookDao.has(book.bookUrl)) {
+                        try {
+                            appDb.bookDao.update(book)
+                        } catch (_: SQLiteConstraintException) {
+                            appDb.bookDao.insert(book)
+                        }
+                    } else {
+                        pendingNewBooks.add(book)
+                        if (pendingNewBooks.size >= RESTORE_INSERT_BATCH_SIZE) {
+                            flushNewBooks()
                         }
                     }
+                    restoredCount++
                 }
-                LogUtils.d(TAG, "阅读恢复备份 $fileName 列表大小 ${list.size}")
-                return list
+                flushNewBooks()
+                LogUtils.d(TAG, "阅读恢复备份 $fileName 列表大小 $restoredCount")
             } else {
                 LogUtils.d(TAG, "阅读恢复备份 $fileName 文件不存在")
             }
@@ -523,7 +535,38 @@ object Restore {
             AppLog.put("$fileName\n读取解析出错\n${e.localizedMessage}", e)
             appCtx.toastOnUi("$fileName\n读取文件出错\n${e.localizedMessage}")
         }
-        return null
+    }
+
+    internal fun forEachBookBackup(
+        file: File,
+        onError: (Int, Throwable) -> Unit = { index, error ->
+            AppLog.put(
+                "bookshelf.json 第${index + 1}项读取失败\n${error.localizedMessage}",
+                error
+            )
+        },
+        onBook: (Int, Book) -> Unit
+    ) {
+        file.reader(Charsets.UTF_8).buffered().use { input ->
+            JsonReader(input).use { reader ->
+                reader.beginArray()
+                var index = 0
+                while (reader.hasNext()) {
+                    val currentIndex = index++
+                    val element = JsonParser.parseReader(reader)
+                    val bookJson = element.deepCopy()
+                    sanitizeBookJson(bookJson)
+                    runCatching {
+                        GSON.fromJson(bookJson, Book::class.java)
+                    }.onSuccess { book ->
+                        if (book != null) onBook(currentIndex, book)
+                    }.onFailure { error ->
+                        onError(currentIndex, error)
+                    }
+                }
+                reader.endArray()
+            }
+        }
     }
 
     private fun sanitizeBookJson(element: JsonElement) {
@@ -569,15 +612,7 @@ object Restore {
 
     private fun restoreBackgroundAssets(path: String) {
         backgroundAssetDirNames.forEach { dirName ->
-            val sourceDir = File(path, dirName)
-            if (!sourceDir.exists() || !sourceDir.isDirectory) return@forEach
-            val targetDir = appCtx.externalFiles.getFile(dirName)
-            kotlin.runCatching {
-                FileUtils.delete(targetDir, deleteRootDir = true)
-                copyDir(sourceDir, targetDir)
-            }.onFailure {
-                AppLog.put("恢复背景图片出错 $dirName\n${it.localizedMessage}", it)
-            }
+            restorePackageDirectory(File(path, dirName), appCtx.externalFiles.getFile(dirName))
         }
     }
 
@@ -588,8 +623,7 @@ object Restore {
             readConfigBgFileName(config.bgTypeNight, config.bgStrNight)?.let(names::add)
             readConfigBgFileName(config.bgTypeEInk, config.bgStrEInk)?.let(names::add)
         }
-        ReadBookConfig.configList.forEach(::collect)
-        collect(ReadBookConfig.shareConfig)
+        ReadBookConfig.allLayoutConfigs().forEach(::collect)
         if (names.isEmpty()) return
         val restored = AppCloudStorage.downBgs(names)
         if (restored.isEmpty()) return
@@ -599,18 +633,10 @@ object Restore {
                 changed = true
             }
         }
-        ReadBookConfig.configList.forEach(::normalize)
-        normalize(ReadBookConfig.shareConfig)
+        ReadBookConfig.allLayoutConfigs().forEach(::normalize)
         if (!changed) return
         runCatching {
-            FileUtils.delete(ReadBookConfig.configFilePath)
-            FileUtils.createFileIfNotExist(ReadBookConfig.configFilePath)
-                .writeText(GSON.toJson(ReadBookConfig.configList))
-            FileUtils.delete(ReadBookConfig.shareConfigFilePath)
-            FileUtils.createFileIfNotExist(ReadBookConfig.shareConfigFilePath)
-                .writeText(GSON.toJson(ReadBookConfig.shareConfig))
-            ReadBookConfig.initConfigs()
-            ReadBookConfig.initShareConfig()
+            ReadBookConfig.saveLayoutFiles()
         }.onFailure {
             AppLog.put("恢复正文背景图片配置出错\n${it.localizedMessage}", it)
         }
@@ -654,38 +680,78 @@ object Restore {
     }
 
     private fun restoreThemePackages(path: String) {
-        val sourceDir = File(path, "themePackages")
-        if (!sourceDir.exists() || !sourceDir.isDirectory) return
-        val targetDir = ThemePackageManager.rootDir
-        kotlin.runCatching {
-            FileUtils.delete(targetDir, deleteRootDir = true)
-            copyDir(sourceDir, targetDir)
-        }.onFailure {
-            AppLog.put("恢复主题包出错\n${it.localizedMessage}", it)
-        }
+        restorePackageDirectory(File(path, "themePackages"), ThemePackageManager.rootDir)
     }
 
     private fun restoreNavigationIcons(path: String) {
-        val sourceDir = File(path, "navigationBarPackages")
-        if (!sourceDir.exists() || !sourceDir.isDirectory) return
-        val targetDir = NavigationBarIconConfig.rootDir
-        kotlin.runCatching {
-            FileUtils.delete(targetDir, deleteRootDir = true)
-            copyDir(sourceDir, targetDir)
-        }.onFailure {
-            AppLog.put("恢复导航栏图标出错\n${it.localizedMessage}", it)
-        }
+        restorePackageDirectory(File(path, "navigationBarPackages"), NavigationBarIconConfig.rootDir)
     }
 
     private fun restoreTopBarPackages(path: String) {
-        val sourceDir = File(path, "topBarPackages")
-        if (!sourceDir.exists() || !sourceDir.isDirectory) return
-        val targetDir = TopBarConfig.rootDir
-        kotlin.runCatching {
-            FileUtils.delete(targetDir, deleteRootDir = true)
-            copyDir(sourceDir, targetDir)
-        }.onFailure {
-            AppLog.put("恢复顶栏包出错\n${it.localizedMessage}", it)
+        restorePackageDirectory(File(path, "topBarPackages"), TopBarConfig.rootDir)
+    }
+
+    private fun restoreVisualResourcePackages(path: String) {
+        io.legado.app.help.reader.ReaderAssets.store.restoreFrom(
+            File(path, io.legado.app.help.reader.ReaderAssets.BACKUP_DIR)
+        )
+        io.legado.app.help.book.highlight.HighlightRules.store.restoreFrom(
+            File(path, io.legado.app.help.book.highlight.HighlightRules.BACKUP_DIR)
+        )
+        File(path, Backup.advancedTitlePackagesDirName)
+            .takeIf { it.isDirectory }
+            ?.let { sourceDir ->
+                AdvancedTitlePackageManager.restorePackagesFrom(sourceDir)
+            }
+        restorePackageDirectory(
+            sourceDir = File(path, Backup.bubblePackagesDirName),
+            targetDir = BubblePackageManager.rootDir
+        ) {
+            BubblePackageManager.invalidateCurrentEntry()
+        }
+    }
+
+    internal fun restorePackageDirectory(
+        sourceDir: File,
+        targetDir: File,
+        afterRestore: () -> Unit = {}
+    ) {
+        if (!sourceDir.exists()) return
+        // Complete and verify the copy before touching the live directory. Propagate any
+        // install failure so restoreLocked can roll back the other journaled resources too.
+        AdvancedTitleDirectoryRestorer(
+            mutationLock = this,
+            expectedTargetParent = requireNotNull(targetDir.parentFile),
+            verifyInstalledRoot = { AdvancedTitleDirectoryTree.verifyEquivalent(sourceDir, it) },
+            invalidateCache = afterRestore
+        ).restore(sourceDir, targetDir)
+    }
+
+    /** The same non-destructive replacement is used when restoring journal snapshots. */
+    internal fun restoreFile(source: File, requestedTarget: File, afterRestore: () -> Unit = {}) {
+        if (!source.exists()) return
+        require(source.isFile) { "备份配置文件无效：${source.name}" }
+        val parent = requireNotNull(requestedTarget.parentFile).canonicalFile
+        check(parent.isDirectory || parent.mkdirs()) { "无法创建恢复目录" }
+        val target = AdvancedTitleDirectoryTree.resolveDirectChild(requestedTarget, parent)
+        require(!target.exists() || target.isFile) { "恢复目标不是文件：${target.name}" }
+        AdvancedTitleDirectoryTree.requireDisjoint(source, target)
+        val staging = File(parent, ".${target.name}.staging-${UUID.randomUUID()}")
+        val backup = File(parent, ".${target.name}.backup-${UUID.randomUUID()}")
+        check(staging.createNewFile()) { "无法创建恢复临时文件" }
+        try {
+            val copied = FileOutputStream(staging).use { output ->
+                val count = source.inputStream().use { it.copyTo(output) }
+                output.fd.sync()
+                count
+            }
+            check(copied == source.length() && staging.length() == copied) { "备份配置文件复制不完整" }
+            BubbleDirectoryTransaction().install(target, staging, backup) { afterRestore() }
+            if (!AdvancedTitleDirectoryRestorer.cleanupRestoreArtifacts(target)) {
+                runCatching { AppLog.put("无法清理已恢复配置的临时文件：${target.name}") }
+            }
+        } finally {
+            staging.delete()
         }
     }
 
@@ -716,15 +782,7 @@ object Restore {
         postEvent(EventBus.NAVIGATION_BAR_CHANGED, AppConfig.isNightTheme)
     }
     private fun restoreCoverCollections(path: String) {
-        val sourceDir = File(path, "coverCollections")
-        if (!sourceDir.exists() || !sourceDir.isDirectory) return
-        val targetDir = CoverCollectionManager.rootDir
-        kotlin.runCatching {
-            FileUtils.delete(targetDir, deleteRootDir = true)
-            copyDir(sourceDir, targetDir)
-        }.onFailure {
-            AppLog.put("恢复封面图集出错\n${it.localizedMessage}", it)
-        }
+        restorePackageDirectory(File(path, "coverCollections"), CoverCollectionManager.rootDir)
     }
 
     private fun normalizeBackgroundPrefs() {

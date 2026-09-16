@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.read
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentCallbacks2
@@ -11,6 +12,7 @@ import android.graphics.Color
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.InputDevice
@@ -28,15 +30,18 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.get
 import androidx.core.view.isVisible
 import androidx.core.view.doOnLayout
+import androidx.core.view.doOnPreDraw
 import androidx.core.view.size
 import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
@@ -83,6 +88,10 @@ import io.legado.app.help.book.library.LibraryCloudSync
 import io.legado.app.help.book.library.LibraryContainerManager
 import io.legado.app.help.book.isAudio
 import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.usesDirectReader
+import io.legado.app.help.book.ReaderTextPositionStore
+import io.legado.app.model.localBook.epubcore.direct.TextReaderSessionProvider
+import io.legado.app.model.localBook.epubcore.direct.TextReaderImageActionRequest
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalTxt
 import io.legado.app.help.book.isMobi
@@ -114,6 +123,8 @@ import io.legado.app.lib.theme.themeCardColorOrDefault
 import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
+import io.legado.app.model.inheritNotShelfStateFrom
+import io.legado.app.model.resolveStoredBookshelfState
 import io.legado.app.model.ImageProvider
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
@@ -121,10 +132,24 @@ import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isJsonObject
+import io.legado.app.utils.textHeight
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.epubcore.facade.EpubCoreProvider
+import io.legado.app.model.localBook.epubcore.facade.EpubReadableChapterPolicy
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectChapter
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectPosition
+import io.legado.app.model.localBook.epubcore.direct.EpubDirectSession
+import io.legado.app.model.localBook.epubcore.font.EpubPreparedReaderFont
+import io.legado.app.model.localBook.epubcore.font.EpubReaderFontPreparer
 import io.legado.app.model.localBook.epubcore.layout.EpubCoreLayoutConfig
-import io.legado.app.model.localBook.epubcore.web.EpubWebSelectionAction
+import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeConfig
+import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeData
+import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeLegacyFieldPolicy
+import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeModePolicy
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplate
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
+import io.legado.app.model.localBook.epubcore.template.EpubTemplateException
+import io.legado.app.model.localBook.epubcore.template.EpubTemplateActiveClock
 import io.legado.app.model.localBook.MobiFile
 import io.legado.app.receiver.NetworkChangedListener
 import io.legado.app.receiver.TimeBatteryReceiver
@@ -136,17 +161,21 @@ import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.changesource.ChangeChapterSourceDialog
 import io.legado.app.ui.book.character.BookCharacterManageActivity
 import io.legado.app.ui.book.info.BookInfoStartActivityContract
+import io.legado.app.ui.book.ShelfExitRequestGate
 import io.legado.app.ui.book.read.config.AutoReadDialog
 import io.legado.app.ui.book.read.config.BgTextConfigDialog.Companion.BG_COLOR
 import io.legado.app.ui.book.read.config.BgTextConfigDialog.Companion.TEXT_ACCENT_COLOR
 import io.legado.app.ui.book.read.config.BgTextConfigDialog.Companion.TEXT_COLOR
 import io.legado.app.ui.book.read.config.MoreConfigDialog
 import io.legado.app.ui.book.read.config.ParagraphRuleManageActivity
+import io.legado.app.ui.book.read.config.HighlightRuleManageActivity
+import io.legado.app.help.book.highlight.HighlightRules
 import io.legado.app.ui.book.read.config.ParagraphRuleQuickDialog
 import io.legado.app.ui.book.read.config.ReadMenuCustomButtonEditActivity
 import io.legado.app.ui.book.read.config.ReadMenuButtonManageActivity
 import io.legado.app.ui.book.read.config.ReadAloudDialog
 import io.legado.app.ui.book.read.config.ReadStyleDialog
+import io.legado.app.ui.book.read.config.ReaderTemplateDialog
 import io.legado.app.ui.book.read.config.TipConfigDialog.Companion.TIP_COLOR
 import io.legado.app.ui.book.read.config.TipConfigDialog.Companion.TIP_DIVIDER_COLOR
 import io.legado.app.ui.book.read.page.ContentTextView
@@ -157,7 +186,25 @@ import io.legado.app.ui.book.read.page.entities.PageDirection
 import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.ui.book.read.page.provider.LayoutProgressListener
+import io.legado.app.ui.book.read.epub.EpubChapterNavigationPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectAutoPager
+import io.legado.app.ui.book.read.epub.EpubDirectFailureDiagnostics
 import io.legado.app.ui.book.read.epub.EpubReadView
+import io.legado.app.ui.book.read.epub.ReaderTemplatePreviewDialog
+import io.legado.app.ui.book.read.epub.EpubDirectInitialFragmentPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectNavigationTargetPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectPageAnimationPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectPrefetchPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectPrefetchScheduler
+import io.legado.app.ui.book.read.epub.EpubDirectReadAloudPagePolicy
+import io.legado.app.ui.book.read.epub.EpubDirectRequestCommitPolicy
+import io.legado.app.ui.book.read.epub.EpubDirectRenderFailurePolicy
+import io.legado.app.ui.book.read.epub.EpubDirectWebViewBudgetPolicy
+import io.legado.app.ui.book.read.epub.EpubPageTurnResult
+import io.legado.app.ui.book.read.epub.EpubPerformanceBudget
+import io.legado.app.ui.book.read.epub.EpubPerformanceMode
+import io.legado.app.ui.book.read.epub.EpubLayoutReadyActionGate
+import io.legado.app.ui.book.read.epub.EpubTocNavigationPolicy
 import io.legado.app.ui.book.searchContent.SearchContentActivity
 import io.legado.app.ui.book.searchContent.SearchResult
 import io.legado.app.model.SourceCallBack
@@ -175,6 +222,7 @@ import io.legado.app.ui.replace.edit.ReplaceEditActivity
 import io.legado.app.ui.widget.ModernActionPopup
 import io.legado.app.ui.widget.PopupAction
 import io.legado.app.ui.widget.dialog.PhotoDialog
+import io.legado.app.ui.widget.dialog.TextDialog
 import io.legado.app.ui.widget.dialog.BottomWebViewDialog
 import io.legado.app.ui.widget.dialog.CommentWebViewSession
 import io.legado.app.utils.ACache
@@ -196,6 +244,7 @@ import io.legado.app.utils.isTrue
 import io.legado.app.utils.launch
 import io.legado.app.utils.navigationBarGravity
 import io.legado.app.utils.observeEvent
+import io.legado.app.utils.openUrl
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.setLightStatusBar
 import io.legado.app.utils.share
@@ -214,18 +263,19 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import com.script.rhino.runScriptWithContext
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
-import io.legado.app.model.localBook.epubcore.layout.EpubCorePage
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import java.text.DateFormat
 import java.util.Date
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Matcher
 
 /**
@@ -247,10 +297,14 @@ class ReadBookActivity : BaseReadBookActivity(),
     AutoReadDialog.CallBack,
     TxtTocRuleDialog.CallBack,
     ColorPickerDialogListener,
-    LayoutProgressListener {
+    LayoutProgressListener,
+    ReaderTemplateDialog.PreviewHost {
 
     private var pendingReadAloudPlayerOpen = false
     private var pendingReadAloudPanelIntentOpen = false
+    private val shelfExitRequestGate = ShelfExitRequestGate()
+    private val failedReaderTemplateHashes = HashSet<String>()
+    private var requestedReaderTemplate: EpubReaderTemplate? = null
 
     private val tocActivity =
         registerForActivityResult(TocActivityResult()) {
@@ -260,7 +314,18 @@ class ReadBookActivity : BaseReadBookActivity(),
                 val chapterIndex = it[0] as Int
                 val chapterPos = it[1] as Int
                 if (isEpubCoreMode()) {
-                    skipToChapter(chapterIndex)
+                    if (ReadBook.book?.isEpub == true) {
+                        val chapterUrl = (it.getOrNull(5) as? String).orEmpty()
+                        val selection = EpubTocNavigationPolicy.selection(
+                            chapterIndex = chapterIndex,
+                            chapterUrl = chapterUrl,
+                            startFragmentId = it.getOrNull(6) as? String
+                        )
+                        openEpubTocChapter(selection.chapterIndex, selection.fragmentId)
+                    } else {
+                        ReadBook.saveCurrentBookProgress()
+                        openDirectTextChapter(chapterIndex, chapterPos)
+                    }
                 } else {
                     viewModel.openChapter(chapterIndex, chapterPos)
                 }
@@ -277,6 +342,9 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (it.resultCode == RESULT_OK) {
                 viewModel.upBookSource {
                     upMenuView()
+                    if (isEpubCoreMode() && ReadBook.book?.isEpub == false) {
+                        ReadBook.reloadCurrentContent("source-edited")
+                    }
                 }
             }
         }
@@ -340,7 +408,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
     override val isInitFinish: Boolean get() = viewModel.isInitFinish
     override val isScroll: Boolean get() = binding.readView.isScroll
-    private val isAutoPage get() = binding.readView.isAutoPage
+    private val isAutoPage
+        get() = binding.readView.isAutoPage ||
+            epubDirectAutoPager.isRunning
     override var isShowingSearchResult = false
     override var isSelectingSearchResult = false
         set(value) {
@@ -376,19 +446,23 @@ class ReadBookActivity : BaseReadBookActivity(),
     private var syncDialog: AlertDialog? = null
     private data class EpubCoreNavigationRequest(
         val chapterIndex: Int,
-        val resetPageOffset: Boolean
+        val resetPageOffset: Boolean,
+        val boundaryTransition: Boolean = false,
+        val targetFragmentId: String? = null
+    )
+
+    private data class EpubDirectLoadResult(
+        val session: EpubDirectSession,
+        val chapter: io.legado.app.model.localBook.epubcore.direct.EpubDirectChapter,
+        val config: EpubCoreLayoutConfig,
+        val ownsSession: Boolean,
+        val textPosition: Int? = null
     )
 
     private data class SelectedParagraphForImage(
         val contentIndex: Int,
         val text: String
     )
-
-    private enum class EpubCorePageEdge {
-        Start,
-        End,
-        Keep
-    }
 
     private enum class EpubCoreNavigationMode {
         Sequential,
@@ -397,38 +471,63 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     private enum class EpubCoreScheduleMode(
         val key: String,
-        val titleRes: Int,
-        val pageBudget: Int,
-        val workerCount: Int
+        val titleRes: Int
     ) {
-        Light("light", R.string.epub_core_schedule_mode_light, pageBudget = 10, workerCount = 1),
-        Normal("normal", R.string.epub_core_schedule_mode_normal, pageBudget = 15, workerCount = 2),
-        Performance("performance", R.string.epub_core_schedule_mode_performance, pageBudget = 20, workerCount = 5);
+        Smart(EpubPerformanceMode.Smart.key, R.string.epub_core_schedule_mode_smart),
+        PowerSave(EpubPerformanceMode.PowerSave.key, R.string.epub_core_schedule_mode_power_save),
+        Balanced(EpubPerformanceMode.Balanced.key, R.string.epub_core_schedule_mode_balanced),
+        Smooth(EpubPerformanceMode.Smooth.key, R.string.epub_core_schedule_mode_smooth),
+        Extreme(EpubPerformanceMode.Extreme.key, R.string.epub_core_schedule_mode_extreme);
 
         companion object {
             fun fromKey(key: String?): EpubCoreScheduleMode {
-                return values().firstOrNull { it.key == key } ?: Normal
+                val normalized = EpubPerformanceMode.fromKey(key).key
+                return values().firstOrNull { it.key == normalized } ?: Smart
             }
         }
     }
 
     private var epubCoreActive = false
+    private var epubAnnotationBackCheckPending = false
     private var epubCorePageCount = 0
     private var epubCoreLoading = false
     private var epubCoreLoadingChapterIndex: Int? = null
-    private var epubCorePendingNavigation: EpubCoreNavigationRequest? = null
     private var epubCoreRequestSeq = 0L
     private var epubCoreLoadJob: Job? = null
-    private val epubCorePrefetchJobs = mutableListOf<Job>()
-    private var epubCoreWaitingForLayout = false
+    private var epubCoreLoadTimeoutJob: Job? = null
+    private val readerTemplateActiveClock = EpubTemplateActiveClock(SystemClock::uptimeMillis).also { it.pause() }
+    private data class DirectPrefetchOwner(
+        val session: EpubDirectSession,
+        val config: EpubCoreLayoutConfig
+    )
+    private val epubCorePrefetch by lazy {
+        EpubDirectPrefetchScheduler<EpubDirectChapter>(lifecycleScope, SystemClock::uptimeMillis)
+    }
+    private val epubCoreLayoutReadyActionGate = EpubLayoutReadyActionGate()
     private var epubCoreSuppressProgressSync = false
     private var epubCoreBoundaryTransition = false
     private var epubCoreForegroundTarget: EpubCoreNavigationRequest? = null
     private var epubCoreCommittedChapterIndex: Int? = null
-    private val epubCoreEstimatedPages = ConcurrentHashMap<Int, Int>()
-    private var epubCoreBoundaryTransactionId = 0L
-    private var epubCoreBoundaryDirection = 0
-    private var epubCoreBoundaryTargetEdge = EpubCorePageEdge.Start
+    private var pendingDirectReadAloudProgress: ReadAloudProgressState? = null
+    private var directReadAloudTargetChapterIndex: Int? = null
+    private var epubDirectSession: EpubDirectSession? = null
+    private var directSourceImageJob: Job? = null
+    private var epubDirectOnFinish: (() -> Unit)? = null
+    private var epubDirectCallbackRequestSeq = 0L
+    private var epubDirectLinkRequestSeq = 0L
+    private var epubReaderBatteryLevel = 100
+    private var epubReaderChromeContentRevision = 0L
+    private val epubReaderFontPreparer by lazy { EpubReaderFontPreparer(applicationContext) }
+    private val epubDirectAutoPager by lazy {
+        EpubDirectAutoPager(
+            postDelayed = { runnable, delay -> binding.epubReadView.postDelayed(runnable, delay) },
+            removeCallbacks = binding.epubReadView::removeCallbacks,
+            intervalMillis = { ReadBookConfig.autoReadSpeed.coerceAtLeast(1) * 1_000L },
+            requestNextPage = { requestNextEpubPage(automatic = true) },
+            onStopped = ::finishAutoPageUi
+        )
+    }
+    private var epubHostOverlaySettleRunnable: Runnable? = null
     private var libraryCloudSession: LibraryCloudSession? = null
     private var libraryCloudState: LibraryCloudState = LibraryCloudState.DISABLED
     private var lastReaderNightMode = AppConfig.isNightTheme
@@ -466,13 +565,21 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
 
             override fun onPageChanged(pageIndex: Int, pageCount: Int) {
-                if (binding.epubReadView.currentPage()?.chapterHref?.startsWith("loading:") == true) {
-                    binding.epubReadView.post {
-                        consumePendingEpubCoreNavigation()
-                    }
-                    return
+                binding.epubReadView.currentPage()?.let {
+                    epubDirectAutoPager.onPageCommitted(
+                        EpubDirectAutoPager.Position(it.chapterIndex, it.pageIndex)
+                    )
                 }
                 syncEpubCoreProgress(pageIndex, pageCount)
+                if (!epubCoreLoading) {
+                    binding.epubReadView.currentPage()?.chapterIndex
+                        ?.let { chapterIndex ->
+                            consumePendingDirectReadAloudProgress(chapterIndex)
+                            // Refill after memory reclamation or a transient preload failure.
+                            // The scheduler preserves work already running for this chapter.
+                            scheduleDirectEpubPrefetch(chapterIndex, epubCoreRequestSeq)
+                        }
+                }
                 if (epubCoreBoundaryTransition &&
                     epubCoreLoadingChapterIndex == null &&
                     epubCoreForegroundTarget == null &&
@@ -485,28 +592,169 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
 
             override fun onPageBoundary(direction: Int) {
-                requestEpubCoreChapterByDirection(direction, boundaryTransition = true)
+                requestEpubCoreChapterByDirection(
+                    direction = direction,
+                    intent = EpubChapterNavigationPolicy.Intent.PageTurnBoundary
+                )
+            }
+
+            override fun onDirectChapterReady(position: EpubDirectPosition) {
+                epubDirectAutoPager.onPageCommitted(
+                    EpubDirectAutoPager.Position(position.chapterIndex, position.pageIndex)
+                )
+                val expectedChapterIndex = epubCoreLoadingChapterIndex
+                if (isEpubCoreMode() &&
+                    epubDirectCallbackRequestSeq == 0L &&
+                    !epubCoreLoading &&
+                    position.chapterIndex == epubCoreCommittedChapterIndex
+                ) {
+                    syncEpubCoreProgress(position.pageIndex, position.pageCount)
+                    consumePendingDirectReadAloudProgress(position.chapterIndex)
+                    scheduleDirectEpubPrefetch(position.chapterIndex, epubCoreRequestSeq)
+                    return
+                }
+                if (!isEpubCoreMode() ||
+                    epubDirectCallbackRequestSeq == 0L ||
+                    epubDirectCallbackRequestSeq != epubCoreRequestSeq ||
+                    position.chapterIndex != expectedChapterIndex
+                ) {
+                    AppLog.putDebug(
+                        "EPUB direct ready ignored: actual=${position.chapterIndex}, " +
+                            "expected=$expectedChapterIndex, callback=$epubDirectCallbackRequestSeq, " +
+                            "request=$epubCoreRequestSeq"
+                    )
+                    return
+                }
+                epubCoreSuppressProgressSync = true
+                commitEpubCoreDisplayedChapter(
+                    chapterIndex = position.chapterIndex,
+                    chapterPageIndex = position.pageIndex,
+                    requestSeq = epubCoreRequestSeq,
+                    schedulePrefetch = false
+                )
+                contentLoadFinish()
+                epubDirectOnFinish?.invoke()
+                epubDirectOnFinish = null
+                epubDirectCallbackRequestSeq = 0L
+                consumePendingDirectReadAloudProgress(position.chapterIndex)
+                scheduleDirectEpubPrefetch(position.chapterIndex, epubCoreRequestSeq)
+            }
+
+            override fun onDirectRenderError(message: String, throwable: Throwable?) {
+                epubDirectAutoPager.stop()
+                if (throwable is EpubTemplateException && recoverReaderTemplate(throwable)) return
+                finishDirectEpubFailure(
+                    message = message,
+                    throwable = throwable,
+                    stage = "web-activation"
+                )
+            }
+
+            override fun onDirectSourceImageAction(request: TextReaderImageActionRequest) {
+                executeDirectSourceImageAction(request)
+            }
+
+            override fun onDirectLinkClicked(url: String) {
+                val currentIndex = binding.epubReadView.currentPage()?.chapterIndex ?: ReadBook.durChapterIndex
+                val session = epubDirectSession ?: return
+                val bookUrl = ReadBook.book?.bookUrl ?: return
+                val linkRequestSeq = ++epubDirectLinkRequestSeq
+                lifecycleScope.launch(IO) {
+                    val target = runCatching { session.resolveLink(url, currentIndex) }
+                        .onFailure { AppLog.putDebug("EPUB direct link resolution failed: $url", it) }
+                        .getOrNull()
+                    withContext(Main.immediate) {
+                        if (linkRequestSeq != epubDirectLinkRequestSeq ||
+                            epubDirectSession !== session ||
+                            ReadBook.book?.bookUrl != bookUrl
+                        ) {
+                            return@withContext
+                        }
+                        if (target != null) {
+                            if (target.chapterIndex == currentIndex && target.fragmentId != null) {
+                                val scheduled = binding.epubReadView.navigateDirectToFragment(target.fragmentId) { success ->
+                                    if (!success &&
+                                        binding.epubReadView.currentPage()?.chapterIndex == currentIndex
+                                    ) {
+                                        loadEpubCoreContent(
+                                            targetChapterIndex = target.chapterIndex,
+                                            resetPageOffset = true,
+                                            targetFragmentId = target.fragmentId
+                                        )
+                                    }
+                                }
+                                if (scheduled) return@withContext
+                            }
+                            loadEpubCoreContent(
+                                targetChapterIndex = target.chapterIndex,
+                                resetPageOffset = true,
+                                targetFragmentId = target.fragmentId
+                            )
+                        } else if ((url.startsWith("http://", true) || url.startsWith("https://", true)) &&
+                            !EpubDirectSession.isLocalUrl(url)
+                        ) {
+                            openUrl(url)
+                        }
+                    }
+                }
+            }
+
+            override fun onDirectFootnoteClicked(url: String) {
+                val book = ReadBook.book ?: return
+                val href = runCatching {
+                    val uri = android.net.Uri.parse(url)
+                    if (uri.scheme.equals(EpubDirectSession.SCHEME, true) &&
+                        EpubDirectSession.isLocalHost(uri.host)
+                    ) {
+                        val path = android.net.Uri.decode(uri.encodedPath.orEmpty().removePrefix("/"))
+                        val fragment = uri.encodedFragment?.takeIf { it.isNotBlank() } ?: return@runCatching url
+                        "$path#$fragment"
+                    } else {
+                        url
+                    }
+                }.getOrDefault(url)
+                lifecycleScope.launch(IO) {
+                    val note = runCatching { EpubFile.getFootnote(book, href) }.getOrNull()
+                    withContext(Main.immediate) {
+                        if (note == null) {
+                            toastOnUi(R.string.epub_footnote_load_failed)
+                        } else {
+                            showDialogFragment(TextDialog(note.title, note.html, TextDialog.Mode.HTML))
+                        }
+                    }
+                }
             }
 
             override fun onTextSelected(startX: Float, topY: Float, endX: Float, bottomY: Float, startBottomY: Float, endBottomY: Float) {
                 showEpubTextActionMenu(startX, topY, endX, bottomY, startBottomY, endBottomY)
             }
 
-            override fun onSelectionCleared() {
+            override fun onSelectionInteractionStarted() {
+                epubDirectAutoPager.pause()
+                cancelEpubCoreLoadTimeout()
                 hideEpubSelectionUi()
             }
 
-            override fun onWebTextSelectionRequested(
-                page: EpubCorePage,
-                pageIndex: Int,
-                action: EpubWebSelectionAction,
-                x: Float,
-                y: Float,
-                generation: Long,
-                pageKey: String
-            ): Boolean {
-                requestEpubWebSelection(page, pageIndex, action, x, y, generation, pageKey)
-                return true
+            override fun onSelectionCleared() {
+                hideEpubSelectionUi()
+                resumeEpubDirectAutoPageIfUnblocked()
+                directReadAloudTargetChapterIndex?.let { chapterIndex ->
+                    requestDirectReadAloudChapter(
+                        chapterIndex = chapterIndex,
+                        progress = pendingDirectReadAloudProgress
+                            ?.takeIf { it.chapterIndex == chapterIndex }
+                    )
+                } ?: pendingDirectReadAloudProgress
+                    ?.takeIf { BaseReadAloudService.isPlay() }
+                    ?.let(::applyDirectReadAloudProgress)
+                val loadingChapter = epubCoreLoadingChapterIndex
+                if (epubCoreLoading && loadingChapter != null && epubDirectCallbackRequestSeq != 0L) {
+                    scheduleEpubCoreLoadTimeout(
+                        requestSeq = epubDirectCallbackRequestSeq,
+                        chapterIndex = loadingChapter,
+                        stage = "selection-resume"
+                    )
+                }
             }
         })
         window.setBackgroundDrawable(null)
@@ -514,35 +762,42 @@ class ReadBookActivity : BaseReadBookActivity(),
         ReadBook.register(this)
         Backup.autoBack(this)
         onBackPressedDispatcher.addCallback(this) {
-            if (binding.readAloudPlayerPanel.isExpanded()) {
-                binding.readAloudPlayerPanel.close()
-                return@addCallback
+            if (epubAnnotationBackCheckPending) return@addCallback
+            epubAnnotationBackCheckPending = true
+            binding.epubReadView.dismissDirectAnnotation { dismissed ->
+                epubAnnotationBackCheckPending = false
+                if (!dismissed) handleBackPressedAfterEpubAnnotation()
             }
-            if (binding.readAiPanel.isVisible) {
-                if (!binding.readAiPanel.exitFullscreenIfNeeded()) {
-                    binding.readAiPanel.close()
-                }
-                return@addCallback
-            }
-            if (isShowingSearchResult) {
-                exitSearchMenu()
-                restoreLastBookProcess()
-                return@addCallback
-            }
-            //拦截返回供恢复阅读进度
-            if (ReadBook.lastBookProgress != null && confirmRestoreProcess != false) {
-                restoreLastBookProcess()
-                return@addCallback
-            }
-            if (isAutoPage) {
-                autoPageStop()
-                return@addCallback
-            }
-            if (getPrefBoolean("disableReturnKey") && !menuLayoutIsVisible) {
-                return@addCallback
-            }
-            finish()
         }
+    }
+
+    private fun handleBackPressedAfterEpubAnnotation() {
+        if (binding.readAloudPlayerPanel.isExpanded()) {
+            binding.readAloudPlayerPanel.close()
+            return
+        }
+        if (binding.readAiPanel.isVisible) {
+            if (!binding.readAiPanel.exitFullscreenIfNeeded()) {
+                binding.readAiPanel.close()
+            }
+            return
+        }
+        if (isShowingSearchResult) {
+            exitSearchMenu()
+            restoreLastBookProcess()
+            return
+        }
+        //拦截返回供恢复阅读进度
+        if (ReadBook.lastBookProgress != null && confirmRestoreProcess != false) {
+            restoreLastBookProcess()
+            return
+        }
+        if (isAutoPage) {
+            autoPageStop()
+            return
+        }
+        if (getPrefBoolean("disableReturnKey") && !menuLayoutIsVisible) return
+        finish()
     }
 
     private fun handleEpubTapAction(action: Int, x: Float, y: Float) {
@@ -551,15 +806,19 @@ class ReadBookActivity : BaseReadBookActivity(),
             0 -> showActionMenu()
             1 -> nextEpubPage()
             2 -> previousEpubPage()
-            3 -> requestEpubCoreChapterByDirection(1)
-            4 -> requestEpubCoreChapterByDirection(-1)
+            3 -> requestEpubCoreChapterByDirection(
+                1,
+                EpubChapterNavigationPolicy.Intent.ExplicitChapterJump
+            )
+            4 -> requestEpubCoreChapterByDirection(
+                -1,
+                EpubChapterNavigationPolicy.Intent.ExplicitChapterJump
+            )
             5 -> ReadAloud.prevParagraph(this)
             6 -> ReadAloud.nextParagraph(this)
             7 -> addBookmark()
-            8 -> showDialogFragment(ContentEditDialog())
-            9 -> changeReplaceRuleState()
+            8, 9, 11 -> toastOnUi(R.string.native_reader_feature_only)
             10 -> openChapterList()
-            11 -> openSearchActivity(null)
             12 -> ReadBook.syncProgress(
                 { progress -> sureNewProgress(progress) },
                 { toastOnUi(R.string.upload_book_success) },
@@ -573,62 +832,6 @@ class ReadBookActivity : BaseReadBookActivity(),
                 }
             }
             else -> showActionMenu()
-        }
-    }
-
-    private fun requestEpubWebSelection(
-        page: EpubCorePage,
-        pageIndex: Int,
-        action: EpubWebSelectionAction,
-        x: Float,
-        y: Float,
-        generation: Long,
-        pageKey: String
-    ) {
-        val book = ReadBook.book?.takeIf { it.isEpub } ?: return
-        val config = binding.epubReadView.layoutConfig ?: return
-        val requestSeq = epubCoreRequestSeq
-        val chapterIndex = page.chapterIndex
-        lifecycleScope.launch(IO) {
-            val payload = runCatching {
-                EpubCoreProvider.selectText(
-                    book = book,
-                    page = page,
-                    chapterIndex = chapterIndex,
-                    pageIndex = pageIndex,
-                    config = config,
-                    action = action,
-                    x = x,
-                    y = y
-                )
-            }.onFailure {
-                AppLog.putDebug("EPUB Web selection failed: ${it.localizedMessage}", it)
-            }.getOrNull()
-            withContext(Main.immediate) {
-                if (requestSeq != epubCoreRequestSeq || !epubCoreActive) return@withContext
-                if (!binding.epubReadView.isSelectionRequestCurrent(generation, pageKey, chapterIndex, pageIndex)) {
-                    AppLog.putDebug(
-                        "EPUB Web selection stale: action=$action chapter=$chapterIndex page=$pageIndex generation=$generation"
-                    )
-                    return@withContext
-                }
-                val anchor = payload?.let { binding.epubReadView.applyWebSelectionPayload(it) }
-                if (payload != null) {
-                    AppLog.putDebug(
-                        "EPUB Web selection apply: action=$action chapter=$chapterIndex page=$pageIndex " +
-                            "generation=$generation text=${payload.selectedText.length} rects=${payload.rects.size} " +
-                            "hit=${payload.hitX},${payload.hitY} applied=${anchor != null}"
-                    )
-                }
-                if (anchor != null) {
-                    binding.epubReadView.deferOrShowSelectionMenu(anchor)
-                } else if (action == EpubWebSelectionAction.SelectWord) {
-                    AppLog.putDebug("EPUB Web selection empty: chapter=$chapterIndex page=$pageIndex")
-                    binding.epubReadView.selectTextAtCanvasFallback(x, y)?.let { fallbackAnchor ->
-                        binding.epubReadView.deferOrShowSelectionMenu(fallbackAnchor)
-                    }
-                }
-            }
         }
     }
 
@@ -699,9 +902,31 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    private var highlightRulesRevision: String? = null
+
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onResume() {
         super.onResume()
+        val highlightBookUrl = ReadBook.book?.bookUrl
+        lifecycleScope.launch {
+            val revision = withContext(IO) { HighlightRules.store.revision() }
+            val changed = highlightRulesRevision?.let { it != revision } == true
+            highlightRulesRevision = revision
+            if (changed && isInitFinish && highlightBookUrl == ReadBook.book?.bookUrl) {
+                if (epubCoreActive) {
+                    cancelEpubCorePrefetch()
+                    loadEpubCoreContent(resetPageOffset = false)
+                } else ReadBook.relayoutCurrentContent("highlight-rules")
+            } else if (isInitFinish && epubCoreActive && !epubCoreLoading &&
+                highlightBookUrl == ReadBook.book?.bookUrl
+            ) {
+                binding.epubReadView.currentPage()?.chapterIndex?.let {
+                    scheduleDirectEpubPrefetch(it, epubCoreRequestSeq)
+                }
+            }
+        }
+        readerTemplateActiveClock.resume()
+        binding.epubReadView.onDirectHostResume()
         ReadBook.readStartTime = System.currentTimeMillis()
         if (bookChanged) {
             bookChanged = false
@@ -718,6 +943,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         upSystemUiVisibility()
         registerReceiver(timeBatteryReceiver, timeBatteryReceiver.filter)
         binding.readView.upTime()
+        updateEpubReaderChromeData()
         screenOffTimerStart()
         // 网络监听，当从无网切换到网络环境时同步进度（注意注册的同时就会收到监听，因此界面激活时无需重复执行同步操作）
         networkChangedListener.register()
@@ -739,7 +965,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onPause() {
+        readerTemplateActiveClock.pause()
         super.onPause()
+        binding.epubReadView.onDirectHostPause()
         binding.readAloudPlayerPanel.setForegroundActive(false)
         autoPageStop()
         backupJob?.cancel()
@@ -814,8 +1042,14 @@ class ReadBookActivity : BaseReadBookActivity(),
                 R.id.menu_group_epub -> {
                     item.isVisible = book.isEpub
                     when (item.itemId) {
-                        R.id.menu_del_ruby_tag -> item.isChecked = book.getDelTag(Book.rubyTag)
-                        R.id.menu_del_h_tag -> item.isChecked = book.getDelTag(Book.hTag)
+                        R.id.menu_del_ruby_tag -> {
+                            item.isVisible = book.isEpub && !isEpubCoreMode()
+                            item.isChecked = book.getDelTag(Book.rubyTag)
+                        }
+                        R.id.menu_del_h_tag -> {
+                            item.isVisible = book.isEpub && !isEpubCoreMode()
+                            item.isChecked = book.getDelTag(Book.hTag)
+                        }
                         R.id.menu_epub_schedule_mode -> {
                             item.isVisible = isEpubCoreMode()
                             item.title =
@@ -824,15 +1058,27 @@ class ReadBookActivity : BaseReadBookActivity(),
                     }
                 }
                 else -> when (item.itemId) {
-                    R.id.menu_enable_replace -> item.isChecked = book.getUseReplaceRule()
-                    R.id.menu_re_segment -> item.isChecked = book.getReSegment()
+                    R.id.menu_edit_content,
+                    R.id.menu_same_title_removed,
+                    R.id.menu_image_style -> {
+                        item.isVisible = !isEpubCoreMode()
+                    }
+                    R.id.menu_enable_replace -> {
+                        item.isVisible = supportsReplaceRules()
+                        item.isChecked = book.getUseReplaceRule()
+                    }
+                    R.id.menu_effective_replaces -> item.isVisible = !isEpubCoreMode()
+                    R.id.menu_re_segment -> {
+                        item.isVisible = !isEpubCoreMode()
+                        item.isChecked = book.getReSegment()
+                    }
 //                    R.id.menu_enable_review -> {
 //                        item.isVisible = BuildConfig.DEBUG
 //                        item.isChecked = AppConfig.enableReview
 //                    }
 
-                    R.id.menu_reverse_content -> item.isVisible = onLine
-                    R.id.menu_paragraph_rule_manage -> item.isVisible = !book.isEpub
+                    R.id.menu_reverse_content -> item.isVisible = onLine && !isEpubCoreMode()
+                    R.id.menu_paragraph_rule_manage -> item.isVisible = !book.isEpub && !isEpubCoreMode()
                 }
             }
         }
@@ -872,7 +1118,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             R.id.menu_refresh,
             R.id.menu_refresh_dur -> {
                 if (ReadBook.bookSource == null) {
-                    upContent()
+                    refreshContentWithoutSource()
                 } else {
                     ReadBook.book?.let {
                         ReadBook.curTextChapter = null
@@ -884,7 +1130,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
             R.id.menu_refresh_after -> {
                 if (ReadBook.bookSource == null) {
-                    upContent()
+                    refreshContentWithoutSource()
                 } else {
                     ReadBook.book?.let {
                         ReadBook.clearTextChapter()
@@ -896,7 +1142,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
             R.id.menu_refresh_all -> {
                 if (ReadBook.bookSource == null) {
-                    upContent()
+                    refreshContentWithoutSource()
                 } else {
                     ReadBook.book?.let {
                         refreshContentAll(it)
@@ -958,18 +1204,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             R.id.menu_epub_schedule_mode -> showEpubCoreScheduleModeDialog()
             R.id.menu_read_menu_edit -> startActivity<ReadMenuButtonManageActivity>()
 
-            R.id.menu_page_anim -> showPageAnimConfig {
-                binding.readView.upPageAnim()
-                if (epubCoreActive) {
-                    ReadBook.book?.takeIf { it.isEpub }?.let { book ->
-                        cancelEpubCoreForegroundHard(book)
-                        cancelEpubCorePrefetchHard(book)
-                    }
-                    loadEpubCoreContent(resetPageOffset = false, keepCurrentPageUntilReady = true)
-                } else {
-                    ReadBook.relayoutCurrentContent("page-anim")
-                }
-            }
+            R.id.menu_page_anim -> showPageAnimConfig(::applyPageAnimationChange)
 
             R.id.menu_log -> showDialogFragment<AppLogDialog>()
             R.id.menu_toc_regex -> showDialogFragment(
@@ -1027,8 +1262,9 @@ class ReadBookActivity : BaseReadBookActivity(),
                 viewModel.reverseRemoveSameTitle()
             }
 
-            R.id.menu_effective_replaces -> showDialogFragment<EffectiveReplacesDialog>()
+            R.id.menu_effective_replaces -> showEffectiveReplaces()
 
+            R.id.menu_highlight_rule_manage -> showHighlightRuleManage()
             R.id.menu_paragraph_rule_manage -> ReadBook.book?.let {
                 startActivity<ParagraphRuleManageActivity> {
                     putExtra("bookUrl", it.bookUrl)
@@ -1316,12 +1552,17 @@ class ReadBookActivity : BaseReadBookActivity(),
         val top = topY.toInt()
         val end = endX.toInt()
         val bottom = endBottomY.toInt()
-        cursorLeft.x = startX - cursorLeft.width
-        cursorLeft.y = startBottomY
-        cursorRight.x = endX
-        cursorRight.y = endBottomY
-        cursorLeft.visible(true)
-        cursorRight.visible(true)
+        if (epubReadView.isDirectMode) {
+            cursorLeft.invisible()
+            cursorRight.invisible()
+        } else {
+            cursorLeft.x = startX - cursorLeft.width
+            cursorLeft.y = startBottomY
+            cursorRight.x = endX
+            cursorRight.y = endBottomY
+            cursorLeft.visible(true)
+            cursorRight.visible(true)
+        }
         textMenuPosition.x = (startX + endX) / 2f
         textMenuPosition.y = topY
         lastTextMenuAnchor = ReadAiFloatingPanel.Anchor(
@@ -1366,8 +1607,12 @@ class ReadBookActivity : BaseReadBookActivity(),
                 return true
             }
 
-            R.id.menu_bookmark -> binding.readView.curPage.let {
-                val bookmark = it.createBookmark()
+            R.id.menu_bookmark -> {
+                val bookmark = if (epubCoreActive && binding.epubReadView.isDirectMode) {
+                    createDirectEpubBookmark(selectedText)
+                } else {
+                    binding.readView.curPage.createBookmark()
+                }
                 if (bookmark == null) {
                     toastOnUi(R.string.create_bookmark_error)
                 } else {
@@ -1377,6 +1622,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
 
             R.id.menu_replace -> {
+                if (!supportsReplaceRules()) return true
                 val scopes = arrayListOf<String>()
                 ReadBook.book?.name?.let {
                     scopes.add(it)
@@ -1484,16 +1730,6 @@ class ReadBookActivity : BaseReadBookActivity(),
         )
     }
 
-    private fun showShareNoteTemplateDialog(selection: String) {
-        val text = selection.trim()
-        if (text.isBlank()) return
-        showDialogFragment(
-            ShareNoteTemplateSelectDialog.create(
-                onSelected = { entry -> shareSelectionAsNoteImage(text, entry) },
-                onManage = { startActivity<ShareNoteTemplateManageActivity>() }
-            )
-        )
-    }
 
     private fun showShareNotePreviewOverlay(selection: String) {
         val text = selection.trim()
@@ -2013,12 +2249,14 @@ class ReadBookActivity : BaseReadBookActivity(),
                     success?.invoke()
                     return@launch
                 }
+                val statusMessage = ReadBook.msg
+                if (!ReadBookStartupPolicy.shouldPrepareDirectContent(statusMessage)) {
+                    showDirectEpubStatus(statusMessage.orEmpty(), success)
+                    return@launch
+                }
                 loadEpubCoreContent(
                     relativePosition = relativePosition,
                     resetPageOffset = resetPageOffset,
-                    fallback = {
-                        binding.readView.upContent(relativePosition, resetPageOffset)
-                    },
                     onFinish = {
                         if (relativePosition == 0) {
                             upSeekBarProgress()
@@ -2029,7 +2267,11 @@ class ReadBookActivity : BaseReadBookActivity(),
                 )
                 return@launch
             } else {
-                switchEpubCore(false)
+                deactivateEpubCore()
+                if (!prepareNativeReaderPosition()) {
+                    success?.invoke()
+                    return@launch
+                }
                 binding.readView.upContent(relativePosition, resetPageOffset)
             }
             if (relativePosition == 0) {
@@ -2050,12 +2292,14 @@ class ReadBookActivity : BaseReadBookActivity(),
                 success?.invoke()
                 return@withContext
             }
+            val statusMessage = ReadBook.msg
+            if (!ReadBookStartupPolicy.shouldPrepareDirectContent(statusMessage)) {
+                showDirectEpubStatus(statusMessage.orEmpty(), success)
+                return@withContext
+            }
             loadEpubCoreContent(
                 relativePosition = relativePosition,
                 resetPageOffset = resetPageOffset,
-                fallback = {
-                    binding.readView.upContent(relativePosition, resetPageOffset)
-                },
                 onFinish = {
                     if (relativePosition == 0) {
                         upSeekBarProgress()
@@ -2066,7 +2310,11 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             return@withContext
         } else {
-            switchEpubCore(false)
+            deactivateEpubCore()
+            if (!prepareNativeReaderPosition()) {
+                success?.invoke()
+                return@withContext
+            }
             binding.readView.upContent(relativePosition, resetPageOffset)
         }
         if (relativePosition == 0) {
@@ -2075,14 +2323,89 @@ class ReadBookActivity : BaseReadBookActivity(),
         loadStates = false
     }
 
+    private fun showDirectEpubStatus(message: String, success: (() -> Unit)?) {
+        if (epubCoreLoading || epubCoreLoadJob != null) {
+            cancelActiveEpubCoreNavigation()
+            epubDirectOnFinish = null
+            epubDirectCallbackRequestSeq = 0L
+        }
+        upEpubRendererStyle(prepareEpubReaderBackground())
+        switchEpubCore(true)
+        binding.epubReadView.setError(message)
+        loadStates = false
+        success?.invoke()
+    }
+
     override fun upPageAnim(upRecorder: Boolean) {
-        lifecycleScope.launch {
-            binding.readView.upPageAnim(upRecorder)
+        runOnUiThread {
+            // The hidden text reader is not part of the direct EPUB pipeline. Its
+            // ChapterProvider.upLayout() posts UP_CONFIG and would start a second
+            // EPUB chapter load while an animation setting is being applied.
+            if (!isEpubCoreMode()) {
+                binding.readView.upPageAnim(upRecorder)
+            }
+            binding.epubReadView.refreshDirectPageAnimationStyle()
+        }
+    }
+
+    fun applyPageAnimationChange(previousPageAnim: Int) {
+        runOnUiThread {
+            val nextPageAnim = ReadBook.pageAnim()
+            if (nextPageAnim == previousPageAnim) return@runOnUiThread
+            if (!isEpubCoreMode()) {
+                binding.readView.upPageAnim()
+                ReadBook.relayoutCurrentContent("page-anim")
+                return@runOnUiThread
+            }
+            val currentScrollMode = binding.epubReadView.layoutConfig
+                ?.takeIf { epubCoreActive && binding.epubReadView.hasDirectContent }
+                ?.scrollMode
+            val requiresLayoutReload = currentScrollMode?.let {
+                it != (nextPageAnim == PageAnim.scrollPageAnim)
+            }
+                ?: EpubDirectPageAnimationPolicy.requiresLayoutReload(
+                    previousPageAnim = previousPageAnim,
+                    nextPageAnim = nextPageAnim
+                )
+            if (!requiresLayoutReload) {
+                if (epubCoreActive || epubCoreLoading) {
+                    binding.epubReadView.refreshDirectPageAnimationStyle()
+                } else {
+                    loadEpubCoreContent(resetPageOffset = false)
+                }
+                return@runOnUiThread
+            }
+
+            cancelEpubCorePrefetch()
+            when {
+                epubCoreLoading -> loadEpubCoreContent(resetPageOffset = false)
+                epubCoreActive && binding.epubReadView.hasDirectContent -> {
+                    applyEpubRendererStyleOnly()
+                }
+                else -> loadEpubCoreContent(resetPageOffset = false)
+            }
         }
     }
 
     private fun isEpubCoreMode(): Boolean {
-        return ReadBook.book?.isEpub == true && AppConfig.useExperimentalEpubCore
+        return ReadBook.book?.usesDirectReader == true
+    }
+
+    private suspend fun prepareNativeReaderPosition(): Boolean {
+        val book = ReadBook.book ?: return true
+        val chapter = ReadBook.curTextChapter ?: return true
+        val requestedPosition = ReadBook.durChapterPos
+        if (book.isEpub || !ReaderTextPositionStore.needsNativeRestore(book.bookUrl, chapter.chapter.url, requestedPosition)) return true
+        if (!chapter.isCompleted) return false
+        val restored = withContext(IO) {
+            val text = chapter.pages.joinToString("") { it.text }
+            text to ReaderTextPositionStore.resolve(book.bookUrl, chapter.chapter.url, "native", text, requestedPosition)
+        }
+        if (isEpubCoreMode() || ReadBook.book?.bookUrl != book.bookUrl || ReadBook.curTextChapter !== chapter ||
+            ReadBook.durChapterPos != requestedPosition) return false
+        ReadBook.durChapterPos = restored.second
+        ReaderTextPositionStore.remember(book.bookUrl, chapter.chapter.url, "native", restored.first, restored.second)
+        return true
     }
 
     private fun switchEpubCore(active: Boolean) = binding.run {
@@ -2098,300 +2421,626 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    private fun deactivateEpubCore() {
+        val hasDirectState = epubCoreActive ||
+            epubCoreLoading ||
+            epubCoreLoadJob != null ||
+            epubDirectSession != null ||
+            binding.epubReadView.isDirectMode
+        if (hasDirectState) {
+            epubDirectLinkRequestSeq++
+            cancelActiveEpubCoreNavigation()
+            cancelEpubCorePrefetch()
+            binding.epubReadView.releaseDirectMode()
+            epubDirectSession?.close()
+            epubDirectSession = null
+            epubDirectOnFinish = null
+            epubDirectCallbackRequestSeq = 0L
+        }
+        switchEpubCore(false)
+    }
+
     private fun loadEpubCoreContent(
         relativePosition: Int = 0,
         targetChapterIndex: Int? = null,
         resetPageOffset: Boolean = true,
-        navigationMode: EpubCoreNavigationMode = EpubCoreNavigationMode.ExplicitReplace,
         boundaryTransition: Boolean = false,
-        keepCurrentPageUntilReady: Boolean = false,
-        fallback: (() -> Unit)? = null,
-        onFinish: (() -> Unit)? = null
+        onFinish: (() -> Unit)? = null,
+        targetFragmentId: String? = null
     ) {
         val book = ReadBook.book
-        if (book?.isEpub != true) {
-            switchEpubCore(false)
-            fallback?.invoke()
+        if (book?.usesDirectReader != true) {
+            deactivateEpubCore()
             onFinish?.invoke()
             return
         }
-        val chapterIndex = (targetChapterIndex ?: (ReadBook.durChapterIndex + relativePosition)).coerceIn(
-            0,
-            (ReadBook.chapterSize - 1).coerceAtLeast(0)
+        loadDirectEpubContent(
+            relativePosition = relativePosition,
+            targetChapterIndex = targetChapterIndex,
+            resetPageOffset = resetPageOffset,
+            boundaryTransition = boundaryTransition,
+            onFinish = onFinish,
+            targetFragmentId = targetFragmentId
         )
+    }
+
+    private fun loadDirectEpubContent(
+        relativePosition: Int,
+        targetChapterIndex: Int?,
+        resetPageOffset: Boolean,
+        boundaryTransition: Boolean,
+        onFinish: (() -> Unit)?,
+        targetFragmentId: String?
+    ) {
+        epubDirectLinkRequestSeq++
+        val book = ReadBook.book?.takeIf { it.usesDirectReader } ?: run {
+            onFinish?.invoke()
+            return
+        }
+        updateEpubReaderChromeData()
+        val pendingRequest = epubCoreForegroundTarget?.takeIf {
+            epubCoreLoading && targetChapterIndex == null
+        }
+        val navigationTarget = EpubDirectNavigationTargetPolicy.resolve(
+            requestedChapterIndex = targetChapterIndex,
+            requestedResetPageOffset = resetPageOffset,
+            requestedBoundaryTransition = boundaryTransition,
+            requestedFragmentId = targetFragmentId,
+            pendingTarget = pendingRequest?.let {
+                EpubDirectNavigationTargetPolicy.Target(
+                    chapterIndex = it.chapterIndex,
+                    resetPageOffset = it.resetPageOffset,
+                    boundaryTransition = it.boundaryTransition,
+                    fragmentId = it.targetFragmentId
+                )
+            },
+            currentChapterIndex = ReadBook.durChapterIndex,
+            relativePosition = relativePosition,
+            chapterCount = ReadBook.chapterSize,
+            preserveChapterIdentity = !book.isEpub
+        ) ?: run {
+            onFinish?.invoke()
+            return
+        }
+        val preferredDirection = when {
+            relativePosition < 0 -> -1
+            navigationTarget.boundaryTransition && !navigationTarget.resetPageOffset -> -1
+            else -> 1
+        }
+        val effectiveResetPageOffset = navigationTarget.resetPageOffset
+        val effectiveBoundaryTransition = navigationTarget.boundaryTransition
+        val effectiveTargetFragmentId = navigationTarget.fragmentId
+        val resolvedChapterIndex = resolveReadableEpubChapterIndex(
+            navigationTarget.chapterIndex,
+            preferredDirection
+        )
+        // Sequential boundary navigation is an identity-preserving transaction. If the
+        // current direct session cannot confirm the exact stored target, abort instead of
+        // remapping it to a nearby chapter.
+        val chapterIndex = if (effectiveBoundaryTransition) {
+            resolvedChapterIndex?.takeIf { it == navigationTarget.chapterIndex }
+        } else {
+            resolvedChapterIndex
+        } ?: run {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            if (!book.isEpub && targetChapterIndex != null) toastOnUi("章节目录已更新，请重新选择章节")
+            onFinish?.invoke()
+            return
+        }
+        val foregroundTarget = EpubCoreNavigationRequest(
+            chapterIndex = chapterIndex,
+            resetPageOffset = effectiveResetPageOffset,
+            boundaryTransition = effectiveBoundaryTransition,
+            targetFragmentId = effectiveTargetFragmentId
+        )
+        // Boundary navigation should consume the already-warmed neighbour.
+        // Other navigation invalidates prefetch because its target/config may differ.
+        if (!effectiveBoundaryTransition) {
+            epubCorePrefetch.handoff(chapterIndex)
+            cancelEpubCorePrefetch()
+        }
         if (binding.epubReadView.width <= 0 || binding.epubReadView.height <= 0) {
+            requestedReaderTemplate = selectedReaderTemplate()
+            binding.epubReadView.cancelPendingDirectChapterLoad()
+            epubCoreLoadJob?.cancel()
+            epubCoreLoadJob = null
+            val queuedRequestSeq = ++epubCoreRequestSeq
+            epubCoreLoading = true
+            epubCoreLoadingChapterIndex = chapterIndex
+            epubCoreForegroundTarget = foregroundTarget
+            epubCoreBoundaryTransition = effectiveBoundaryTransition
+            epubCoreSuppressProgressSync = true
+            epubDirectOnFinish = onFinish
+            epubDirectCallbackRequestSeq = queuedRequestSeq
+            scheduleEpubCoreLoadTimeout(queuedRequestSeq, chapterIndex, "layout")
+            ReadBook.msg = null
+            AppLog.putDebug(
+                "EPUB direct navigation waiting for layout: index=$chapterIndex, " +
+                    "request=$queuedRequestSeq, fragment=$effectiveTargetFragmentId"
+            )
             prepareEpubCoreLayout {
-                loadEpubCoreContent(
-                    relativePosition,
-                    targetChapterIndex,
-                    resetPageOffset,
-                    navigationMode,
-                    boundaryTransition,
-                    keepCurrentPageUntilReady,
-                    fallback,
-                    onFinish
+                loadDirectEpubContent(
+                    relativePosition = 0,
+                    targetChapterIndex = chapterIndex,
+                    resetPageOffset = effectiveResetPageOffset,
+                    boundaryTransition = effectiveBoundaryTransition,
+                    onFinish = onFinish,
+                    targetFragmentId = effectiveTargetFragmentId
                 )
             }
             return
         }
-        epubCoreLoading = true
-        epubCoreLoadingChapterIndex = chapterIndex
-        epubCoreForegroundTarget = EpubCoreNavigationRequest(chapterIndex, resetPageOffset)
-        binding.readMenu.upBookView()
+        // Preparing a replacement happens off-main. Invalidate any older staged
+        // WebView now so it cannot win the race and clear this request's state.
+        binding.epubReadView.cancelPendingDirectChapterLoad()
         val requestSeq = ++epubCoreRequestSeq
         val requestBookUrl = book.bookUrl
-        val config = buildEpubCoreLayoutConfig()
-        if (applyEpubCoreCachedPages(book, chapterIndex, config, resetPageOffset, navigationMode, boundaryTransition)) {
-            contentLoadFinish()
-            onFinish?.invoke()
-            return
+        val explicitTextPosition = if (!book.isEpub) effectiveTargetFragmentId
+            ?.takeIf { it.startsWith("__legado_text_") }?.removePrefix("__legado_text_")?.toIntOrNull()
+            else null
+        val requestedTextPosition = explicitTextPosition ?: ReadBook.durChapterPos
+        val requestedTextRevision = ReadBook.directTextRevision
+        val requestedTextSource = ReadBook.bookSource
+        val fontSource = ReadBookConfig.textFont
+        val hadVisibleDocument = binding.epubReadView.hasDirectContent
+        val reusableBoundaryConfig = binding.epubReadView.layoutConfig?.takeIf {
+            effectiveBoundaryTransition && hadVisibleDocument &&
+                it.pageWidthPx == binding.epubReadView.width &&
+                it.pageHeightPx == binding.epubReadView.height
         }
+        val baseConfig = reusableBoundaryConfig ?: buildEpubCoreLayoutConfig(
+            backgroundColor = prepareEpubReaderBackground()
+        )
+        requestedReaderTemplate = baseConfig.readerTemplate
+        val visualRestoreProgress = binding.epubReadView.currentPage()
+            ?.takeIf { !effectiveResetPageOffset && it.chapterIndex == chapterIndex }
+            ?.let { binding.epubReadView.currentDirectProgress() }
+        epubCoreLoading = true
+        epubCoreLoadingChapterIndex = chapterIndex
+        epubCoreForegroundTarget = foregroundTarget
+        epubCoreBoundaryTransition = effectiveBoundaryTransition
+        epubCoreSuppressProgressSync = true
+        epubDirectOnFinish = onFinish
+        epubDirectCallbackRequestSeq = requestSeq
+        scheduleEpubCoreLoadTimeout(requestSeq, chapterIndex, "prepare")
         ReadBook.msg = null
         epubCoreLoadJob?.cancel()
-        if (keepCurrentPageUntilReady && epubCoreActive) {
-            upEpubRendererStyle()
-        } else {
-            showEpubCoreLoadingPage(chapterIndex, config)
+        if (!hadVisibleDocument) {
+            showInitialEpubCoreLoadingPage(baseConfig)
         }
         epubCoreLoadJob = lifecycleScope.launch(IO) {
-            val result = try {
-                AppLog.putDebug(
-                    "EPUB core load start: book=${book.name}, index=$chapterIndex, " +
-                            "page=${config.pageWidthPx}x${config.pageHeightPx}, " +
-                            "content=${config.contentWidthPx}x${config.contentHeightPx}"
-                )
-                Result.success(loadEpubCorePagesWithRetry(book, chapterIndex, config))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (throwable: Throwable) {
-                Result.failure(throwable)
+            var failureStage = "open-session"
+            val result = runCatching {
+                failureStage = "prepare-reader-font"
+                val config = reusableBoundaryConfig ?: withTimeout(EPUB_PREPARE_TIMEOUT_MS) {
+                    baseConfig.withPreparedReaderFont(
+                        fontSource = fontSource,
+                        font = epubReaderFontPreparer.prepare(fontSource)
+                    )
+                }
+                val existingSession = epubDirectSession?.takeIf {
+                    isCurrentDirectSession(it, book)
+                }
+                val directSession = existingSession ?: if (book.isEpub) {
+                    EpubCoreProvider.openDirectSession(book)
+                } else {
+                    TextReaderSessionProvider.open(book.copy(), requestedTextSource, requestedTextRevision) {
+                        ReadBook.book?.bookUrl == requestBookUrl && isEpubCoreMode() &&
+                            ReadBook.directTextRevision == requestedTextRevision
+                    }
+                }
+                try {
+                    failureStage = "prepare-chapter"
+                    val preparedChapter = if (book.isEpub) directSession.prepareChapter(chapterIndex, config)
+                        else runInterruptible { directSession.prepareChapter(chapterIndex, config) }
+                    EpubDirectLoadResult(
+                        session = directSession,
+                        chapter = preparedChapter,
+                        config = config,
+                        ownsSession = existingSession == null,
+                        textPosition = if (!book.isEpub && !effectiveBoundaryTransition &&
+                            (!effectiveResetPageOffset || explicitTextPosition != null)) {
+                            ReaderTextPositionStore.resolve(requestBookUrl, preparedChapter.sourceChapterUrl.orEmpty(),
+                                "epub", preparedChapter.plainText, requestedTextPosition)
+                        } else null
+                    )
+                } catch (throwable: Throwable) {
+                    if (existingSession == null) directSession.close()
+                    throw throwable
+                }
             }
             withContext(Main.immediate) {
-                val currentBook = ReadBook.book
-                if (requestSeq != epubCoreRequestSeq ||
-                    currentBook?.bookUrl != requestBookUrl ||
-                    currentBook?.isEpub != true
-                ) {
-                    if (requestSeq == epubCoreRequestSeq) {
-                        epubCoreLoading = false
-                        epubCoreLoadingChapterIndex = null
-                        epubCoreForegroundTarget = null
-                        binding.epubReadView.clearLoading()
-                        binding.epubReadView.clearBoundaryLoadingTurn()
+                val canCommit = EpubDirectRequestCommitPolicy.canCommit(
+                    requestSeq = requestSeq,
+                    currentRequestSeq = epubCoreRequestSeq,
+                    requestBookUrl = requestBookUrl,
+                    currentBookUrl = ReadBook.book?.bookUrl,
+                    usesCore = isEpubCoreMode()
+                )
+                if (!canCommit || epubDirectCallbackRequestSeq != requestSeq ||
+                    (!book.isEpub && ReadBook.directTextRevision != requestedTextRevision)) {
+                    result.getOrNull()?.takeIf { it.ownsSession }?.session?.close()
+                    if (epubDirectCallbackRequestSeq == requestSeq) {
+                        epubDirectOnFinish = null
+                        epubDirectCallbackRequestSeq = 0L
                     }
                     return@withContext
                 }
-                result.onSuccess { pages ->
-                    val fragmentCount = pages.map { it.fragments.size }.sum()
-                    AppLog.putDebug(
-                        "EPUB core load finish: index=$chapterIndex, pages=${pages.size}, " +
-                                "fragments=$fragmentCount"
-                    )
-                    upEpubRendererStyle()
-                    binding.epubReadView.layoutConfig = config
-                    switchEpubCore(true)
-                    val targetEdge = epubCoreTargetEdge(resetPageOffset, boundaryTransition)
-                    val initialPage = epubCoreInitialPageIndex(
-                        pages = pages,
-                        chapterIndex = chapterIndex,
-                        targetEdge = targetEdge
-                    )
-                    if (boundaryTransition && navigationMode == EpubCoreNavigationMode.Sequential) {
-                        epubCoreSuppressProgressSync = true
-                        epubCoreBoundaryTransition = false
-                        epubCorePendingNavigation = null
-                        epubCoreLoading = false
-                        epubCoreLoadingChapterIndex = null
-                        epubCoreForegroundTarget = null
-                        binding.epubReadView.clearLoading()
-                        val replaced = binding.epubReadView.replaceBoundaryLoadingPage(
-                                transactionId = epubCoreBoundaryTransactionId,
-                                direction = epubCoreBoundaryDirection,
-                                targetChapterIndex = chapterIndex,
-                                targetPages = pages,
-                                resetPageOffset = targetEdge != EpubCorePageEdge.End
-                            )
-                        if (!replaced) {
-                            binding.epubReadView.clearBoundaryLoadingTurn()
-                            epubCoreSuppressProgressSync = true
-                            binding.epubReadView.setPages(pages, initialPage)
-                        }
-                        commitEpubCoreDisplayedChapter(
-                            chapterIndex = chapterIndex,
-                            chapterPageIndex = initialPage,
-                            requestSeq = requestSeq
-                        )
-                        contentLoadFinish()
-                        onFinish?.invoke()
-                        return@withContext
-                    } else {
-                        epubCoreSuppressProgressSync = true
-                        binding.epubReadView.setPages(pages, initialPage)
-                        commitEpubCoreDisplayedChapter(
-                            chapterIndex = chapterIndex,
-                            chapterPageIndex = binding.epubReadView.currentChapterPageIndex(),
-                            requestSeq = requestSeq
-                        )
-                    }
-                    contentLoadFinish()
-                }.onFailure {
-                    epubCoreLoading = false
-                    epubCoreLoadingChapterIndex = null
-                    epubCorePendingNavigation = null
-                    epubCoreBoundaryTransition = false
-                    epubCoreForegroundTarget = null
-                    epubCoreSuppressProgressSync = false
-                    binding.epubReadView.clearLoading()
-                    binding.epubReadView.clearBoundaryLoadingTurn()
-                    AppLog.putDebug("EPUB core render failed: ${it.localizedMessage}", it)
-                    if (keepCurrentPageUntilReady && epubCoreActive) {
-                        toastOnUi((it.localizedMessage ?: it.toString()).take(120))
-                    } else {
+                result.onSuccess { loadResult ->
+                    cancelEpubCoreLoadTimeout()
+                    runCatching {
+                        val session = loadResult.session
+                        val chapter = loadResult.chapter
+                        val config = loadResult.config
+                        if (epubDirectSession !== session) epubDirectSession?.close()
+                        epubDirectSession = session
                         binding.epubReadView.layoutConfig = config
                         switchEpubCore(true)
-                        binding.epubReadView.setError(
-                            getString(R.string.error) + "\n" + (it.localizedMessage ?: it.toString())
+                        val openAtEnd = effectiveBoundaryTransition && !effectiveResetPageOffset
+                        val readAloudProgress = directReadAloudInitialProgress(
+                            chapterIndex = chapterIndex,
+                            directChapterLength = chapter.plainText.length
+                        )
+                        val initialPage = if (!book.isEpub || readAloudProgress != null || effectiveResetPageOffset) {
+                            0
+                        } else {
+                            ReadBook.durChapterPos.coerceAtLeast(0)
+                        }
+                        val initialFragmentId = loadResult.textPosition?.let { "__legado_text_" + it }
+                            ?: EpubDirectInitialFragmentPolicy.resolve(
+                            requestedFragmentId = effectiveTargetFragmentId,
+                            chapterStartFragmentId = chapter.startFragmentId,
+                            resetPageOffset = effectiveResetPageOffset
+                        )
+                        binding.epubReadView.showDirectChapter(
+                            session = session,
+                            chapter = chapter,
+                            config = config,
+                            initialPageIndex = initialPage,
+                            openAtEnd = openAtEnd,
+                            initialProgress = if (book.isEpub) readAloudProgress ?: visualRestoreProgress else null,
+                            initialFragmentId = initialFragmentId,
+                            boundaryTransition = effectiveBoundaryTransition
+                        )
+                        // Download/decorate the next chapter while this WebView is laying
+                        // out. The layer queues its rendering until the foreground is ready.
+                        scheduleDirectEpubPrefetch(chapterIndex, requestSeq)
+                    }.onFailure { throwable ->
+                        if (loadResult.ownsSession && !binding.epubReadView.hasDirectContent) {
+                            if (epubDirectSession === loadResult.session) epubDirectSession = null
+                            loadResult.session.close()
+                        }
+                        finishDirectEpubFailure(
+                            message = throwable.localizedMessage ?: throwable.toString(),
+                            throwable = throwable,
+                            stage = "web-activation",
+                            chapterIndex = chapterIndex,
+                            requestSeq = requestSeq
                         )
                     }
-                    contentLoadFinish()
+                }.onFailure { throwable ->
+                    finishDirectEpubFailure(
+                        message = throwable.localizedMessage ?: throwable.toString(),
+                        throwable = throwable,
+                        stage = failureStage,
+                        chapterIndex = chapterIndex,
+                        requestSeq = requestSeq
+                    )
                 }
-                onFinish?.invoke()
             }
         }
     }
 
-    private suspend fun loadEpubCorePagesWithRetry(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig
-    ): List<EpubCorePage> {
-        return try {
-            loadEpubCorePagesOnce(book, chapterIndex, config)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (throwable: Throwable) {
-            AppLog.putDebug(
-                "EPUB core foreground retry: index=$chapterIndex, ${throwable.localizedMessage}",
-                throwable
+    private fun finishDirectEpubFailure(
+        message: String,
+        throwable: Throwable?,
+        stage: String = "web-activation",
+        chapterIndex: Int? = epubCoreLoadingChapterIndex,
+        requestSeq: Long = epubCoreRequestSeq
+    ) {
+        val diagnosticMessage = EpubDirectFailureDiagnostics.userMessage(message, throwable)
+        logDirectEpubFailure(stage, chapterIndex, requestSeq, diagnosticMessage, throwable)
+        if (!EpubDirectRequestCommitPolicy.ownsActiveNavigation(
+                requestSeq = requestSeq,
+                currentRequestSeq = epubCoreRequestSeq,
+                callbackRequestSeq = epubDirectCallbackRequestSeq
             )
-            EpubCoreProvider.cancelForegroundLayout(book)
-            loadEpubCorePagesOnce(book, chapterIndex, config)
+        ) {
+            AppLog.putDebug(
+                "EPUB direct stale failure ignored: stage=$stage, chapter=$chapterIndex, " +
+                    "request=$requestSeq, current=$epubCoreRequestSeq, " +
+                    "callback=$epubDirectCallbackRequestSeq"
+            )
+            return
+        }
+        requestedReaderTemplate?.let { template ->
+            if (recoverReaderTemplate(EpubTemplateException(template.contentHash(), diagnosticMessage))) return
+        }
+        cancelEpubCoreLoadTimeout()
+        epubDirectAutoPager.onTurnFailed()
+        binding.epubReadView.cancelPendingBoundaryTurn()
+        epubCoreLayoutReadyActionGate.cancel()
+        epubCoreLoadJob = null
+        val failureAction = EpubDirectRenderFailurePolicy.decide(
+            hasVisibleDocument = binding.epubReadView.hasDirectContent
+        )
+        val onFinish = epubDirectOnFinish
+        epubDirectOnFinish = null
+        epubDirectCallbackRequestSeq = 0L
+        epubCoreLoading = false
+        epubCoreLoadingChapterIndex = null
+        epubCoreForegroundTarget = null
+        epubCoreBoundaryTransition = false
+        epubCoreSuppressProgressSync = false
+        if (chapterIndex == directReadAloudTargetChapterIndex) {
+            directReadAloudTargetChapterIndex = null
+        }
+        binding.epubReadView.clearLoading()
+        when (failureAction) {
+            EpubDirectRenderFailurePolicy.Action.KeepVisibleDocument -> {
+                binding.epubReadView.clearLoading()
+                toastOnUi(diagnosticMessage.take(240))
+            }
+            EpubDirectRenderFailurePolicy.Action.ShowError -> {
+                binding.epubReadView.setError(getString(R.string.error) + "\n" + diagnosticMessage)
+                switchEpubCore(true)
+            }
+        }
+        contentLoadFinish()
+        onFinish?.invoke()
+    }
+
+    private fun selectedReaderTemplate(): EpubReaderTemplate? {
+        if (ReadBook.book?.isEpub != false) return null
+        return runCatching { EpubReaderTemplateStore.resolve(ReadBookConfig.config.readerTemplateId) }
+            .onFailure { AppLog.putDebug("读取页面模板失败", it) }.getOrNull()
+            ?.takeUnless { it.contentHash() in failedReaderTemplateHashes }
+    }
+
+    private fun recoverReaderTemplate(error: EpubTemplateException): Boolean {
+        val selected = selectedReaderTemplate() ?: return false
+        if (selected.contentHash() != error.templateHash || !failedReaderTemplateHashes.add(error.templateHash)) return false
+        val target = epubCoreLoadingChapterIndex ?: binding.epubReadView.currentPage()?.chapterIndex
+            ?: ReadBook.durChapterIndex
+        val fragment = epubCoreForegroundTarget?.targetFragmentId ?: "__legado_text_" +
+            (if (target == ReadBook.durChapterIndex) ReadBook.durChapterPos.coerceAtLeast(0) else 0)
+        val onFinish = epubDirectOnFinish
+        cancelEpubCoreLoadTimeout()
+        cancelEpubCorePrefetch()
+        epubCoreLoadJob?.cancel()
+        epubCoreLoadJob = null
+        epubCoreLoading = false
+        epubCoreLoadingChapterIndex = null
+        epubCoreForegroundTarget = null
+        requestedReaderTemplate = null
+        toastOnUi("模板渲染失败，本次阅读已恢复默认排版；模板源码已保留")
+        AppLog.putDebug("阅读模板已回退：${selected.name}", error)
+        loadDirectEpubContent(0, target, resetPageOffset = false, boundaryTransition = false,
+            onFinish = onFinish, targetFragmentId = fragment)
+        return true
+    }
+
+    override fun previewReaderTemplate(template: EpubReaderTemplate) {
+        val session = epubDirectSession?.takeUnless { it.isClosed } ?: run {
+            toastOnUi("请先加载正文，再预览页面模板")
+            return
+        }
+        val book = ReadBook.book?.takeIf { !it.isEpub } ?: return
+        val config = binding.epubReadView.layoutConfig ?: buildEpubCoreLayoutConfig(prepareEpubReaderBackground())
+        ReaderTemplatePreviewDialog.show(this, session,
+            binding.epubReadView.currentPage()?.chapterIndex ?: ReadBook.durChapterIndex,
+            template, config, EpubReaderChromeData(bookName = book.name,
+                timeLabel = AppConst.timeFormat.format(Date(System.currentTimeMillis())),
+                batteryLabel = "${epubReaderBatteryLevel.coerceIn(0, 100)}%",
+                batteryPercentageLabel = "${epubReaderBatteryLevel.coerceIn(0, 100)}%",
+                chapterCount = currentShareNoteChapterSize()))
+    }
+
+    private fun scheduleEpubCoreLoadTimeout(
+        requestSeq: Long,
+        chapterIndex: Int,
+        stage: String
+    ) {
+        cancelEpubCoreLoadTimeout()
+        val templateDeadline = if (requestedReaderTemplate != null) readerTemplateActiveClock.now() + 60_000L else null
+        epubCoreLoadTimeoutJob = lifecycleScope.launch {
+            if (templateDeadline == null) {
+                delay(EPUB_PREPARE_TIMEOUT_MS)
+            } else {
+                while (true) {
+                    lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
+                    val remaining = templateDeadline - readerTemplateActiveClock.now()
+                    if (remaining <= 0L) break
+                    delay(remaining)
+                }
+            }
+            if (!EpubDirectRequestCommitPolicy.ownsActiveNavigation(
+                    requestSeq = requestSeq,
+                    currentRequestSeq = epubCoreRequestSeq,
+                    callbackRequestSeq = epubDirectCallbackRequestSeq
+                )
+            ) {
+                return@launch
+            }
+            epubCoreLoadTimeoutJob = null
+            epubCoreLoadJob?.cancel()
+            epubCoreLoadJob = null
+            finishDirectEpubFailure(
+                message = "EPUB $stage timed out",
+                throwable = null,
+                stage = "$stage-timeout",
+                chapterIndex = chapterIndex,
+                requestSeq = requestSeq
+            )
         }
     }
 
-    private suspend fun loadEpubCorePagesOnce(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig
-    ): List<EpubCorePage> {
-        return EpubCoreProvider.paginate(book, chapterIndex, config)
-            .takeIf { it.isNotEmpty() }
-            ?: error("empty page")
+    private fun cancelEpubCoreLoadTimeout() {
+        epubCoreLoadTimeoutJob?.cancel()
+        epubCoreLoadTimeoutJob = null
+    }
+
+    private fun logDirectEpubFailure(
+        stage: String,
+        chapterIndex: Int?,
+        requestSeq: Long,
+        message: String,
+        throwable: Throwable?
+    ) {
+        val causeChain = EpubDirectFailureDiagnostics.logCauseChain(throwable)
+        val book = ReadBook.book
+        AppLog.put(
+            "EPUB direct failure: stage=$stage, request=$requestSeq, " +
+                "chapter=$chapterIndex, book=${book?.name.orEmpty()}, " +
+                "bookUrl=${book?.bookUrl.orEmpty()}, error=$causeChain, detail=$message",
+            throwable
+        )
+    }
+
+    private fun scheduleDirectEpubPrefetch(chapterIndex: Int, requestSeq: Long) {
+        if (!isEpubCoreMode() || requestSeq != epubCoreRequestSeq) return
+        val book = ReadBook.book ?: return
+        val session = epubDirectSession?.takeIf { isCurrentDirectSession(it, book) } ?: return
+        val bookUrl = book.bookUrl
+        val config = binding.epubReadView.layoutConfig ?: return
+        val schedule = currentEpubPerformanceBudget()
+        val candidates = EpubDirectPrefetchPolicy.candidates(
+            chapterIndex = chapterIndex,
+            capacity = minOf(binding.epubReadView.directPreloadCapacity(), schedule.chapterPreloadLimit),
+            adjacentChapterIndex = session::adjacentChapterIndex
+        )
+        binding.epubReadView.updateDirectPreloadCandidates(session, candidates, config)
+        epubCorePrefetch.schedule(
+            owner = DirectPrefetchOwner(session, config),
+            candidates = candidates,
+            staggerMillis = schedule.chapterPreloadStaggerMillis,
+            isPrepared = { binding.epubReadView.hasDirectChapterPreload(session, it, config) },
+            prepare = { targetIndex ->
+                if (book.isEpub) session.prepareChapter(targetIndex, config)
+                else runInterruptible { session.prepareChapter(targetIndex, config) }
+            },
+            onPrepared = { targetIndex, chapter ->
+                if (requestSeq == epubCoreRequestSeq && ReadBook.book?.bookUrl == bookUrl &&
+                    epubDirectSession === session && isCurrentDirectSession(session, book)
+                ) {
+                    binding.epubReadView.preloadDirectChapter(
+                        session = session,
+                        chapter = chapter,
+                        config = config,
+                        openAtEnd = targetIndex < chapterIndex
+                    )
+                }
+            },
+            onFailure = { targetIndex, error ->
+                AppLog.putDebug("EPUB direct prefetch failed: index=$targetIndex", error)
+            }
+        )
     }
 
     private fun prepareEpubCoreLayout(onReady: () -> Unit) {
+        scheduleEpubCoreLayoutAction(hideUntilReady = true, onReady = onReady)
+    }
+
+    private fun scheduleEpubCoreLayoutAction(
+        hideUntilReady: Boolean,
+        onReady: () -> Unit
+    ) {
         binding.run {
-            if (!epubCoreWaitingForLayout) {
-                epubCoreWaitingForLayout = true
+            if (hideUntilReady) {
                 epubReadView.visibility = View.INVISIBLE
                 readView.isVisible = !epubCoreActive
-                epubReadView.requestLayout()
             }
-            epubReadView.visibility = View.INVISIBLE
-            epubReadView.doOnLayout {
-                epubCoreWaitingForLayout = false
-                onReady()
+            val registrationId = epubCoreLayoutReadyActionGate.submit(onReady)
+            epubReadView.requestLayout()
+            if (registrationId != null) {
+                epubReadView.doOnLayout {
+                    epubCoreLayoutReadyActionGate.consume(registrationId)?.invoke()
+                }
             }
         }
     }
 
     private fun refreshEpubCoreAfterConfigurationChange() {
-        binding.epubReadView.doOnLayout {
-            val currentConfig = binding.epubReadView.layoutConfig
-            val nextConfig = buildEpubCoreLayoutConfig()
-            if (currentConfig == null || !currentConfig.sameEpubLayoutAs(nextConfig)) {
-                loadEpubCoreContent(resetPageOffset = false)
-            } else {
-                upEpubRendererStyle()
-                binding.epubReadView.invalidateRendererStyle()
-            }
+        scheduleEpubCoreLayoutAction(hideUntilReady = false) {
+            loadEpubCoreContent(resetPageOffset = false)
         }
     }
 
     private fun applyEpubRendererStyleOnly() {
-        upEpubRendererStyle()
-        binding.epubReadView.invalidateRendererStyle()
+        val backgroundColor = prepareEpubReaderBackground()
+        upEpubRendererStyle(backgroundColor)
+        val fontSource = ReadBookConfig.textFont
+        val preparedFont = if (fontSource.isBlank()) {
+            null
+        } else {
+            epubReaderFontPreparer.cached(fontSource) ?: run {
+                loadEpubCoreContent(resetPageOffset = false)
+                return
+            }
+        }
+        val config = buildEpubCoreLayoutConfig(backgroundColor)
+            .withPreparedReaderFont(fontSource, preparedFont)
+        if (binding.epubReadView.reloadDirectStyle(config)) {
+            cancelEpubCorePrefetch()
+            return
+        }
+        loadEpubCoreContent(resetPageOffset = false)
     }
 
-    private fun showEpubCoreLoadingPage(chapterIndex: Int, config: EpubCoreLayoutConfig) {
-        upEpubRendererStyle()
+    private fun showInitialEpubCoreLoadingPage(config: EpubCoreLayoutConfig) {
+        upEpubRendererStyle(config.backgroundColor)
         binding.epubReadView.layoutConfig = config
         switchEpubCore(true)
-        epubCoreSuppressProgressSync = true
-        binding.epubReadView.showLoading(chapterIndex, getString(R.string.loading))
-        upSeekBarProgress()
+        binding.epubReadView.showLoading(getString(R.string.loading))
     }
 
     private fun syncEpubCoreProgress(pageIndex: Int, pageCount: Int) {
         val page = binding.epubReadView.currentPage()
-        if (page?.chapterHref?.startsWith("loading:") == true) return
         val oldChapterIndex = ReadBook.durChapterIndex
+        val oldDisplayedChapterIndex = epubCoreCommittedChapterIndex
         val chapterIndex = page?.chapterIndex ?: oldChapterIndex
         val chapterPageIndex = page?.pageIndex ?: pageIndex
         epubCorePageCount = page?.totalPagesInChapter ?: pageCount
         if (epubCoreSuppressProgressSync) return
-        ReadBook.durChapterIndex = chapterIndex
-        ReadBook.durChapterPos = chapterPageIndex.coerceAtLeast(0)
+        if (BaseReadAloudService.isRun && isEpubCoreMode()) {
+            epubCoreCommittedChapterIndex = chapterIndex
+            if (chapterIndex != oldDisplayedChapterIndex) {
+                upMenuView()
+                scheduleDirectEpubPrefetch(chapterIndex, epubCoreRequestSeq)
+            }
+            pageChanged()
+            return
+        }
+        updateDirectStoredPosition(chapterIndex, chapterPageIndex)
         ReadBook.saveRead(true)
         if (chapterIndex != oldChapterIndex) {
             upMenuView()
-            scheduleEpubCorePrefetchWindow(chapterIndex)
-        } else {
-            maybeAdvanceEpubCorePrefetch(chapterIndex, chapterPageIndex, epubCorePageCount)
+            scheduleDirectEpubPrefetch(chapterIndex, epubCoreRequestSeq)
         }
         pageChanged()
     }
 
-    private fun epubCoreTargetEdge(
-        resetPageOffset: Boolean,
-        boundaryTransition: Boolean
-    ): EpubCorePageEdge {
-        return when {
-            boundaryTransition -> epubCoreBoundaryTargetEdge
-            resetPageOffset -> EpubCorePageEdge.Start
-            else -> EpubCorePageEdge.Keep
+    private fun updateDirectStoredPosition(chapterIndex: Int, chapterPageIndex: Int) {
+        val book = ReadBook.book ?: return
+        if (book.isEpub) {
+            ReadBook.durChapterPos = chapterPageIndex.coerceAtLeast(0)
+        } else {
+            val offset = binding.epubReadView.currentDirectTextPosition()
+            ReadBook.durChapterPos = offset ?: if (ReadBook.durChapterIndex == chapterIndex) ReadBook.durChapterPos else 0
+            val sourceUrl = binding.epubReadView.currentSourceChapterUrl()
+            if (offset != null && sourceUrl != null) {
+                ReaderTextPositionStore.remember(book.bookUrl, sourceUrl, "epub", binding.epubReadView.currentDirectText(), offset)
+            }
         }
-    }
-
-    private fun epubCoreInitialPageIndex(
-        pages: List<EpubCorePage>,
-        chapterIndex: Int,
-        targetEdge: EpubCorePageEdge
-    ): Int {
-        if (pages.isEmpty()) return 0
-        return when (targetEdge) {
-            EpubCorePageEdge.Start -> 0
-            EpubCorePageEdge.End -> pages.lastIndex
-            EpubCorePageEdge.Keep -> binding.epubReadView
-                .preferredPageIndexForReload(chapterIndex, ReadBook.durChapterPos)
-                .coerceIn(0, pages.lastIndex)
-        }
-    }
-
-    private fun maybeAdvanceEpubCorePrefetch(chapterIndex: Int, chapterPageIndex: Int, chapterPageCount: Int) {
-        if (!epubCoreActive || epubCoreLoading || epubCorePendingNavigation != null) return
-        if (chapterPageCount <= 0) return
-        val remaining = chapterPageCount - 1 - chapterPageIndex
-        if (remaining > 1) return
-        val nextIndex = chapterIndex + 1
-        if (nextIndex !in 0 until ReadBook.chapterSize) return
-        scheduleEpubCorePrefetchWindow(nextIndex, epubCoreRequestSeq)
+        ReadBook.durChapterIndex = chapterIndex
     }
 
     private fun cancelActiveEpubCoreNavigation(
         clearBoundary: Boolean = true,
         advanceRequestSeq: Boolean = true
     ) {
+        epubCoreLayoutReadyActionGate.cancel()
+        cancelEpubCoreLoadTimeout()
         if (advanceRequestSeq) {
             epubCoreRequestSeq++
         }
@@ -2399,15 +3048,13 @@ class ReadBookActivity : BaseReadBookActivity(),
         epubCoreLoadJob = null
         epubCoreLoading = false
         epubCoreLoadingChapterIndex = null
-        epubCorePendingNavigation = null
         epubCoreBoundaryTransition = false
         epubCoreForegroundTarget = null
         epubCoreSuppressProgressSync = false
         binding.epubReadView.clearLoading()
         if (clearBoundary) {
-            binding.epubReadView.clearBoundaryLoadingTurn()
-            epubCoreBoundaryDirection = 0
-            epubCoreBoundaryTargetEdge = EpubCorePageEdge.Start
+            epubDirectAutoPager.onTurnCancelled()
+            binding.epubReadView.cancelPendingBoundaryTurn()
         }
     }
 
@@ -2418,24 +3065,23 @@ class ReadBookActivity : BaseReadBookActivity(),
         schedulePrefetch: Boolean = true
     ) {
         epubCoreSuppressProgressSync = false
-        epubCorePendingNavigation = null
         epubCoreLoading = false
         epubCoreLoadingChapterIndex = null
         epubCoreForegroundTarget = null
+        epubCoreBoundaryTransition = false
         binding.epubReadView.clearLoading()
         epubCorePageCount = binding.epubReadView.currentChapterPageCount()
-        if (epubCorePageCount > 0) {
-            epubCoreEstimatedPages[chapterIndex] = epubCorePageCount
+        val preserveReadAloudPosition = BaseReadAloudService.isRun && isEpubCoreMode()
+        if (!preserveReadAloudPosition) {
+            updateDirectStoredPosition(chapterIndex, chapterPageIndex)
         }
-        ReadBook.durChapterIndex = chapterIndex
-        ReadBook.durChapterPos = chapterPageIndex.coerceAtLeast(0)
         epubCoreCommittedChapterIndex = chapterIndex
-        ReadBook.saveRead(true)
+        if (!preserveReadAloudPosition) ReadBook.saveRead(true)
         binding.readMenu.upBookView()
         upSeekBarProgress()
         pageChanged()
         if (schedulePrefetch) {
-            scheduleEpubCorePrefetchWindow(chapterIndex, requestSeq)
+            scheduleDirectEpubPrefetch(chapterIndex, requestSeq)
         }
         AppLog.putDebug(
             "EPUB core commit: chapter=$chapterIndex, page=$chapterPageIndex, " +
@@ -2451,16 +3097,17 @@ class ReadBookActivity : BaseReadBookActivity(),
         if (values.contains(0)) {
             upSystemUiVisibility()
         }
+        if (values.contains(1)) {
+            refreshEpubReaderBackgroundImmediately()
+        }
         if (values.any { it == 8 || it == 10 }) {
             ChapterProvider.upStyle()
+            epubReaderFontPreparer.invalidate()
         }
         val needsLayout = values.any { it == 1 || it == 2 || it == 5 || it == 6 || it == 8 || it == 10 }
         if (needsLayout) {
-            ReadBook.book?.takeIf { it.isEpub }?.let { book ->
-                cancelEpubCoreForegroundHard(book)
-                cancelEpubCorePrefetchHard(book)
-            }
-            loadEpubCoreContent(resetPageOffset = false, keepCurrentPageUntilReady = true)
+            cancelEpubCorePrefetch()
+            loadEpubCoreContent(resetPageOffset = false)
             return
         }
         if (values.contains(0)) {
@@ -2523,240 +3170,50 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     private fun reloadAfterEpubEngineChanged() {
         val book = ReadBook.book ?: return
-        if (!book.isEpub) return
-        cancelEpubCoreForegroundHard(book)
-        cancelEpubCorePrefetchHard(book)
-        EpubCoreProvider.clearBookCache(book)
-        EpubFile.clearBook(book)
-        BookHelp.clearCache(book)
-        ReadBook.clearTextChapter()
+        val useCore = isEpubCoreMode()
+        if (!book.isEpub && epubCoreActive == useCore && ReadBookConfig.usingEpubLayout == useCore) return
+        if (epubCoreActive) {
+            binding.epubReadView.currentPage()?.let { updateDirectStoredPosition(it.chapterIndex, it.pageIndex) }
+        }
+        ReadBook.saveRead()
+        if (BaseReadAloudService.isRun) ReadAloud.stopForBookSwitch(this)
+        deactivateEpubCore()
+        if (book.isEpub) {
+            EpubCoreProvider.clearBookCache(book)
+            EpubFile.clearBook(book)
+            BookHelp.clearCache(book)
+        }
+        ReadBook.invalidateDirectTextContent(book.bookUrl)
+        ReadBook.invalidateParagraphRuleLayout()
+        ReadBookConfig.selectLayout(useCore)
+        ChapterProvider.upStyle()
         ReadBook.msg = null
-        if (isEpubCoreMode()) {
+        if (useCore) {
             switchEpubCore(true)
-            loadEpubCoreContent(resetPageOffset = false, keepCurrentPageUntilReady = false)
+            loadEpubCoreContent(resetPageOffset = false)
         } else {
-            switchEpubCore(false)
-            ChapterProvider.upStyle()
+            binding.readView.upBg()
             ReadBook.loadContent(resetPageOffset = false)
         }
         binding.readMenu.upBookView()
         upSeekBarProgress()
     }
 
-    private fun EpubCoreLayoutConfig.sameEpubLayoutAs(other: EpubCoreLayoutConfig): Boolean {
-        return pageWidthPx == other.pageWidthPx &&
-            pageHeightPx == other.pageHeightPx &&
-            paddingLeftPx == other.paddingLeftPx &&
-            paddingTopPx == other.paddingTopPx &&
-            paddingRightPx == other.paddingRightPx &&
-            paddingBottomPx == other.paddingBottomPx &&
-            readerPaddingLeftPx == other.readerPaddingLeftPx &&
-            readerPaddingTopPx == other.readerPaddingTopPx &&
-            readerPaddingRightPx == other.readerPaddingRightPx &&
-            readerPaddingBottomPx == other.readerPaddingBottomPx &&
-            paragraphSpacingPx == other.paragraphSpacingPx &&
-            alignment == other.alignment &&
-            textFullJustify == other.textFullJustify &&
-            lineSpacingMultiplier == other.lineSpacingMultiplier &&
-            lineSpacingExtraPx == other.lineSpacingExtraPx &&
-            textPaint.textSize == other.textPaint.textSize &&
-            textPaint.letterSpacing == other.textPaint.letterSpacing &&
-            textPaint.color == other.textPaint.color &&
-            textPaint.typeface?.style == other.textPaint.typeface?.style &&
-            readerFontFamily == other.readerFontFamily &&
-            readerFontUrl == other.readerFontUrl &&
-            readerFontPath == other.readerFontPath &&
-            scrollMode == other.scrollMode
-    }
-
-    private fun prefetchAdjacentEpubCoreChapters(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig,
-        requestSeq: Long
-    ) {
-        cancelEpubCorePrefetch()
-        val mode = currentEpubCoreSchedule()
-        val candidates = epubCorePrefetchCandidatesByPageBudget(book, chapterIndex, config, mode)
-        if (candidates.isEmpty()) return
-        val workerCount = mode.workerCount.coerceAtLeast(1).coerceAtMost(candidates.size)
-        AppLog.putDebug(
-            "EPUB core prefetch schedule: mode=${mode.key}, budget=${mode.pageBudget}, center=$chapterIndex, " +
-                    "workers=$workerCount, targets=${candidates.joinToString()}"
-        )
-        repeat(workerCount) { slot ->
-            val targets = candidates.filterIndexed { index, _ -> index % workerCount == slot }
-            if (targets.isEmpty()) return@repeat
-            val job = lifecycleScope.launch(IO) {
-                targets.forEach { index ->
-                    ensureActive()
-                    if (requestSeq != epubCoreRequestSeq || ReadBook.book?.bookUrl != book.bookUrl) return@launch
-                    val cachedPages = EpubCoreProvider.peekPages(book, index, config)
-                    if (cachedPages != null) {
-                        epubCoreEstimatedPages[index] = cachedPages.size.coerceAtLeast(1)
-                        AppLog.putDebug("EPUB core prefetch skip cache: index=$index")
-                        if (config.scrollMode) {
-                            withContext(Main.immediate) {
-                                mergeEpubCoreScrollPrefetch(
-                                    book = book,
-                                    requestSeq = requestSeq,
-                                    mode = mode,
-                                    chapterIndex = index,
-                                    pages = cachedPages
-                                )
-                            }
-                        }
-                        return@forEach
-                    }
-                    runCatching {
-                        EpubCoreProvider.paginate(book, index, config, backgroundSlot = slot)
-                    }.onFailure {
-                        if (it is CancellationException) throw it
-                        AppLog.putDebug("EPUB core prefetch failed: index=$index, ${it.localizedMessage}", it)
-                    }.onSuccess { pages ->
-                        if (pages.isEmpty()) return@onSuccess
-                        withContext(Main.immediate) {
-                            val currentBook = ReadBook.book
-                            if (requestSeq != epubCoreRequestSeq ||
-                                currentBook?.bookUrl != book.bookUrl ||
-                                currentBook?.isEpub != true ||
-                                !epubCoreActive ||
-                                epubCoreLoading ||
-                                epubCorePendingNavigation != null ||
-                                currentEpubCoreSchedule().key != mode.key
-                            ) {
-                                return@withContext
-                            }
-                            epubCoreEstimatedPages[index] = pages.size.coerceAtLeast(1)
-                            AppLog.putDebug("EPUB core prefetch ready: index=$index, pages=${pages.size}")
-                            if (config.scrollMode) {
-                                mergeEpubCoreScrollPrefetch(
-                                    book = book,
-                                    requestSeq = requestSeq,
-                                    mode = mode,
-                                    chapterIndex = index,
-                                    pages = pages
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            epubCorePrefetchJobs += job
-        }
-    }
-
-    private fun mergeEpubCoreScrollPrefetch(
-        book: Book,
-        requestSeq: Long,
-        mode: EpubCoreScheduleMode,
-        chapterIndex: Int,
-        pages: List<EpubCorePage>
-    ) {
-        val currentBook = ReadBook.book
-        if (requestSeq != epubCoreRequestSeq ||
-            currentBook?.bookUrl != book.bookUrl ||
-            currentBook?.isEpub != true ||
-            !epubCoreActive ||
-            epubCoreLoading ||
-            epubCorePendingNavigation != null ||
-            currentEpubCoreSchedule().key != mode.key ||
-            ReadBook.pageAnim() != PageAnim.scrollPageAnim
-        ) {
-            return
-        }
-        if (binding.epubReadView.mergeAdjacentPages(pages)) {
-            AppLog.putDebug("EPUB core scroll prefetch merged: index=$chapterIndex, pages=${pages.size}")
-        }
-    }
-
     private fun cancelEpubCorePrefetch() {
-        epubCorePrefetchJobs.forEach { it.cancel() }
-        epubCorePrefetchJobs.clear()
-    }
-
-    private fun cancelEpubCorePrefetchHard(book: Book? = ReadBook.book?.takeIf { it.isEpub }) {
-        cancelEpubCorePrefetch()
-        epubCoreEstimatedPages.clear()
-        EpubCoreProvider.cancelBackgroundLayouts(book)
-    }
-
-    private fun cancelEpubCoreForegroundHard(book: Book? = ReadBook.book?.takeIf { it.isEpub }) {
-        EpubCoreProvider.cancelForegroundLayout(book)
-    }
-
-    private fun scheduleEpubCorePrefetchWindow(
-        chapterIndex: Int = binding.epubReadView.currentPage()?.chapterIndex ?: ReadBook.durChapterIndex,
-        requestSeq: Long = epubCoreRequestSeq
-    ) {
-        val book = ReadBook.book?.takeIf { it.isEpub } ?: return
-        if (!epubCoreActive || epubCoreLoading || epubCorePendingNavigation != null) return
-        prefetchAdjacentEpubCoreChapters(
-            book = book,
-            chapterIndex = chapterIndex,
-            config = buildEpubCoreLayoutConfig(),
-            requestSeq = requestSeq
-        )
-    }
-
-    private fun epubCorePrefetchCandidatesByPageBudget(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig,
-        mode: EpubCoreScheduleMode
-    ): List<Int> {
-        val candidates = arrayListOf<Int>()
-        var pages = 0
-        fun estimate(index: Int): Int {
-            epubCoreEstimatedPages[index]?.let { return it.coerceAtLeast(1) }
-            EpubCoreProvider.peekPages(book, index, config)?.let {
-                val size = it.size.coerceAtLeast(1)
-                epubCoreEstimatedPages[index] = size
-                return size
-            }
-            return epubCoreFallbackEstimatedPages()
-        }
-        fun add(index: Int): Boolean {
-            if (index !in 0 until ReadBook.chapterSize || index in candidates) return false
-            val estimated = estimate(index)
-            candidates += index
-            pages += estimated
-            return pages < mode.pageBudget
-        }
-        val minForwardChapters = when (mode) {
-            EpubCoreScheduleMode.Light -> 2
-            EpubCoreScheduleMode.Normal -> 4
-            EpubCoreScheduleMode.Performance -> 6
-        }
-        for (distance in 1..minForwardChapters) {
-            add(chapterIndex + distance)
-        }
-        var distance = 1
-        while (pages < mode.pageBudget && distance <= ReadBook.chapterSize) {
-            val forward = chapterIndex + distance
-            val backward = chapterIndex - distance
-            val canForward = add(forward)
-            if (pages >= mode.pageBudget) break
-            val canBackward = add(backward)
-            if (!canForward && !canBackward) {
-                distance++
-                continue
-            }
-            distance++
-        }
-        return candidates
-    }
-
-    private fun epubCoreFallbackEstimatedPages(): Int {
-        val known = epubCoreEstimatedPages.values.filter { it > 0 }
-        if (known.isNotEmpty()) {
-            return (known.sum() / known.size).coerceIn(1, 5)
-        }
-        return epubCorePageCount.takeIf { it > 0 }?.coerceIn(1, 5) ?: 1
+        epubCorePrefetch.cancel()
     }
 
     private fun currentEpubCoreSchedule(): EpubCoreScheduleMode {
         return EpubCoreScheduleMode.fromKey(AppConfig.epubCoreScheduleMode)
+    }
+
+    private fun currentEpubPerformanceBudget(): EpubPerformanceBudget {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        return EpubDirectWebViewBudgetPolicy.resolve(
+            modeKey = AppConfig.epubCoreScheduleMode,
+            isLowRamDevice = activityManager?.isLowRamDevice == true,
+            memoryClassMb = activityManager?.memoryClass ?: 256
+        )
     }
 
     private fun showEpubCoreScheduleModeDialog() {
@@ -2768,18 +3225,20 @@ class ReadBookActivity : BaseReadBookActivity(),
             val mode = modes.getOrNull(index) ?: return@selector
             if (AppConfig.epubCoreScheduleMode == mode.key) return@selector
             AppConfig.epubCoreScheduleMode = mode.key
+            binding.epubReadView.applyDirectPerformanceMode()
             menu?.findItem(R.id.menu_epub_schedule_mode)?.title =
                 "${getString(R.string.epub_core_schedule_mode)} (${getString(mode.titleRes)})"
-            val book = ReadBook.book?.takeIf { it.isEpub } ?: return@selector
-            cancelEpubCorePrefetchHard(book)
+            if (!isEpubCoreMode()) return@selector
+            cancelEpubCorePrefetch()
             if (!epubCoreActive || epubCoreLoading) return@selector
             val chapterIndex = binding.epubReadView.currentPage()?.chapterIndex ?: ReadBook.durChapterIndex
-            scheduleEpubCorePrefetchWindow(chapterIndex)
+            scheduleDirectEpubPrefetch(chapterIndex, epubCoreRequestSeq)
         }
     }
 
-    private fun buildEpubCoreLayoutConfig(): EpubCoreLayoutConfig {
+    private fun buildEpubCoreLayoutConfig(backgroundColor: Int): EpubCoreLayoutConfig {
         val view = binding.epubReadView
+        val template = selectedReaderTemplate()
         val scrollMode = ReadBook.pageAnim() == PageAnim.scrollPageAnim
         val textPaint = TextPaint().apply {
             isAntiAlias = true
@@ -2789,6 +3248,20 @@ class ReadBookActivity : BaseReadBookActivity(),
             typeface = ChapterProvider.contentPaint.typeface
         }
         val readerFontName = epubCoreReaderFontName()
+        val displayCutout = if (AppConfig.paddingDisplayCutouts) {
+            ViewCompat.getRootWindowInsets(view)
+                ?.getInsets(WindowInsetsCompat.Type.displayCutout())
+        } else {
+            null
+        }
+        val textHeightPx = textPaint.textHeight
+        val paragraphIndentPx = ReadBookConfig.paragraphIndent.takeIf { it.isNotEmpty() }?.let {
+            var width = StaticLayout.getDesiredWidth(it, textPaint)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                width += textPaint.letterSpacing * textPaint.textSize
+            }
+            width
+        } ?: 0f
         return EpubCoreLayoutConfig(
             pageWidthPx = view.width,
             pageHeightPx = view.height,
@@ -2800,43 +3273,185 @@ class ReadBookActivity : BaseReadBookActivity(),
             readerPaddingTopPx = if (scrollMode) 0 else ReadBookConfig.paddingTop.dpToPx(),
             readerPaddingRightPx = ReadBookConfig.paddingRight.dpToPx(),
             readerPaddingBottomPx = if (scrollMode) 0 else ReadBookConfig.paddingBottom.dpToPx(),
-            paragraphSpacingPx = (ReadBookConfig.paragraphSpacing.dpToPx() / 2).coerceAtLeast(8),
+            readerSafeInsetLeftPx = displayCutout?.left ?: 0,
+            readerSafeInsetTopPx = displayCutout?.top ?: 0,
+            readerSafeInsetRightPx = displayCutout?.right ?: 0,
+            readerSafeInsetBottomPx = displayCutout?.bottom ?: 0,
+            paragraphSpacingPx = textHeightPx * ReadBookConfig.paragraphSpacing / 10f,
+            paragraphIndentPx = paragraphIndentPx,
             textPaint = textPaint,
+            textFontWeight = ReadBookConfig.textWeight,
+            textFontItalic = textPaint.typeface?.isItalic == true,
             readerFontFamily = readerFontName,
-            readerFontUrl = epubCoreReaderFontUrl(),
-            readerFontPath = ReadBookConfig.textFont.takeIf { it.isNotBlank() },
             textFullJustify = ReadBookConfig.textFullJustify,
-            lineSpacingExtraPx = ReadBookConfig.lineSpacingExtra.toFloat(),
-            scrollMode = scrollMode
+            textBottomJustify = ReadBookConfig.textBottomJustify,
+            lineHeightPx = textHeightPx * ReadBookConfig.lineSpacingExtra / 10f,
+            scrollMode = scrollMode,
+            backgroundColor = backgroundColor,
+            selectionColor = ContextCompat.getColor(this, R.color.btn_bg_press_2),
+            readerBackgroundImage = epubReaderUsesImageBackground(),
+            readerChrome = if (template == null) buildEpubReaderChromeConfig() else EpubReaderChromeConfig.DISABLED,
+            readerTemplate = template
         )
     }
 
-    private fun upEpubRendererStyle() {
+    private fun buildEpubReaderChromeConfig(): EpubReaderChromeConfig {
+        val headerMode = ReadTipConfig.headerMode.takeIf {
+            EpubReaderChromeModePolicy.isSupported(
+                directEpub = true,
+                mode = it,
+                advancedMode = ReadTipConfig.HEADER_MODE_ADVANCED
+            )
+        }
+        val footerMode = ReadTipConfig.footerMode.takeIf {
+            EpubReaderChromeModePolicy.isSupported(
+                directEpub = true,
+                mode = it,
+                advancedMode = ReadTipConfig.FOOTER_MODE_ADVANCED
+            )
+        }
+        val headerEnabled = when (headerMode) {
+            ReadTipConfig.HEADER_MODE_SHOW -> true
+            ReadTipConfig.HEADER_MODE_STATUS -> !ReadBookConfig.hideStatusBar
+            else -> false
+        }
+        val footerEnabled = footerMode == ReadTipConfig.FOOTER_MODE_SHOW
+        if (!headerEnabled && !footerEnabled) return EpubReaderChromeConfig.DISABLED
+
+        val textSizePx = 12f.spToPx()
+        val tipPaint = TextPaint().apply {
+            isAntiAlias = true
+            textSize = textSizePx
+            typeface = ChapterProvider.typeface
+        }
+        val lineHeightPx = maxOf(
+            tipPaint.fontMetricsInt.descent - tipPaint.fontMetricsInt.ascent,
+            (textSizePx * 1.2f).toInt()
+        ).coerceAtLeast(1)
+        val headerPaddingLeftPx = ReadBookConfig.headerPaddingLeft.dpToPx()
+        val headerPaddingTopPx = ReadBookConfig.headerPaddingTop.dpToPx()
+        val headerPaddingRightPx = ReadBookConfig.headerPaddingRight.dpToPx()
+        val headerPaddingBottomPx = ReadBookConfig.headerPaddingBottom.dpToPx()
+        val footerPaddingLeftPx = ReadBookConfig.footerPaddingLeft.dpToPx()
+        val footerPaddingTopPx = ReadBookConfig.footerPaddingTop.dpToPx()
+        val footerPaddingRightPx = ReadBookConfig.footerPaddingRight.dpToPx()
+        val footerPaddingBottomPx = ReadBookConfig.footerPaddingBottom.dpToPx()
+        val dividerHeightPx = 0.5f.dpToPx().toInt().coerceAtLeast(1)
+        val headerHeightPx = if (headerEnabled) {
+            lineHeightPx + headerPaddingTopPx + headerPaddingBottomPx +
+                dividerHeightPx.takeIf { ReadBookConfig.showHeaderLine }.orZero()
+        } else {
+            0
+        }
+        val footerHeightPx = if (footerEnabled) {
+            lineHeightPx + footerPaddingTopPx + footerPaddingBottomPx +
+                dividerHeightPx.takeIf { ReadBookConfig.showFooterLine }.orZero()
+        } else {
+            0
+        }
+        val textColor = ReadTipConfig.tipColor.takeUnless { it == 0 } ?: ReadBookConfig.textColor
+        val dividerColor = when (ReadTipConfig.tipDividerColor) {
+            -1 -> ContextCompat.getColor(this, R.color.divider)
+            0 -> ReadBookConfig.textColor
+            else -> ReadTipConfig.tipDividerColor
+        }
+        val geometryRevision = listOf(
+            headerEnabled.hashCode(), footerEnabled.hashCode(), headerHeightPx, footerHeightPx
+        ).fold(17L) { result, value -> result * 31L + value }
+        return EpubReaderChromeConfig(
+            enabled = true,
+            headerEnabled = headerEnabled,
+            footerEnabled = footerEnabled,
+            hideHeaderOnChapterFirstPage = true,
+            headerHeightPx = headerHeightPx,
+            footerHeightPx = footerHeightPx,
+            headerPaddingLeftPx = headerPaddingLeftPx,
+            headerPaddingTopPx = headerPaddingTopPx,
+            headerPaddingRightPx = headerPaddingRightPx,
+            headerPaddingBottomPx = headerPaddingBottomPx,
+            footerPaddingLeftPx = footerPaddingLeftPx,
+            footerPaddingTopPx = footerPaddingTopPx,
+            footerPaddingRightPx = footerPaddingRightPx,
+            footerPaddingBottomPx = footerPaddingBottomPx,
+            textSizePx = textSizePx,
+            textColor = textColor,
+            dividerColor = dividerColor,
+            headerDividerEnabled = ReadBookConfig.showHeaderLine,
+            footerDividerEnabled = ReadBookConfig.showFooterLine,
+            backgroundColor = Color.TRANSPARENT,
+            backgroundAlpha = 0f,
+            headerLeft = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipHeaderLeft),
+            headerCenter = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipHeaderMiddle),
+            headerRight = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipHeaderRight),
+            footerLeft = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipFooterLeft),
+            footerCenter = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipFooterMiddle),
+            footerRight = EpubReaderChromeLegacyFieldPolicy.resolve(ReadTipConfig.tipFooterRight),
+            geometryRevision = geometryRevision
+        )
+    }
+
+    private fun Int?.orZero(): Int = this ?: 0
+
+    private fun updateEpubReaderChromeData() {
+        val book = ReadBook.book?.takeIf { it.usesDirectReader } ?: return
+        val battery = epubReaderBatteryLevel.coerceIn(0, 100)
+        val batteryLabel = "$battery%"
+        binding.epubReadView.updateDirectReaderChromeData(
+            EpubReaderChromeData(
+                bookName = book.name,
+                timeLabel = AppConst.timeFormat.format(Date(System.currentTimeMillis())),
+                batteryLabel = batteryLabel,
+                batteryPercentageLabel = batteryLabel,
+                chapterCount = currentShareNoteChapterSize(),
+                contentRevision = ++epubReaderChromeContentRevision
+            )
+        )
+    }
+
+    private fun upEpubRendererStyle(backgroundColor: Int) {
+        // The host is only a neutral fallback. Reader theme artwork is installed by
+        // EpubDirectWebLayer after checking the active chapter's background policy.
+        binding.epubReadView.background = null
+        binding.epubReadView.setBackgroundColor(backgroundColor)
+        binding.epubReadView.overlayTextColor = ReadBookConfig.textColor
+        binding.epubReadView.overlayTextSizePx = ReadBookConfig.textSize.toFloat().spToPx()
+        binding.epubReadView.invalidate()
+    }
+
+    private fun refreshEpubReaderBackgroundImmediately() {
+        val backgroundColor = prepareEpubReaderBackground()
+        upEpubRendererStyle(backgroundColor)
+        val currentConfig = binding.epubReadView.layoutConfig ?: return
+        binding.epubReadView.refreshDirectReaderBackground(
+            currentConfig.copy(
+                backgroundColor = backgroundColor,
+                readerBackgroundImage = epubReaderUsesImageBackground()
+            )
+        )
+    }
+
+    private fun prepareEpubReaderBackground(): Int {
+        val metrics = resources.displayMetrics
+        val width = binding.epubReadView.width.takeIf { it > 0 } ?: metrics.widthPixels
+        val height = binding.epubReadView.height.takeIf { it > 0 } ?: metrics.heightPixels
+        ReadBookConfig.upBg(width.coerceAtLeast(1), height.coerceAtLeast(1))
+        return epubReaderBackgroundColor()
+    }
+
+    private fun epubReaderUsesImageBackground(): Boolean {
+        return ReadBookConfig.durConfig.curBgType() != 0
+    }
+
+    private fun epubReaderBackgroundColor(): Int {
         val config = ReadBookConfig.durConfig
-        val bgColor = runCatching {
+        return runCatching {
             if (config.curBgType() == 0) {
                 android.graphics.Color.parseColor(config.curBgStr())
             } else {
-                android.graphics.Color.rgb(250, 248, 241)
+                ReadBookConfig.bgMeanColor.takeIf { android.graphics.Color.alpha(it) > 0 }
+                    ?: android.graphics.Color.rgb(250, 248, 241)
             }
         }.getOrDefault(android.graphics.Color.rgb(250, 248, 241))
-        binding.epubReadView.renderer.backgroundColor = bgColor
-        binding.epubReadView.renderer.textColor = ReadBookConfig.textColor
-        binding.epubReadView.renderer.imageResolver = ReadBook.book
-            ?.takeIf { it.isEpub }
-            ?.let { EpubCoreProvider.imageResolverOrNull(it) }
-        binding.epubReadView.renderer.typefaceResolver = ReadBook.book
-            ?.takeIf { it.isEpub }
-            ?.let { EpubCoreProvider.typefaceResolverOrNull(it) }
-        binding.epubReadView.renderer.textPaint = TextPaint().apply {
-            isAntiAlias = true
-            color = ReadBookConfig.textColor
-            textSize = ReadBookConfig.textSize.toFloat().spToPx()
-            letterSpacing = ReadBookConfig.letterSpacing
-            typeface = ChapterProvider.contentPaint.typeface
-        }
-        binding.epubReadView.renderer.lineSpacingExtra = ReadBookConfig.lineSpacingExtra.toFloat()
-        binding.epubReadView.invalidate()
     }
 
     private fun epubCoreReaderFontName(): String? {
@@ -2858,108 +3473,196 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun nextEpubPage() {
-        if (!epubCoreActive && !epubCoreLoading) return
-        if (epubCoreLoading) {
-            requestEpubCoreChapterByDirection(1)
-            return
+        requestNextEpubPage()
+    }
+
+    private fun requestNextEpubPage(automatic: Boolean = false): EpubPageTurnResult {
+        if (!epubCoreActive && !epubCoreLoading) {
+            return EpubPageTurnResult.Unavailable
         }
-        if (binding.epubReadView.nextPage()) return
-        requestEpubCoreChapterByDirection(1)
+        if (binding.epubReadView.isSelectionBlockingPageTurn) {
+            return EpubPageTurnResult.Rejected
+        }
+        if (!automatic) ReadBook.markReadAloudUserNavigation()
+        if (epubCoreLoading) {
+            if (binding.epubReadView.hasPendingBoundaryTurn(1)) {
+                return EpubPageTurnResult.Queued
+            }
+            if (automatic) return EpubPageTurnResult.Rejected
+            requestEpubCoreChapterByDirection(
+                1,
+                EpubChapterNavigationPolicy.Intent.PageTurnBoundary
+            )
+            return EpubPageTurnResult.BoundaryRequired
+        }
+        val result = binding.epubReadView.nextPage()
+        if (result.requiresBoundaryNavigation) {
+            requestEpubCoreChapterByDirection(
+                1,
+                EpubChapterNavigationPolicy.Intent.PageTurnBoundary
+            )
+        }
+        return result
     }
 
     private fun previousEpubPage() {
         if (!epubCoreActive && !epubCoreLoading) return
+        if (binding.epubReadView.isSelectionBlockingPageTurn) return
+        ReadBook.markReadAloudUserNavigation()
         if (epubCoreLoading) {
-            requestEpubCoreChapterByDirection(-1)
+            if (binding.epubReadView.hasPendingBoundaryTurn(-1)) return
+            requestEpubCoreChapterByDirection(
+                -1,
+                EpubChapterNavigationPolicy.Intent.PageTurnBoundary
+            )
             return
         }
-        if (binding.epubReadView.previousPage()) return
-        requestEpubCoreChapterByDirection(-1)
+        if (binding.epubReadView.previousPage().requiresBoundaryNavigation) {
+            requestEpubCoreChapterByDirection(
+                -1,
+                EpubChapterNavigationPolicy.Intent.PageTurnBoundary
+            )
+        }
     }
 
     private fun openEpubCoreChapter(
         index: Int,
         resetPageOffset: Boolean,
-        navigationMode: EpubCoreNavigationMode = EpubCoreNavigationMode.ExplicitReplace,
-        boundaryTransition: Boolean = false
+        boundaryTransition: Boolean = false,
+        targetFragmentId: String? = null
     ) {
-        val chapterIndex = index.coerceIn(0, (ReadBook.chapterSize - 1).coerceAtLeast(0))
-        ReadBook.durChapterPos = if (resetPageOffset) 0 else ReadBook.durChapterPos
+        val chapterIndex = if (boundaryTransition || ReadBook.book?.isEpub == false) {
+            index.takeIf { it >= 0 } ?: return
+        } else {
+            index.coerceIn(0, (ReadBook.chapterSize - 1).coerceAtLeast(0))
+        }
+        if (!BaseReadAloudService.isRun) {
+            ReadBook.durChapterPos = if (resetPageOffset) 0 else ReadBook.durChapterPos
+        }
         loadEpubCoreContent(
             targetChapterIndex = chapterIndex,
             resetPageOffset = resetPageOffset,
-            navigationMode = navigationMode,
-            boundaryTransition = boundaryTransition
+            boundaryTransition = boundaryTransition,
+            targetFragmentId = targetFragmentId
         )
     }
 
     override fun openNextEpubCoreChapter() {
-        requestEpubCoreChapterByDirection(1)
+        requestEpubCoreChapterByDirection(
+            1,
+            EpubChapterNavigationPolicy.Intent.ExplicitChapterJump
+        )
     }
 
     override fun openPreviousEpubCoreChapter() {
-        requestEpubCoreChapterByDirection(-1)
+        requestEpubCoreChapterByDirection(
+            -1,
+            EpubChapterNavigationPolicy.Intent.ExplicitChapterJump
+        )
     }
 
     private fun requestEpubCoreChapterByDirection(
         direction: Int,
-        boundaryTransition: Boolean = false
+        intent: EpubChapterNavigationPolicy.Intent
     ) {
-        if (direction == 0 || ReadBook.chapterSize <= 0) return
-        val baseIndex = binding.epubReadView.currentPage()
-            ?.takeIf { !it.chapterHref.startsWith("loading:") }
-            ?.chapterIndex
+        if (binding.epubReadView.isSelectionBlockingPageTurn) {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            return
+        }
+        if (ReadBook.chapterSize <= 0) {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            return
+        }
+        val target = EpubChapterNavigationPolicy.resolve(direction, intent) ?: run {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            return
+        }
+        if (target.boundaryTransition && epubCoreLoading) {
+            // One accepted boundary gesture owns the navigation transaction until it commits
+            // or fails. Opposite rapid input must not recalculate from the still-visible source.
+            return
+        }
+        val resetPageOffset = target.edge == EpubChapterNavigationPolicy.TargetEdge.Start
+        val currentIndex = binding.epubReadView.currentPage()?.chapterIndex
             ?: epubCoreCommittedChapterIndex
             ?: ReadBook.durChapterIndex
-        val targetIndex = baseIndex + direction
-        if (targetIndex !in 0 until ReadBook.chapterSize) return
-        epubCoreBoundaryTransition = boundaryTransition
-        if (boundaryTransition) {
-            cancelEpubCorePrefetch()
-            epubCoreBoundaryTransactionId++
-            epubCoreBoundaryDirection = direction
-            epubCoreBoundaryTargetEdge = if (direction > 0) {
-                EpubCorePageEdge.Start
-            } else {
-                EpubCorePageEdge.End
-            }
-            epubCorePendingNavigation = EpubCoreNavigationRequest(targetIndex, direction > 0)
-            val book = ReadBook.book?.takeIf { it.isEpub }
-            val config = book?.let { buildEpubCoreLayoutConfig() }
-            if (book != null && config != null &&
-                startCachedEpubCoreBoundaryTurn(
-                    book = book,
-                    chapterIndex = targetIndex,
-                    config = config,
-                    direction = direction,
-                    resetPageOffset = direction > 0
-                )
-            ) {
+        // A boundary turn already resolved its target in EpubDirectWebLayer. Reuse that exact
+        // identity; only explicit navigation needs a fresh adjacent lookup.
+        val targetIndex = if (target.boundaryTransition) {
+            binding.epubReadView.pendingBoundaryChapterIndex(direction) ?: run {
+                binding.epubReadView.cancelPendingBoundaryTurn()
                 return
             }
-            val currentPage = binding.epubReadView.currentPage()
-                ?.takeIf { !it.chapterHref.startsWith("loading:") }
-            if (currentPage != null) {
-                val started = binding.epubReadView.startBoundaryLoadingTurn(
-                    transactionId = epubCoreBoundaryTransactionId,
-                    direction = direction,
-                    targetChapterIndex = targetIndex,
-                    message = getString(R.string.loading)
-                )
-                if (started) {
-                    AppLog.putDebug(
-                        "EPUB core boundary deferred: from=$baseIndex to=$targetIndex, direction=$direction"
-                    )
-                    return
-                }
-            }
-            epubCorePendingNavigation = null
+        } else {
+            adjacentLogicalEpubChapterIndex(currentIndex, target.chapterDelta)
         }
+        if (targetIndex == null) {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            return
+        }
+        epubCoreBoundaryTransition = target.boundaryTransition
         requestEpubCoreChapter(
             index = targetIndex,
-            resetPageOffset = direction > 0,
+            resetPageOffset = resetPageOffset,
             navigationMode = EpubCoreNavigationMode.Sequential,
-            boundaryTransition = boundaryTransition
+            boundaryTransition = target.boundaryTransition
+        )
+    }
+
+    private fun isCurrentDirectSession(session: EpubDirectSession, book: io.legado.app.data.entities.Book): Boolean =
+        !session.isClosed && session.bookUrl == book.bookUrl &&
+            (book.isEpub || session.sourceRevision == ReadBook.directTextRevision)
+
+    private fun resolveReadableEpubChapterIndex(
+        requestedIndex: Int,
+        preferredDirection: Int
+    ): Int? {
+        val book = ReadBook.book ?: return null
+        val bookUrl = book.bookUrl
+        epubDirectSession?.takeIf { isCurrentDirectSession(it, book) }?.let { session ->
+            session.resolveReadableChapterIndex(requestedIndex, preferredDirection)?.let { return it }
+        }
+        val chapters = runCatching { appDb.bookChapterDao.getChapterList(bookUrl) }
+            .getOrDefault(emptyList())
+        if (chapters.isEmpty()) {
+            return requestedIndex.takeIf { it in 0 until ReadBook.chapterSize }
+        }
+        return if (book.isEpub) EpubReadableChapterPolicy.resolve(chapters, requestedIndex, preferredDirection)
+            else chapters.firstOrNull { it.index == requestedIndex }?.index
+    }
+
+    private fun adjacentLogicalEpubChapterIndex(currentIndex: Int, direction: Int): Int? {
+        val book = ReadBook.book ?: return null
+        val bookUrl = book.bookUrl
+        epubDirectSession?.takeIf { isCurrentDirectSession(it, book) }?.let { session ->
+            session.adjacentLogicalChapterIndex(currentIndex, direction)?.let { return it }
+        }
+        val chapters = runCatching { appDb.bookChapterDao.getChapterList(bookUrl) }
+            .getOrDefault(emptyList())
+        if (chapters.isEmpty()) {
+            return (currentIndex + if (direction < 0) -1 else 1)
+                .takeIf { it in 0 until ReadBook.chapterSize }
+        }
+        return if (book.isEpub) EpubReadableChapterPolicy.adjacentLogical(chapters, currentIndex, direction)
+            else if (direction < 0) chapters.filter { it.index < currentIndex }.maxOfOrNull { it.index }
+            else chapters.filter { it.index > currentIndex }.minOfOrNull { it.index }
+    }
+
+    private fun EpubCoreLayoutConfig.withPreparedReaderFont(
+        fontSource: String,
+        font: EpubPreparedReaderFont?
+    ): EpubCoreLayoutConfig {
+        if (fontSource.isNotBlank()) {
+            check(font != null) { "Custom EPUB reader font is not prepared" }
+        }
+        return copy(
+            readerFontFamily = if (font != null) "legado-reader-font" else readerFontFamily,
+            readerFontUrl = font?.let { "https://epub.local/__legado_reader_font__" },
+            readerFontPath = font?.filePath,
+            readerFontRevision = font?.revision,
+            readerFontMimeType = font?.mimeType,
+            readerFontLength = font?.length,
+            readerFontOverridePublisher = font != null
         )
     }
 
@@ -2967,16 +3670,56 @@ class ReadBookActivity : BaseReadBookActivity(),
         index: Int,
         resetPageOffset: Boolean,
         navigationMode: EpubCoreNavigationMode,
-        boundaryTransition: Boolean = false
+        boundaryTransition: Boolean = false,
+        targetFragmentId: String? = null,
+        fromReadAloud: Boolean = false
     ) {
+        if (!fromReadAloud) {
+            ReadBook.markReadAloudUserNavigation()
+            pendingDirectReadAloudProgress = null
+            directReadAloudTargetChapterIndex = null
+        }
+        if (binding.epubReadView.isSelectionBlockingPageTurn) {
+            binding.epubReadView.cancelPendingBoundaryTurn()
+            return
+        }
         if (ReadBook.chapterSize <= 0) return
-        val chapterIndex = index.coerceIn(0, ReadBook.chapterSize - 1)
+        if (!boundaryTransition) binding.epubReadView.cancelPendingBoundaryTurn()
+        val chapterIndex = if (boundaryTransition || ReadBook.book?.isEpub == false) {
+            index.takeIf { it >= 0 } ?: run {
+                binding.epubReadView.cancelPendingBoundaryTurn()
+                return
+            }
+        } else {
+            index.coerceIn(0, ReadBook.chapterSize - 1)
+        }
         val currentRealPage = binding.epubReadView.currentPage()
-            ?.takeIf { !it.chapterHref.startsWith("loading:") }
         if (!boundaryTransition &&
             chapterIndex == currentRealPage?.chapterIndex &&
             !epubCoreLoading
         ) {
+            if (!targetFragmentId.isNullOrBlank()) {
+                val navigationSeq = ++epubDirectLinkRequestSeq
+                val scheduled = binding.epubReadView.navigateDirectToFragment(targetFragmentId) { success ->
+                    if (!success &&
+                        navigationSeq == epubDirectLinkRequestSeq &&
+                        binding.epubReadView.currentPage()?.chapterIndex == chapterIndex
+                    ) {
+                        openEpubCoreChapter(
+                            index = chapterIndex,
+                            resetPageOffset = true,
+                            targetFragmentId = targetFragmentId
+                        )
+                    }
+                }
+                if (scheduled) return
+                openEpubCoreChapter(
+                    index = chapterIndex,
+                    resetPageOffset = true,
+                    targetFragmentId = targetFragmentId
+                )
+                return
+            }
             binding.epubReadView.setChapterPageEdge(chapterIndex, toLastPage = !resetPageOffset)
             return
         }
@@ -2996,151 +3739,211 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             cancelActiveEpubCoreNavigation(clearBoundary = !boundaryTransition)
         }
-        val book = ReadBook.book?.takeIf { it.isEpub }
-        val config = buildEpubCoreLayoutConfig()
-        if (book != null && applyEpubCoreCachedPages(book, chapterIndex, config, resetPageOffset, navigationMode, boundaryTransition)) {
-            return
-        }
-        openEpubCoreChapter(chapterIndex, resetPageOffset, navigationMode)
-    }
-
-    private fun startCachedEpubCoreBoundaryTurn(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig,
-        direction: Int,
-        resetPageOffset: Boolean
-    ): Boolean {
-        val cachedPages = EpubCoreProvider.peekPages(book, chapterIndex, config) ?: return false
-        if (cachedPages.isEmpty()) return false
-        AppLog.putDebug(
-            "EPUB core boundary cache hit: index=$chapterIndex, pages=${cachedPages.size}, direction=$direction"
+        openEpubCoreChapter(
+            index = chapterIndex,
+            resetPageOffset = resetPageOffset,
+            boundaryTransition = boundaryTransition,
+            targetFragmentId = targetFragmentId
         )
-        upEpubRendererStyle()
-        binding.epubReadView.layoutConfig = config
-        switchEpubCore(true)
-        epubCoreSuppressProgressSync = false
-        epubCoreBoundaryTransition = false
-        epubCorePendingNavigation = null
-        epubCoreLoading = false
-        epubCoreLoadingChapterIndex = null
-        epubCoreForegroundTarget = null
-        binding.epubReadView.clearLoading()
-        epubCoreEstimatedPages[chapterIndex] = cachedPages.size.coerceAtLeast(1)
-        if (!binding.epubReadView.mergeAdjacentPages(cachedPages)) {
-            binding.epubReadView.setPages(cachedPages, if (resetPageOffset) 0 else cachedPages.lastIndex)
-            finishEpubCoreInstantNavigation(chapterIndex)
-            return true
-        }
-        val turned = if (direction > 0) {
-            binding.epubReadView.nextPage()
-        } else {
-            binding.epubReadView.previousPage()
-        }
-        if (!turned) {
-            binding.epubReadView.setChapterPageEdge(chapterIndex, toLastPage = !resetPageOffset)
-            finishEpubCoreInstantNavigation(chapterIndex)
-        }
-        return true
-    }
-
-    private fun applyEpubCoreCachedPages(
-        book: Book,
-        chapterIndex: Int,
-        config: EpubCoreLayoutConfig,
-        resetPageOffset: Boolean,
-        navigationMode: EpubCoreNavigationMode,
-        boundaryTransition: Boolean = false
-    ): Boolean {
-        val cachedPages = EpubCoreProvider.peekPages(book, chapterIndex, config) ?: return false
-        if (cachedPages.isEmpty()) return false
-        AppLog.putDebug("EPUB core navigation cache hit: index=$chapterIndex, pages=${cachedPages.size}")
-        upEpubRendererStyle()
-        binding.epubReadView.layoutConfig = config
-        switchEpubCore(true)
-        if (boundaryTransition && navigationMode == EpubCoreNavigationMode.Sequential) {
-            epubCoreSuppressProgressSync = true
-            epubCoreBoundaryTransition = false
-            epubCorePendingNavigation = null
-            epubCoreLoading = false
-            epubCoreLoadingChapterIndex = null
-            epubCoreForegroundTarget = null
-            binding.epubReadView.clearLoading()
-            val replaced = binding.epubReadView.replaceBoundaryLoadingPage(
-                transactionId = epubCoreBoundaryTransactionId,
-                direction = epubCoreBoundaryDirection,
-                targetChapterIndex = chapterIndex,
-                targetPages = cachedPages,
-                resetPageOffset = epubCoreBoundaryTargetEdge != EpubCorePageEdge.End
-            )
-            if (!replaced) {
-                binding.epubReadView.clearBoundaryLoadingTurn()
-                if (!binding.epubReadView.mergeAdjacentPages(cachedPages)) {
-                    binding.epubReadView.setPages(cachedPages, if (resetPageOffset) 0 else cachedPages.lastIndex)
-                }
-            }
-            commitEpubCoreDisplayedChapter(
-                chapterIndex = chapterIndex,
-                chapterPageIndex = if (epubCoreBoundaryTargetEdge == EpubCorePageEdge.End) {
-                    cachedPages.lastIndex
-                } else {
-                    0
-                },
-                requestSeq = epubCoreRequestSeq
-            )
-            return true
-        } else {
-            epubCoreSuppressProgressSync = true
-            if (navigationMode == EpubCoreNavigationMode.ExplicitReplace ||
-                !binding.epubReadView.mergeAdjacentPages(cachedPages)
-            ) {
-                binding.epubReadView.setPages(cachedPages, if (resetPageOffset) 0 else cachedPages.lastIndex)
-            }
-            binding.epubReadView.setChapterPageEdge(chapterIndex, toLastPage = !resetPageOffset)
-            finishEpubCoreInstantNavigation(chapterIndex)
-        }
-        epubCoreBoundaryTransition = false
-        return true
     }
 
     private fun finishEpubCoreInstantNavigation(chapterIndex: Int) {
         epubCoreSuppressProgressSync = false
-        epubCorePendingNavigation = null
         val requestSeq = epubCoreRequestSeq
         epubCoreLoadJob?.cancel()
         epubCoreLoadJob = null
+        cancelEpubCoreLoadTimeout()
         epubCoreLoading = false
         epubCoreLoadingChapterIndex = null
         epubCoreForegroundTarget = null
         binding.epubReadView.clearLoading()
         epubCorePageCount = binding.epubReadView.currentChapterPageCount()
-        if (epubCorePageCount > 0) {
-            epubCoreEstimatedPages[chapterIndex] = epubCorePageCount
+        val preserveReadAloudPosition = BaseReadAloudService.isRun && isEpubCoreMode()
+        if (!preserveReadAloudPosition) {
+            updateDirectStoredPosition(chapterIndex, binding.epubReadView.currentChapterPageIndex())
         }
-        ReadBook.durChapterIndex = chapterIndex
-        ReadBook.durChapterPos = binding.epubReadView.currentChapterPageIndex().coerceAtLeast(0)
         epubCoreCommittedChapterIndex = chapterIndex
+        if (!preserveReadAloudPosition) ReadBook.saveRead(true)
+        binding.readMenu.upBookView()
+        upSeekBarProgress()
+        consumePendingDirectReadAloudProgress(chapterIndex)
+        scheduleDirectEpubPrefetch(chapterIndex, requestSeq)
+    }
+
+    private fun directReadAloudChapterLength(progress: ReadAloudProgressState): Int {
+        val textChapterLength = ReadBook.curTextChapter
+            ?.takeIf { it.chapter.index == progress.chapterIndex }
+            ?.lastPage
+            ?.let { (it.chapterPosition + it.text.length).coerceAtLeast(0) }
+            ?: 0
+        val directChapterLength = binding.epubReadView.currentPage()
+            ?.takeIf { it.chapterIndex == progress.chapterIndex }
+            ?.text
+            ?.length
+            ?: 0
+        val progressExtent = (progress.chapterPosition.toLong() + progress.cueText.length + 1L)
+            .coerceIn(1L, Int.MAX_VALUE.toLong())
+            .toInt()
+        return maxOf(
+            1,
+            textChapterLength,
+            directChapterLength,
+            progressExtent
+        )
+    }
+
+    private fun directReadAloudInitialProgress(
+        chapterIndex: Int,
+        directChapterLength: Int
+    ): Float? {
+        if (!BaseReadAloudService.isRun ||
+            ReadBook.isReadAloudUserNavigationActive() ||
+            ReadBook.durChapterIndex != chapterIndex
+        ) return null
+        val characterPosition = ReadBook.durChapterPos
+        if (characterPosition == Int.MAX_VALUE) return 1f
+        val textChapterLength = ReadBook.curTextChapter
+            ?.takeIf { it.chapter.index == chapterIndex }
+            ?.lastPage
+            ?.let { (it.chapterPosition + it.text.length).coerceAtLeast(0) }
+            ?: 0
+        val chapterLength = maxOf(
+            1,
+            directChapterLength,
+            textChapterLength,
+            characterPosition.coerceAtLeast(0) + 1
+        )
+        return characterPosition.toDouble()
+            .coerceAtLeast(0.0)
+            .div((chapterLength - 1).coerceAtLeast(1).toDouble())
+            .toFloat()
+            .coerceIn(0f, 1f)
+    }
+
+    private fun requestDirectReadAloudChapter(
+        chapterIndex: Int,
+        progress: ReadAloudProgressState?
+    ) {
+        if (!isEpubCoreMode() || !BaseReadAloudService.isRun) return
+        if (chapterIndex !in 0 until ReadBook.chapterSize) return
+        val safeProgress = progress
+            ?: pendingDirectReadAloudProgress?.takeIf { it.chapterIndex == chapterIndex }
+            ?: ReadAloudProgressState(
+                bookUrl = ReadBook.book?.bookUrl.orEmpty(),
+                chapterIndex = chapterIndex,
+                chapterUrl = ReadBook.curTextChapter
+                    ?.takeIf { it.chapter.index == chapterIndex }
+                    ?.chapter?.url.orEmpty(),
+                chapterPosition = ReadBook.durChapterPos.coerceAtLeast(0)
+        )
+        pendingDirectReadAloudProgress = safeProgress
+        directReadAloudTargetChapterIndex = chapterIndex
+        if (ReadBook.isReadAloudUserNavigationActive() ||
+            binding.epubReadView.isSelectionBlockingPageTurn
+        ) return
+        ReadBook.durChapterIndex = chapterIndex
+        ReadBook.durChapterPos = safeProgress.chapterPosition.coerceAtLeast(0)
+        val displayedChapter = binding.epubReadView.currentPage()?.chapterIndex
+        if (displayedChapter == chapterIndex && !epubCoreLoading) {
+            consumePendingDirectReadAloudProgress(
+                binding.epubReadView.currentPage()?.chapterIndex ?: return
+            )
+            return
+        }
+        if (epubCoreLoadingChapterIndex == chapterIndex ||
+            epubCoreForegroundTarget?.chapterIndex == chapterIndex
+        ) {
+            return
+        }
+        requestEpubCoreChapter(
+            index = chapterIndex,
+            resetPageOffset = safeProgress.chapterPosition <= 0,
+            navigationMode = EpubCoreNavigationMode.Sequential,
+            boundaryTransition = false,
+            fromReadAloud = true
+        )
+    }
+
+    private fun applyDirectReadAloudProgress(progress: ReadAloudProgressState) {
+        if (!isEpubCoreMode() || !BaseReadAloudService.isRun) return
+        if (ReadBook.isReadAloudUserNavigationActive() ||
+            binding.epubReadView.isSelectionBlockingPageTurn
+        ) return
+        ReadBook.durChapterIndex = progress.chapterIndex
+        ReadBook.durChapterPos = progress.chapterPosition.coerceAtLeast(0)
+        val position = binding.epubReadView.currentPage()
+        if (position == null || position.chapterIndex != progress.chapterIndex || epubCoreLoading) {
+            if (epubCoreLoadingChapterIndex != progress.chapterIndex &&
+                epubCoreForegroundTarget?.chapterIndex != progress.chapterIndex
+            ) {
+                requestDirectReadAloudChapter(
+                    chapterIndex = progress.chapterIndex,
+                    progress = progress
+                )
+            }
+            return
+        }
+        if (directReadAloudTargetChapterIndex == progress.chapterIndex) {
+            directReadAloudTargetChapterIndex = null
+        }
+        if (!BaseReadAloudService.isPlay() || progress.cueText.isBlank()) {
+            pendingDirectReadAloudProgress = pendingDirectReadAloudProgress
+                ?.takeUnless { it == progress }
+            return
+        }
+        val chapterLength = directReadAloudChapterLength(progress)
+        val approximateProgress = progress.chapterPosition.toDouble()
+            .coerceAtLeast(0.0)
+            .div((chapterLength - 1).coerceAtLeast(1).toDouble())
+            .toFloat()
+        val accepted = binding.epubReadView.followReadAloud(
+            cueText = progress.cueText,
+            cueOffset = (progress.chapterPosition - progress.cueStartPosition)
+                .coerceAtLeast(0),
+            approximateProgress = approximateProgress
+        )
+        if (accepted) {
+            pendingDirectReadAloudProgress = pendingDirectReadAloudProgress
+                ?.takeUnless { it == progress }
+        }
+    }
+
+    private fun consumePendingDirectReadAloudProgress(chapterIndex: Int) {
+        val pending = pendingDirectReadAloudProgress ?: return
+        if (pending.chapterIndex != chapterIndex) return
+        if (ReadBook.isReadAloudUserNavigationActive() ||
+            binding.epubReadView.isSelectionBlockingPageTurn
+        ) return
+        pendingDirectReadAloudProgress = null
+        directReadAloudTargetChapterIndex = null
+        applyDirectReadAloudProgress(pending)
+    }
+
+    private fun persistDirectVisualProgress() {
+        val readAloudTarget = directReadAloudTargetChapterIndex
+        if (readAloudTarget != null &&
+            (epubCoreLoadingChapterIndex == readAloudTarget ||
+                epubCoreForegroundTarget?.chapterIndex == readAloudTarget)
+        ) {
+            cancelActiveEpubCoreNavigation()
+        }
+        val position = binding.epubReadView.currentPage() ?: return
+        updateDirectStoredPosition(position.chapterIndex, position.pageIndex)
+        epubCoreCommittedChapterIndex = position.chapterIndex
+        epubCorePageCount = position.totalPagesInChapter
         ReadBook.saveRead(true)
         binding.readMenu.upBookView()
         upSeekBarProgress()
-        scheduleEpubCorePrefetchWindow(chapterIndex, requestSeq)
     }
 
-    private fun consumePendingEpubCoreNavigation() {
-        if (epubCoreLoading) return
-        val pending = epubCorePendingNavigation ?: return
-        epubCorePendingNavigation = null
-        epubCoreBoundaryTransition = false
-        AppLog.putDebug(
-            "EPUB core boundary load after animation: index=${pending.chapterIndex}, reset=${pending.resetPageOffset}"
-        )
-        if (ReadBook.book?.isEpub != true) return
-        requestEpubCoreChapter(
-            pending.chapterIndex,
-            pending.resetPageOffset,
-            EpubCoreNavigationMode.ExplicitReplace,
-            boundaryTransition = false
-        )
+    override fun onReadAloudChapterChanged(chapterIndex: Int, direction: Int) {
+        if (!isEpubCoreMode() || !BaseReadAloudService.isRun) return
+        runOnUiThread {
+            requestDirectReadAloudChapter(
+                chapterIndex = chapterIndex,
+                progress = null
+            )
+        }
     }
 
     override fun notifyBookChanged() {
@@ -3201,13 +4004,17 @@ class ReadBookActivity : BaseReadBookActivity(),
             ReadAloud.stop(this)
             lifecycleScope.launch {
                 withContext(IO) {
-                    ReadBook.book?.migrateTo(book, toc)
+                    val oldBook = ReadBook.book
+                    oldBook?.migrateTo(book, toc)
+                    book.inheritNotShelfStateFrom(oldBook)
                     book.removeType(BookType.updateError)
-                    ReadBook.book?.delete()
+                    oldBook?.delete()
                     appDb.bookDao.insert(book)
                 }
-                startActivityForBook(book)
-                finish()
+                startActivityForBook(book) {
+                    putExtra("inBookshelf", resolveStoredBookshelfState(book))
+                }
+                super.finish()
             }
         }
     }
@@ -3267,6 +4074,14 @@ class ReadBookActivity : BaseReadBookActivity(),
         ReadAloud.stop(this)
         if (isAutoPage) {
             autoPageStop()
+        } else if (isEpubCoreMode()) {
+            val position = binding.epubReadView.currentPage()?.let {
+                EpubDirectAutoPager.Position(it.chapterIndex, it.pageIndex)
+            } ?: return
+            if (!epubDirectAutoPager.start(position)) return
+            binding.readMenu.setAutoPage(true)
+            screenTimeOut = -1L
+            screenOffTimerStart()
         } else {
             binding.readView.autoPager.start()
             binding.readMenu.setAutoPage(true)
@@ -3276,8 +4091,18 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun autoPageStop() {
-        if (isAutoPage) {
+        if (epubDirectAutoPager.isRunning) {
+            epubDirectAutoPager.stop()
+        } else if (binding.readView.isAutoPage) {
             binding.readView.autoPager.stop()
+            binding.readMenu.setAutoPage(false)
+            dismissDialogFragment<AutoReadDialog>()
+            upScreenTimeOut()
+        }
+    }
+
+    private fun finishAutoPageUi() {
+        if (!binding.readView.isAutoPage && !epubDirectAutoPager.isRunning) {
             binding.readMenu.setAutoPage(false)
             dismissDialogFragment<AutoReadDialog>()
             upScreenTimeOut()
@@ -3306,6 +4131,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun openReplaceRule() {
+        if (!supportsReplaceRules()) return
         replaceActivity.launch(Intent(this, ReplaceRuleActivity::class.java))
     }
 
@@ -3322,6 +4148,10 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 打开搜索界面
      */
     override fun openSearchActivity(searchWord: String?) {
+        if (isEpubCoreMode()) {
+            toastOnUi(R.string.native_reader_feature_only)
+            return
+        }
         val book = ReadBook.book ?: return
         searchContentActivity.launch {
             putExtra("bookUrl", book.bookUrl)
@@ -3357,6 +4187,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun showParagraphRuleQuickDialog() {
+        if (isEpubCoreMode()) return
         val book = ReadBook.book ?: run {
             toastOnUi(R.string.paragraph_rule_no_book_hint)
             return
@@ -3375,6 +4206,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun showBubbleQuickSwitch() {
+        if (isEpubCoreMode()) return
         showDialogFragment(
             BubbleQuickSwitchDialog.create(
                 onSelected = { entry -> applyBubblePackageFromReadMenu(entry) },
@@ -4035,10 +4867,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 ReadBookConfig.upBg(epubReadView.width, epubReadView.height)
             }
             epubReadView.clearSelection()
-            ReadBook.book?.takeIf { it.isEpub }?.let { book ->
-                cancelEpubCoreForegroundHard(book)
-                cancelEpubCorePrefetchHard(book)
-            }
+            cancelEpubCorePrefetch()
             refreshEpubCoreAfterConfigurationChange()
         } else {
             readView.refreshVisualStyle()
@@ -4049,6 +4878,10 @@ class ReadBookActivity : BaseReadBookActivity(),
     // 退出全文搜索
     override fun exitSearchMenu() {
         if (isShowingSearchResult) {
+            if (binding.searchMenu.isVisible) {
+                binding.searchMenu.runMenuOut { exitSearchMenu() }
+                return
+            }
             isShowingSearchResult = false
             binding.searchMenu.invalidate()
             binding.searchMenu.invisible()
@@ -4152,6 +4985,53 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * 点击图片
      */
+    private fun executeDirectSourceImageAction(request: TextReaderImageActionRequest) {
+        if (directSourceImageJob?.isActive == true) return
+        val book = ReadBook.book ?: return
+        val source = ReadBook.bookSource ?: return
+        val bookUrl = book.bookUrl
+        fun ownsSource(): Boolean = ReadBook.book === book && book.bookUrl == bookUrl &&
+            ReadBook.bookSource === source && source.bookSourceUrl == request.chapter.sourceImages?.sourceKey &&
+            request.session.bookUrl == bookUrl && request.session.sourceRevision == ReadBook.directTextRevision &&
+            !request.session.isClosed && !book.isEpub && book.usesDirectReader
+        fun isCurrent(): Boolean = ownsSource() && epubDirectSession === request.session &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
+            !epubCoreLoading && !epubCoreBoundaryTransition &&
+            ReadBook.durChapterIndex == request.chapter.chapterIndex &&
+            binding.epubReadView.isCurrentSourceImageAction(request)
+        if (!isCurrent() || ParagraphRuleProcessor.isParagraphClick(request.action.click.trimStart())) return
+        autoPageStop()
+        directSourceImageJob = lifecycleScope.launch {
+            try {
+                val chapter = withContext(IO) {
+                    appDb.bookChapterDao.getChapter(bookUrl, request.chapter.chapterIndex)
+                } ?: return@launch
+                if (!isCurrent() || chapter.bookUrl != bookUrl ||
+                    chapter.url != request.chapter.sourceChapterUrl ||
+                    chapter.index != request.chapter.chapterIndex) return@launch
+                withContext(IO) {
+                    // Capture book/source/chapter before dispatch. Do not bind a
+                    // delayed click to ReadBook's newly selected chapter.
+                    if (!ownsSource() || ReadBook.durChapterIndex != chapter.index) return@withContext
+                    BookHelp.ensureLegacyContentAlias(book, chapter)
+                    val java = SourceLoginJsExtensions(this@ReadBookActivity, source, BookType.text)
+                    runScriptWithContext {
+                        source.evalJS(request.action.click) {
+                            put("java", java)
+                            put("book", book)
+                            put("chapter", chapter)
+                            put("result", request.action.source)
+                        }
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                AppLog.put("执行正文图片 click 出错\n${error.localizedMessage}", error, true)
+            }
+        }
+    }
+
     private fun evalParagraphRuleClick(click: String?, src: String): Boolean {
         if (!ParagraphRuleProcessor.isParagraphClick(click)) return false
         if (commentBrowserOpening || commentBrowserShowing) return true
@@ -4306,8 +5186,64 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * 朗读按钮
      */
+    private fun startDirectEpubReadAloud() {
+        val requestedChapterIndex = binding.epubReadView.currentPage()?.chapterIndex ?: return
+
+        fun startFromCurrentDirectPage() {
+            val directPage = binding.epubReadView.currentPage()
+                ?.takeIf { it.chapterIndex == requestedChapterIndex }
+                ?: return
+            val textChapter = ReadBook.curTextChapter
+                ?.takeIf { it.isCompleted && it.chapter.index == directPage.chapterIndex }
+                ?: return
+            val lastPage = textChapter.lastPage ?: return
+            val chapterLength = (lastPage.chapterPosition + lastPage.text.length)
+                .coerceAtLeast(1)
+            val chapterPosition = binding.epubReadView.currentDirectTextPosition()
+                ?: EpubDirectReadAloudPagePolicy.chapterPositionForPage(
+                pageIndex = directPage.pageIndex,
+                pageCount = directPage.totalPagesInChapter,
+                chapterLength = chapterLength
+            )
+            val textPageIndex = textChapter.getPageIndexByCharIndex(chapterPosition)
+                .coerceAtLeast(0)
+            ReadBook.durChapterIndex = directPage.chapterIndex
+            ReadBook.durChapterPos = chapterPosition
+            ReadBook.readAloud(
+                startPos = (chapterPosition - textChapter.getReadLength(textPageIndex))
+                    .coerceAtLeast(0)
+            )
+        }
+
+        val currentTextChapter = ReadBook.curTextChapter
+        if (currentTextChapter?.isCompleted == true &&
+            currentTextChapter.chapter.index == requestedChapterIndex
+        ) {
+            startFromCurrentDirectPage()
+            return
+        }
+        ReadBook.openChapter(
+            index = requestedChapterIndex,
+            durChapterPos = 0,
+            upContent = false,
+            fromReadAloud = true,
+            success = ::startFromCurrentDirectPage
+        )
+    }
+
     override fun onClickReadAloud() {
         autoPageStop()
+        if (isEpubCoreMode()) {
+            when {
+                !BaseReadAloudService.isRun -> {
+                    ReadAloud.upReadAloudClass()
+                    startDirectEpubReadAloud()
+                }
+                BaseReadAloudService.pause -> ReadAloud.resume(this)
+                else -> ReadAloud.pause(this)
+            }
+            return
+        }
         when {
             !BaseReadAloudService.isRun -> {
                 ReadAloud.upReadAloudClass()
@@ -4572,11 +5508,53 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    override fun openDirectTextChapter(index: Int, characterPosition: Int, success: (() -> Unit)?) {
+        val bookUrl = ReadBook.book?.bookUrl ?: return
+        lifecycleScope.launch {
+            if (ReadBook.book?.bookUrl != bookUrl || !isEpubCoreMode() || ReadBook.book?.isEpub != false) {
+                success?.invoke()
+                return@launch
+            }
+            ReadBook.markReadAloudUserNavigation()
+            pendingDirectReadAloudProgress = null
+            directReadAloudTargetChapterIndex = null
+            // An explicit bookmark/cloud/TOC selection replaces an older pending target.
+            // Commit the new progress only after the selected document is ready.
+            cancelActiveEpubCoreNavigation()
+            loadEpubCoreContent(
+                targetChapterIndex = index,
+                resetPageOffset = true,
+                targetFragmentId = "__legado_text_" + characterPosition.coerceAtLeast(0),
+                onFinish = success
+            )
+        }
+    }
+
     /* 进度条跳转到指定章节 */
+    private fun openEpubTocChapter(
+        index: Int,
+        targetFragmentId: String?
+    ) {
+        ReadBook.saveCurrentBookProgress()
+        // The selected index belongs to the persisted chapter list. The Direct
+        // provider resolves that complete BookChapter against the current EPUB facade.
+        epubDirectLinkRequestSeq++
+        requestEpubCoreChapter(
+            index = index,
+            resetPageOffset = true,
+            navigationMode = EpubCoreNavigationMode.ExplicitReplace,
+            targetFragmentId = targetFragmentId
+        )
+    }
+
     override fun skipToChapter(index: Int) {
         ReadBook.saveCurrentBookProgress() //退出章节跳转恢复此时进度
         if (isEpubCoreMode()) {
-            openEpubCoreChapter(index, resetPageOffset = true)
+            requestEpubCoreChapter(
+                index = index,
+                resetPageOffset = true,
+                navigationMode = EpubCoreNavigationMode.ExplicitReplace
+            )
             return
         }
         viewModel.openChapter(index)
@@ -4593,7 +5571,11 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onMenuShow() {
+        epubHostOverlaySettleRunnable?.let(binding.root::removeCallbacks)
+        epubHostOverlaySettleRunnable = null
         binding.readAloudPlayerPanel.setReadMenuVisible(true)
+        binding.epubReadView.setHostOverlayCaptureBlocked(epubCoreActive)
+        if (epubCoreActive) epubDirectAutoPager.pause()
         binding.readMenu.post { syncReadMenuAvoidBounds() }
         binding.readMenu.doOnLayout { syncReadMenuAvoidBounds() }
         if (epubCoreActive) return
@@ -4602,8 +5584,55 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun onMenuHide() {
         binding.readAloudPlayerPanel.setReadMenuAvoidBounds(null)
-        if (epubCoreActive) return
+        if (epubCoreActive) {
+            if (!binding.readMenu.isVisible && !binding.searchMenu.isVisible && bottomDialog <= 0) {
+                scheduleEpubHostOverlayCaptureRelease()
+            }
+            return
+        }
         binding.readView.autoPager.resume()
+    }
+
+    override fun onMenuHidden() {
+        // ReadMenu/SearchMenu invoke this callback before their final system-bar update. Keep
+        // capture blocked through that update and one actual root pre-draw so PixelCopy cannot
+        // cache an Insets transition frame with white top/bottom strips.
+        upSystemUiVisibility()
+        if (!epubCoreActive) {
+            binding.epubReadView.setHostOverlayCaptureBlocked(false)
+            resumeEpubDirectAutoPageIfUnblocked()
+            return
+        }
+        scheduleEpubHostOverlayCaptureRelease()
+    }
+
+    private fun scheduleEpubHostOverlayCaptureRelease() {
+        ViewCompat.requestApplyInsets(binding.root)
+        epubHostOverlaySettleRunnable?.let(binding.root::removeCallbacks)
+        lateinit var settle: Runnable
+        settle = Runnable {
+            if (epubHostOverlaySettleRunnable !== settle) return@Runnable
+            binding.root.removeCallbacks(settle)
+            epubHostOverlaySettleRunnable = null
+            if (binding.readMenu.isVisible || binding.searchMenu.isVisible || bottomDialog > 0) {
+                return@Runnable
+            }
+            binding.epubReadView.setHostOverlayCaptureBlocked(false)
+            resumeEpubDirectAutoPageIfUnblocked()
+        }
+        epubHostOverlaySettleRunnable = settle
+        binding.root.doOnPreDraw {
+            if (epubHostOverlaySettleRunnable === settle) binding.root.postOnAnimation(settle)
+        }
+        binding.root.postDelayed(settle, HOST_OVERLAY_SETTLE_TIMEOUT_MS)
+    }
+
+    private fun resumeEpubDirectAutoPageIfUnblocked() {
+        if (epubCoreActive && !binding.readMenu.isVisible &&
+            !binding.epubReadView.isSelectionBlockingPageTurn
+        ) {
+            epubDirectAutoPager.resume()
+        }
     }
 
     private fun syncReadMenuAvoidBounds() {
@@ -4623,8 +5652,12 @@ class ReadBookActivity : BaseReadBookActivity(),
         return isEpubCoreMode()
     }
 
+    override fun supportsReplaceRules(): Boolean = ReadBook.book?.let {
+        ReadMenuButtonConfig.supportsReplaceRules(it.isEpub, it.usesDirectReader)
+    } == true
+
     override fun epubCoreChapterTitle(): String? {
-        val book = ReadBook.book?.takeIf { it.isEpub } ?: return null
+        val book = ReadBook.book?.takeIf { it.usesDirectReader } ?: return null
         val chapterIndex = epubCoreForegroundTarget?.chapterIndex
             ?: epubCoreLoadingChapterIndex
             ?: binding.epubReadView.currentPage()?.chapterIndex
@@ -4634,7 +5667,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun epubCoreChapterUrl(): String? {
-        val book = ReadBook.book?.takeIf { it.isEpub } ?: return null
+        val book = ReadBook.book?.takeIf { it.usesDirectReader } ?: return null
         val chapterIndex = epubCoreForegroundTarget?.chapterIndex
             ?: epubCoreLoadingChapterIndex
             ?: binding.epubReadView.currentPage()?.chapterIndex
@@ -4644,13 +5677,19 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun skipToEpubCorePage(index: Int): Boolean {
         if (!epubCoreActive) return false
+        if (binding.epubReadView.isSelectionBlockingPageTurn) return true
         if (epubCoreLoading || epubCorePageCount <= 0) return true
+        ReadBook.markReadAloudUserNavigation()
         val pageCount = binding.epubReadView.currentChapterPageCount().coerceAtLeast(1)
         val pageIndex = index.coerceIn(0, pageCount - 1)
-        val changed = binding.epubReadView.setChapterPageIndex(ReadBook.durChapterIndex, pageIndex)
+        val displayedChapterIndex = binding.epubReadView.currentPage()?.chapterIndex
+            ?: ReadBook.durChapterIndex
+        val changed = binding.epubReadView.setChapterPageIndex(displayedChapterIndex, pageIndex)
         if (!changed) {
-            ReadBook.durChapterPos = pageIndex
-            ReadBook.saveRead(true)
+            if (!BaseReadAloudService.isRun) {
+                updateDirectStoredPosition(displayedChapterIndex, pageIndex)
+                ReadBook.saveRead(true)
+            }
             upSeekBarProgress()
         }
         return true
@@ -4703,6 +5742,11 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun addBookmark() {
         val book = ReadBook.book
+        if (book != null && epubCoreActive && binding.epubReadView.isDirectMode) {
+            createDirectEpubBookmark()?.let { showDialogFragment(BookmarkDialog(it)) }
+                ?: toastOnUi(R.string.create_bookmark_error)
+            return
+        }
         val page = ReadBook.curTextChapter?.getPage(ReadBook.durPageIndex)
         if (book != null && page != null) {
             val bookmark = book.createBookMark().apply {
@@ -4715,7 +5759,19 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    private fun createDirectEpubBookmark(text: String = ""): io.legado.app.data.entities.Bookmark? {
+        val book = ReadBook.book ?: return null
+        val page = binding.epubReadView.currentPage() ?: return null
+        return book.createBookMark().apply {
+            chapterIndex = page.chapterIndex
+            chapterPos = if (book.isEpub) page.pageIndex else binding.epubReadView.currentDirectTextPosition() ?: 0
+            chapterName = epubCoreChapterTitle().orEmpty()
+            bookText = text.ifBlank { page.text.toString() }.trim()
+        }
+    }
+
     override fun changeReplaceRuleState() {
+        if (!supportsReplaceRules()) return
         ReadBook.book?.let {
             it.setUseReplaceRule(!it.getUseReplaceRule())
             ReadBook.saveRead(fullUpdate = true)
@@ -4726,7 +5782,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun refreshContent() {
         if (ReadBook.bookSource == null) {
-            upContent()
+            refreshContentWithoutSource()
         } else {
             ReadBook.book?.let {
                 ReadBook.curTextChapter = null
@@ -4734,6 +5790,18 @@ class ReadBookActivity : BaseReadBookActivity(),
                 viewModel.refreshContentDur(it)
             }
         }
+    }
+
+    private fun refreshContentWithoutSource() {
+        val book = ReadBook.book
+        if (book != null && !book.isEpub && isEpubCoreMode()) {
+            // A local chapter refresh must also retry failed image resources.
+            ReadBook.invalidateDirectTextContent(book.bookUrl)
+            epubDirectSession?.close()
+            upContent(resetPageOffset = false)
+            return
+        }
+        upContent()
     }
 
     override fun changeSource() {
@@ -4763,7 +5831,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         binding.readMenu.runMenuOut()
         selector(R.string.refresh, labels) { _, index ->
             if (ReadBook.bookSource == null) {
-                upContent()
+                refreshContentWithoutSource()
                 return@selector
             }
             ReadBook.book?.let { book ->
@@ -4789,14 +5857,12 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun editContent() {
+        if (isEpubCoreMode()) return
         showDialogFragment(ContentEditDialog())
     }
 
     override fun showPageAnim() {
-        showPageAnimConfig {
-            binding.readView.upPageAnim()
-            ReadBook.relayoutCurrentContent("page-anim")
-        }
+        showPageAnimConfig(::applyPageAnimationChange)
     }
 
     override fun editMenu() {
@@ -4817,12 +5883,14 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun reverseContent() {
+        if (isEpubCoreMode()) return
         ReadBook.book?.let {
             viewModel.reverseContent(it)
         }
     }
 
     override fun showReSegment() {
+        if (isEpubCoreMode()) return
         ReadBook.book?.let {
             it.setReSegment(!it.getReSegment())
             ReadBook.saveRead(fullUpdate = true)
@@ -4864,6 +5932,12 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    override fun showHighlightRuleManage() {
+        startActivity<HighlightRuleManageActivity> {
+            ReadBook.book?.bookUrl?.let { putExtra("bookUrl", it) }
+        }
+    }
+
     override fun showParagraphRuleManage() {
         ReadBook.book?.let {
             startActivity<ParagraphRuleManageActivity> {
@@ -4873,6 +5947,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun showEffectiveReplaces() {
+        if (isEpubCoreMode()) return
         showDialogFragment<EffectiveReplacesDialog>()
     }
 
@@ -4918,16 +5993,18 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun finish() {
+        if (isFinishing) return
         val book = ReadBook.book ?: return super.finish()
         if (ReadBook.inBookshelf) {
             callBackBookEnd()
             return super.finish()
         }
+        if (!shelfExitRequestGate.tryBegin()) return
         if (!AppConfig.showAddToShelfAlert) {
             callBackBookEnd()
             viewModel.removeFromBookshelf { super.finish() }
         } else {
-            alert(title = getString(R.string.add_to_bookshelf)) {
+            val dialog = alert(title = getString(R.string.add_to_bookshelf)) {
                 setMessage(getString(R.string.check_add_bookshelf, book.name))
                 okButton {
                     ReadBook.book?.removeType(BookType.notShelf)
@@ -4943,6 +6020,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                     viewModel.removeFromBookshelf { super.finish() }
                 }
             }
+            dialog.setOnCancelListener { shelfExitRequestGate.cancel() }
         }
     }
 
@@ -4951,21 +6029,28 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onDestroy() {
+        epubHostOverlaySettleRunnable?.let(binding.root::removeCallbacks)
+        epubHostOverlaySettleRunnable = null
         if (!isChangingConfigurations) {
             ReadAloudAppCapsuleHost.updateReadBookPanelActive(false)
         }
         clearRestoreProcessState()
         super.onDestroy()
         epubCoreRequestSeq++
+        epubCoreLayoutReadyActionGate.cancel()
         epubCoreLoadJob?.cancel()
         epubCoreLoadJob = null
+        cancelEpubCoreLoadTimeout()
         cancelEpubCorePrefetch()
         epubCoreLoading = false
         epubCoreLoadingChapterIndex = null
-        epubCorePendingNavigation = null
         epubCoreForegroundTarget = null
         epubCoreCommittedChapterIndex = null
-        epubCoreBoundaryTargetEdge = EpubCorePageEdge.Start
+        epubDirectSession?.close()
+        binding.epubReadView.destroyDirectMode()
+        epubDirectSession = null
+        epubDirectOnFinish = null
+        epubDirectCallbackRequestSeq = 0L
         val releasedReadSession = ReadBook.unregister(this)
         if (releasedReadSession) {
             EpubCoreProvider.clear()
@@ -4995,31 +6080,41 @@ class ReadBookActivity : BaseReadBookActivity(),
                     level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> {
                 ImageProvider.clear()
                 LottieImageBitmapCache.clear()
+                binding.epubReadView.trimDirectMemory()
             }
             level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> {
                 ImageProvider.trimMemory()
                 LottieImageBitmapCache.trimMemory()
+                binding.epubReadView.trimDirectMemory()
             }
         }
     }
 
     private fun isCurrentReadAloudProgress(progress: ReadAloudProgressState): Boolean {
         val book = ReadBook.book ?: return false
-        val chapter = ReadBook.curTextChapter ?: return false
         if (progress.bookUrl.isNotBlank() && progress.bookUrl != book.bookUrl) return false
-        if (progress.chapterIndex >= 0 && progress.chapterIndex != chapter.chapter.index) return false
-        if (progress.chapterUrl.isNotBlank() &&
-            chapter.chapter.url.isNotBlank() &&
-            progress.chapterUrl != chapter.chapter.url
-        ) {
-            return false
+        if (progress.chapterIndex >= 0) {
+            if (progress.chapterIndex != ReadBook.durChapterIndex) return false
+            val chapter = ReadBook.curTextChapter
+                ?.takeIf { it.chapter.index == progress.chapterIndex }
+            if (chapter != null &&
+                progress.chapterUrl.isNotBlank() && chapter.chapter.url.isNotBlank() &&
+                progress.chapterUrl != chapter.chapter.url
+            ) return false
         }
         return true
     }
 
     override fun observeLiveBus() = binding.run {
-        observeEvent<String>(EventBus.TIME_CHANGED) { readView.upTime() }
-        observeEvent<Int>(EventBus.BATTERY_CHANGED) { readView.upBattery(it) }
+        observeEvent<String>(EventBus.TIME_CHANGED) {
+            readView.upTime()
+            updateEpubReaderChromeData()
+        }
+        observeEvent<Int>(EventBus.BATTERY_CHANGED) {
+            readView.upBattery(it)
+            if (it >= 0) epubReaderBatteryLevel = it
+            updateEpubReaderChromeData()
+        }
         observeEvent<Boolean>(EventBus.MEDIA_BUTTON) {
             if (it) {
                 onClickReadAloud()
@@ -5056,6 +6151,17 @@ class ReadBookActivity : BaseReadBookActivity(),
                 pendingReadAloudPlayerOpen = false
             }
             if (it == Status.STOP || it == Status.PAUSE) {
+                if (isEpubCoreMode()) {
+                    if (it == Status.STOP) {
+                        persistDirectVisualProgress()
+                        pendingDirectReadAloudProgress = null
+                        directReadAloudTargetChapterIndex = null
+                    } else {
+                        // While paused, durChapterPos remains the speech character offset.
+                        ReadBook.saveRead(true)
+                    }
+                    return@observeEvent
+                }
                 ReadBook.curTextChapter?.let { textChapter ->
                     val page = textChapter.getPageByReadPos(ReadBook.durChapterPos)
                     if (page != null) {
@@ -5085,6 +6191,12 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (!isCurrentReadAloudProgress(progress)) return@observeEvent
             val chapterStart = progress.chapterPosition
             readAloudPlayerPanel.onTtsProgress(chapterStart)
+            if (isEpubCoreMode()) {
+                if (!BaseReadAloudService.isRun) return@observeEvent
+                pendingDirectReadAloudProgress = progress
+                applyDirectReadAloudProgress(progress)
+                return@observeEvent
+            }
             if (BaseReadAloudService.isPlay() &&
                 !ReadBook.isReadAloudUserNavigationActive() &&
                 isCurrentReadAloudProgress(progress)
@@ -5171,6 +6283,8 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     companion object {
         const val RESULT_DELETED = 100
+        private const val EPUB_PREPARE_TIMEOUT_MS = 15_000L
+        private const val HOST_OVERLAY_SETTLE_TIMEOUT_MS = 500L
         private val shareNoteProgressPercentRegex = Regex("""(\d+(?:[,.]\d+)?)\s*%""")
     }
 

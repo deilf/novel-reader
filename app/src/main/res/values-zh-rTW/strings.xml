@@ -376,6 +376,11 @@
     <string name="continue_read">繼續閱讀</string>
     <string name="cover_path">封面地址</string>
     <string name="page_anim_cover">覆蓋</string>
+    <string name="page_animation_speed">翻頁動畫速度</string>
+    <string name="page_animation_speed_extreme">極速</string>
+    <string name="page_animation_speed_standard">標準</string>
+    <string name="page_animation_speed_relaxed">舒緩</string>
+    <string name="page_animation_speed_elegant">優雅</string>
     <string name="page_anim_slide">滑動</string>
     <string name="page_anim_simulation">模擬</string>
     <string name="page_anim_scroll">滾動</string>

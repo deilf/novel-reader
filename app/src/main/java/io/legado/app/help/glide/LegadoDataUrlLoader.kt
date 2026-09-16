@@ -1,5 +1,6 @@
 package io.legado.app.help.glide
 
+import io.legado.app.help.http.dns.DnsScope
 import com.bumptech.glide.Priority
 import com.bumptech.glide.load.DataSource
 import com.bumptech.glide.load.Options
@@ -44,7 +45,8 @@ class LegadoDataUrlLoader : ModelLoader<String, InputStream> {
         ) {
             try {
                 val bytes = AnalyzeUrl(
-                    model, source = ReadManga.bookSource,
+                    dnsScope = DnsScope.IMAGE,
+                    mUrl = model, source = ReadManga.bookSource,
                     coroutineContext = coroutineContext
                 ).getByteArray()
                 val decoded = runScriptWithContext(coroutineContext) {

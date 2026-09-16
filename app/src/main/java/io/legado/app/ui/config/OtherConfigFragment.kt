@@ -13,6 +13,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.DispatchersMonitor
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.EpubReadEnginePolicy
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.model.CheckSource
 import io.legado.app.model.ImageProvider
@@ -33,12 +34,12 @@ import io.legado.app.ui.widget.compose.showComposeConfirmDialog
 import io.legado.app.ui.widget.compose.showComposeNumberPickerDialog
 import io.legado.app.ui.widget.compose.showComposeTextInputDialog
 import io.legado.app.utils.LogUtils
-import io.legado.app.utils.isJsonObject
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.putPrefString
 import io.legado.app.utils.removePref
 import io.legado.app.utils.restart
 import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.startActivity
 import splitties.init.appCtx
 
 /**
@@ -135,7 +136,7 @@ class OtherConfigFragment : ComposeSettingFragment() {
                 }
             }
 
-            PreferKey.epubReadEngine -> {
+            PreferKey.epubReadEngine, PreferKey.textReadEngine -> {
                 postEvent(EventBus.UP_CONFIG, arrayListOf(13))
             }
 
@@ -186,7 +187,15 @@ class OtherConfigFragment : ComposeSettingFragment() {
                 summary = epubReadEngineSummary(),
                 entriesRes = R.array.epub_read_engine_entries,
                 valuesRes = R.array.epub_read_engine_values,
-                defaultValue = "text"
+                defaultValue = EpubReadEnginePolicy.DEFAULT
+            ),
+            choice(
+                key = PreferKey.textReadEngine,
+                title = getString(R.string.text_read_engine),
+                summary = getString(R.string.text_read_engine_summary),
+                entriesRes = R.array.text_read_engine_entries,
+                valuesRes = R.array.text_read_engine_values,
+                defaultValue = io.legado.app.help.config.TextReadEnginePolicy.DEFAULT
             ),
             SettingActionSpec(
                 key = KEY_LOCAL_PASSWORD,
@@ -201,10 +210,14 @@ class OtherConfigFragment : ComposeSettingFragment() {
                 onClick = ::showUserAgentDialog
             ),
             SettingActionSpec(
-                key = PreferKey.customHosts,
-                title = getString(R.string.custom_hosts),
-                summary = getString(R.string.custom_hosts_summary),
-                onClick = ::showCustomHostsDialog
+                key = "networkDns",
+                title = getString(R.string.network_dns_title),
+                summary = getString(R.string.network_dns_summary),
+                onClick = {
+                    startActivity<ConfigActivity> {
+                        putExtra("configTag", ConfigTag.NETWORK_DNS_CONFIG)
+                    }
+                }
             ),
             switch(
                 key = PreferKey.webServiceWakeLock,
@@ -246,12 +259,6 @@ class OtherConfigFragment : ComposeSettingFragment() {
                 title = getString(R.string.direct_link_upload_rule),
                 summary = getString(R.string.direct_link_upload_rule_summary),
                 onClick = { showDialogFragment<ComposeDirectLinkUploadDialog>() }
-            ),
-            switch(
-                key = PreferKey.cronet,
-                title = "Cronet",
-                summary = getString(R.string.pref_cronet_summary),
-                defaultValue = false
             ),
             switch(
                 key = PreferKey.antiAlias,
@@ -543,23 +550,6 @@ class OtherConfigFragment : ComposeSettingFragment() {
     private fun userAgentValue(): String {
         return stringSetting(PreferKey.userAgent, "")
             .ifBlank { DEFAULT_USER_AGENT }
-    }
-
-    private fun showCustomHostsDialog() {
-        showComposeTextInputDialog(
-            title = getString(R.string.custom_hosts),
-            hint = getString(R.string.json_format),
-            initialValue = AppConfig.customHosts.orEmpty(),
-            minLines = 8,
-            maxLines = 14,
-            onPositive = { customHosts ->
-                if (customHosts.isJsonObject()) {
-                    putPrefString(PreferKey.customHosts, customHosts)
-                } else {
-                    removePref(PreferKey.customHosts)
-                }
-            }
-        )
     }
 
     private fun clearCache() {

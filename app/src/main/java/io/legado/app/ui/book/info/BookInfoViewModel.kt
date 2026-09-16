@@ -32,9 +32,11 @@ import io.legado.app.help.book.removeType
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.lib.webdav.ObjectNotFoundException
 import io.legado.app.model.AudioPlay
+import io.legado.app.model.AutoTask
 import io.legado.app.model.BookCover
 import io.legado.app.model.ReadBook
 import io.legado.app.model.ReadManga
+import io.legado.app.model.VideoPlay
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
@@ -256,7 +258,12 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                         it
                     }
                     bookData.postValue(displayBook)
-                    if (inBookshelf) {
+                    // Only persist a shelf-state change when a shelf row for this identity
+                    // actually exists. Refreshing info can hand back a book carrying a
+                    // freshly derived url, and clearing notShelf on that would save a brand
+                    // new row with the flag already off, putting a book the reader never
+                    // added onto the shelf.
+                    if (inBookshelf && resolveShelfBook(displayBook) != null) {
                         displayBook.removeType(BookType.notShelf)
                         displayBook.save()
                     }
@@ -505,13 +512,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 bookData.postValue(resolved)
                 resolved
             } else {
-                if (!inBookshelf) {
-                    book.addType(BookType.notShelf)
-                    if (book.order == 0) {
-                        book.order = appDb.bookDao.minOrder - 1
-                    }
-                } else {
-                    book.removeType(BookType.notShelf)
+                // resolveShelfBook found no shelf row for this book, so the reader has not
+                // added it. Keep it temporary regardless of the cached inBookshelf flag:
+                // that flag can still read "on shelf" after a source derived a fresh url
+                // for the same book, and clearing notShelf here is what silently promotes
+                // a book the reader only sampled.
+                book.addType(BookType.notShelf)
+                if (book.order == 0) {
+                    book.order = appDb.bookDao.minOrder - 1
                 }
                 book.save()
                 chapterListData.value?.let {
@@ -535,7 +543,10 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             target.durChapterIndex = chapter.index
             target.durChapterPos = 0
             target.durChapterTitle = chapter.title
-            if (!inBookshelf) {
+            if (resolved == null) {
+                // No shelf row for this identity, so this is a book being sampled. Decide
+                // from the lookup rather than the cached inBookshelf flag, which can still
+                // read "on shelf" once a source derives a fresh url for the same book.
                 target.addType(BookType.notShelf)
                 if (target.order == 0) {
                     target.order = appDb.bookDao.minOrder - 1
@@ -546,7 +557,9 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 }
             } else {
                 target.removeType(BookType.notShelf)
-                appDb.bookDao.update(target)
+                // save() rather than update(): update() is a silent no-op when the row is
+                // absent, which would drop both the chapter position and this flag change.
+                target.save()
             }
             bookData.postValue(target)
             target
@@ -567,12 +580,23 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     book.durChapterPos = it.durChapterPos
                     book.durChapterTitle = it.durChapterTitle
                 }
+                book.save()
                 if (ReadBook.book?.isSameNameAuthor(book) == true) {
                     ReadBook.book = book
-                } else if (AudioPlay.book?.isSameNameAuthor(book) == true) {
-                    AudioPlay.book = book
+                    ReadBook.inBookshelf = true
                 }
-                book.save()
+                if (ReadManga.book?.isSameNameAuthor(book) == true) {
+                    ReadManga.book = book
+                    ReadManga.inBookshelf = true
+                }
+                if (AudioPlay.book?.isSameNameAuthor(book) == true) {
+                    AudioPlay.book = book
+                    AudioPlay.inBookshelf = true
+                }
+                if (VideoPlay.book?.isSameNameAuthor(book) == true) {
+                    VideoPlay.book = book
+                    VideoPlay.inBookshelf = true
+                }
                 SourceCallBack.callBackBook(SourceCallBack.ADD_BOOK_SHELF, bookSource, book)
             }
             chapterListData.value?.let {
@@ -595,6 +619,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     fun delBook(deleteOriginal: Boolean = false, success: (() -> Unit)? = null) {
         execute {
             bookData.value?.let {
+                AutoTask.delete(AutoTask.bookTaskId(it.bookUrl))
                 it.delete()
                 inBookshelf = false
                 if (it.isLocal) {

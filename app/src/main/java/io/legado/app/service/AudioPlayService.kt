@@ -1,5 +1,6 @@
 package io.legado.app.service
 
+import io.legado.app.help.http.dns.DnsScope
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -245,7 +246,7 @@ class AudioPlayService : BaseService(),
                 position = 0
             } else {
                 val analyzeUrl = AnalyzeUrl(
-                    url,
+                    url, dnsScope = DnsScope.MEDIA,
                     source = AudioPlay.bookSource,
                     ruleData = book,
                     chapter = AudioPlay.durChapter,

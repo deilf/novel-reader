@@ -1,5 +1,6 @@
 package io.legado.app.model.localBook
 
+import io.legado.app.help.http.dns.DnsScope
 import android.net.Uri
 import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
@@ -30,6 +31,7 @@ import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isMobi
 import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.isUmd
+import io.legado.app.help.book.usesDirectReader
 import io.legado.app.help.book.removeLocalUriCache
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
@@ -198,6 +200,7 @@ object LocalBook {
         } catch (e: Exception) {
             e.printOnDebug()
             AppLog.put("获取本地书籍内容失败\n${e.localizedMessage}", e)
+            if (book.isEpub || book.usesDirectReader) throw e
             "获取本地书籍内容失败\n${e.localizedMessage}"
         }
         if (book.isEpub) {
@@ -498,7 +501,7 @@ object LocalBook {
             ?: throw NoBooksDirException()
         val inputStream = when {
             str.isAbsUrl() -> AnalyzeUrl(
-                str, source = source, callTimeout = 0,
+                str, dnsScope = DnsScope.IMPORT, source = source, callTimeout = 0,
                 coroutineContext = currentCoroutineContext()
             ).getInputStreamAwait()
 

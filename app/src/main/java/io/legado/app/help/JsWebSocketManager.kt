@@ -1,10 +1,10 @@
 package io.legado.app.help
 
 import android.util.Base64
-import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.SSLHelper
 import okhttp3.ConnectionSpec
-import okhttp3.Dns
+import io.legado.app.help.http.dns.DnsScope
+import io.legado.app.help.http.dns.withDnsScope
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,13 +45,7 @@ object JsWebSocketManager {
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
-            .apply {
-                if (AppConfig.addressCache.isNotEmpty()) {
-                    dns { hostname ->
-                        AppConfig.addressCache[hostname] ?: Dns.SYSTEM.lookup(hostname)
-                    }
-                }
-            }
+            .withDnsScope(DnsScope.WEBSOCKET)
             .build()
     }
     private val connections = ConcurrentHashMap<String, Connection>()

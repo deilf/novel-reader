@@ -4,6 +4,8 @@ import android.content.Context
 import io.legado.app.constant.AppConst
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.await
+import io.legado.app.help.http.dns.AppDns
+import io.legado.app.help.http.dns.DnsScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -25,11 +27,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 
 enum class OnlineImportPayloadType(
+    val softLimitBytes: Long,
     val maxDownloadBytes: Long,
     val fileSuffix: String
 ) {
-    PARAGRAPH_RULES(4L * 1024L * 1024L, ".json"),
-    BUBBLE_PACKAGE(32L * 1024L * 1024L, ".zip")
+    PARAGRAPH_RULES(
+        ParagraphRuleImportPolicy.MAX_EDITABLE_BYTES,
+        ParagraphRuleImportPolicy.MAX_PACKAGE_BYTES,
+        ".json"
+    ),
+    BUBBLE_PACKAGE(
+        BubbleImportPolicy.SOFT_PACKAGE_BYTES,
+        BubbleImportPolicy.MAX_PACKAGE_BYTES,
+        ".zip"
+    )
+}
+
+object BubbleImportPolicy {
+    const val SOFT_PACKAGE_BYTES = 32L * 1024L * 1024L
+    const val MAX_PACKAGE_BYTES = 256L * 1024L * 1024L
 }
 
 data class OnlineImportDownload(
@@ -144,7 +160,12 @@ internal class GuardedImportDns(
 }
 
 internal val secureOnlineImportClient: OkHttpClient by lazy {
+    createSecureOnlineImportClient(AppDns.resolver(DnsScope.IMPORT))
+}
+
+internal fun createSecureOnlineImportClient(resolver: Dns): OkHttpClient =
     OkHttpClient.Builder()
+        .dns(resolver)
         .connectTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -154,7 +175,6 @@ internal val secureOnlineImportClient: OkHttpClient by lazy {
         .followSslRedirects(false)
         .proxy(Proxy.NO_PROXY)
         .build()
-}
 
 class OnlineImportDownloader(
     context: Context,

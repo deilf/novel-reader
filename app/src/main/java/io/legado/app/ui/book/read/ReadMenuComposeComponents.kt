@@ -70,7 +70,8 @@ private val READ_MENU_TITLE_ICON_SPACING = 2.dp
 data class ReadMenuTitleBarState(
     val bookName: String?,
     val isLocalBook: Boolean,
-    val isEpub: Boolean
+    val isEpub: Boolean,
+    val supportsReplaceRules: Boolean
 )
 
 data class ReadMenuTitleBarActions(
@@ -95,6 +96,7 @@ data class ReadMenuTitleBarActions(
     val onImageStyleClick: () -> Unit,
     val onUpdateTocClick: () -> Unit,
     val onParagraphRuleClick: () -> Unit,
+    val onHighlightRuleClick: () -> Unit,
     val onEffectiveReplacesClick: () -> Unit,
     val onLogClick: () -> Unit,
     val onHelpClick: () -> Unit
@@ -218,6 +220,7 @@ fun ReadMenuTitleBar(
                         val overflowActions = buildOverflowActions(
                             isLocalBook = state.isLocalBook,
                             isEpub = state.isEpub,
+                            supportsReplaceRules = state.supportsReplaceRules,
                             onAddBookmarkClick = actions.onAddBookmarkClick,
                             onEditContentClick = actions.onEditContentClick,
                             onPageAnimClick = actions.onPageAnimClick,
@@ -232,6 +235,7 @@ fun ReadMenuTitleBar(
                             onImageStyleClick = actions.onImageStyleClick,
                             onUpdateTocClick = actions.onUpdateTocClick,
                             onParagraphRuleClick = actions.onParagraphRuleClick,
+                            onHighlightRuleClick = actions.onHighlightRuleClick,
                             onEffectiveReplacesClick = actions.onEffectiveReplacesClick,
                             onLogClick = actions.onLogClick,
                             onHelpClick = actions.onHelpClick
@@ -805,6 +809,7 @@ private fun readMenuButtonIconRes(
 private fun buildOverflowActions(
     isLocalBook: Boolean,
     isEpub: Boolean,
+    supportsReplaceRules: Boolean,
     onAddBookmarkClick: () -> Unit,
     onEditContentClick: () -> Unit,
     onPageAnimClick: () -> Unit,
@@ -819,28 +824,32 @@ private fun buildOverflowActions(
     onImageStyleClick: () -> Unit,
     onUpdateTocClick: () -> Unit,
     onParagraphRuleClick: () -> Unit,
+    onHighlightRuleClick: () -> Unit,
     onEffectiveReplacesClick: () -> Unit,
     onLogClick: () -> Unit,
     onHelpClick: () -> Unit
 ): List<ModernActionPopup.Action> {
     val actions = mutableListOf<ModernActionPopup.Action>()
     actions.add(ModernActionPopup.Action(title = "添加书签", invoke = onAddBookmarkClick))
-    actions.add(ModernActionPopup.Action(title = "编辑内容", invoke = onEditContentClick))
+    if (!isEpub) actions.add(ModernActionPopup.Action(title = "编辑内容", invoke = onEditContentClick))
     actions.add(ModernActionPopup.Action(title = "翻页动画", invoke = onPageAnimClick))
     actions.add(ModernActionPopup.Action(title = "菜单编辑", invoke = onMenuEditClick))
     if (!isLocalBook) {
         actions.add(ModernActionPopup.Action(title = "拉取云端进度", invoke = onGetProgressClick))
         actions.add(ModernActionPopup.Action(title = "覆盖云端进度", invoke = onCoverProgressClick))
     }
-    actions.add(ModernActionPopup.Action(title = "反转内容", invoke = onReverseContentClick))
+    if (!isEpub) actions.add(ModernActionPopup.Action(title = "反转内容", invoke = onReverseContentClick))
     actions.add(ModernActionPopup.Action(title = "模拟追读", invoke = onSimulatedReadingClick))
-    val isReplaceEnabled = io.legado.app.model.ReadBook.book?.getUseReplaceRule() == true
-    actions.add(ModernActionPopup.Action(
-        title = "替换净化",
-        checked = isReplaceEnabled,
-        persistent = true,
-        invoke = onChangeReplaceRuleClick
-    ))
+    if (supportsReplaceRules) {
+        val isReplaceEnabled = io.legado.app.model.ReadBook.book?.getUseReplaceRule() == true
+        actions.add(ModernActionPopup.Action(
+            title = "替换净化",
+            checked = isReplaceEnabled,
+            persistent = true,
+            invoke = onChangeReplaceRuleClick
+        ))
+    }
+    if (!isEpub) {
     val isSameTitleRemoved = io.legado.app.model.ReadBook.curTextChapter?.sameTitleRemoved == true
     actions.add(ModernActionPopup.Action(
         title = "移除重复标题",
@@ -856,11 +865,13 @@ private fun buildOverflowActions(
         invoke = onReSegmentClick
     ))
     actions.add(ModernActionPopup.Action(title = "图片样式", invoke = onImageStyleClick))
+    }
     actions.add(ModernActionPopup.Action(title = "更新目录", invoke = onUpdateTocClick))
     if (!isEpub) {
         actions.add(ModernActionPopup.Action(title = "段落规则", invoke = onParagraphRuleClick))
     }
-    actions.add(ModernActionPopup.Action(title = "起效的替换", invoke = onEffectiveReplacesClick))
+    actions.add(ModernActionPopup.Action(title = "高亮规则", invoke = onHighlightRuleClick))
+    if (!isEpub) actions.add(ModernActionPopup.Action(title = "起效的替换", invoke = onEffectiveReplacesClick))
     actions.add(ModernActionPopup.Action(title = "日志", invoke = onLogClick))
     actions.add(ModernActionPopup.Action(title = "帮助", invoke = onHelpClick))
     return actions

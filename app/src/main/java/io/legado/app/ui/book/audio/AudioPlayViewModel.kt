@@ -17,6 +17,8 @@ import io.legado.app.help.book.getBookSource
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.model.AudioPlay
+import io.legado.app.model.inheritNotShelfStateFrom
+import io.legado.app.model.resolveStoredBookshelfState
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
@@ -28,12 +30,12 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
 
     fun initData(intent: Intent, success: (() -> Unit)) = AudioPlay.apply {
         execute {
-            inBookshelf = intent.getBooleanExtra("inBookshelf", true)
             val bookUrl = intent.getStringExtra("bookUrl") ?: book?.bookUrl ?: return@execute
-            val targetBook = appDb.bookDao.getBook(bookUrl) ?: run {
-                inBookshelf = false
+            val storedBook = appDb.bookDao.getBook(bookUrl)
+            val targetBook = storedBook ?: run {
                 book?.also { appDb.bookDao.insert(it) } ?: return@execute
             }
+            inBookshelf = resolveStoredBookshelfState(storedBook)
             initBook(targetBook)
         }.onSuccess {
             success.invoke()
@@ -107,9 +109,11 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
 
     fun changeTo(source: BookSource, book: Book, toc: List<BookChapter>) {
         execute {
-            AudioPlay.book?.migrateTo(book, toc)
+            val oldBook = AudioPlay.book
+            oldBook?.migrateTo(book, toc)
+            book.inheritNotShelfStateFrom(oldBook)
             book.removeType(BookType.updateError)
-            AudioPlay.book?.delete()
+            oldBook?.delete()
             appDb.bookDao.insert(book)
             AudioPlay.book = book
             AudioPlay.bookSource = source
@@ -121,11 +125,12 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
     }
 
     fun removeFromBookshelf(success: (() -> Unit)?) {
+        val bookUrl = AudioPlay.book?.bookUrl
         execute {
-            AudioPlay.book?.let {
-                appDb.bookDao.delete(it)
-            }
-        }.onSuccess {
+            bookUrl?.let(appDb.bookDao::deleteIfNotShelf)
+        }.onError {
+            AppLog.put("删除临时音频书失败: bookUrl=$bookUrl", it)
+        }.onFinally {
             success?.invoke()
         }
     }

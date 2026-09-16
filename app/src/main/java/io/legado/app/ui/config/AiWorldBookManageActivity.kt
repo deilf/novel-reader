@@ -9,7 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import io.legado.app.base.BaseActivity
 import io.legado.app.databinding.ActivityAiWorldBookManageBinding
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.main.ai.compose.AiWorldBookImportPayload
 import io.legado.app.ui.main.ai.compose.AiWorldBookManageRoute

@@ -16,11 +16,13 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppCloudStorage
+import io.legado.app.help.book.addType
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalModified
-import io.legado.app.help.book.isNotShelf
+import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.usesDirectReader
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
@@ -28,6 +30,8 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.ImageProvider
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
+import io.legado.app.model.inheritNotShelfStateFrom
+import io.legado.app.model.resolveStoredBookshelfState
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.webBook.WebBook
@@ -85,13 +89,27 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
      */
     fun initData(intent: Intent, success: (() -> Unit)? = null) {
         execute {
-            ReadBook.inBookshelf = intent.getBooleanExtra("inBookshelf", true)
             ReadBook.chapterChanged = intent.getBooleanExtra("chapterChanged", false)
             val bookUrl = intent.getStringExtra("bookUrl")
-            val book = when {
+            val storedByUrl = when {
                 bookUrl.isNullOrEmpty() -> appDb.bookDao.lastReadBook
                 else -> appDb.bookDao.getBook(bookUrl)
-            } ?: ReadBook.book
+            }
+            // A source can derive an unstable bookUrl, so the row written when this book was
+            // opened is not always found by the url now in hand. Recover it by identity
+            // instead of falling back to the in-memory copy, whose type never carried the
+            // temporary flag and would erase it on the next whole-row write.
+            val stored = storedByUrl ?: ReadBook.book?.let { candidate ->
+                candidate.takeIf { it.name.isNotBlank() }
+                    ?.let { appDb.bookDao.getBook(it.name, it.author) }
+            }
+            val book = stored ?: ReadBook.book
+            // Trust whichever side says "not on the shelf": the detail page knows what the
+            // reader chose, the stored row knows what was persisted, and treating a sampled
+            // book as shelved is the failure that leaves books behind.
+            val storedSaysShelved = resolveStoredBookshelfState(stored)
+            val intentSaysShelved = intent.getBooleanExtra("inBookshelf", storedSaysShelved)
+            ReadBook.inBookshelf = storedSaysShelved && intentSaysShelved
             when {
                 book != null -> {
                     ReadBook.markRecentRead(book)
@@ -121,6 +139,11 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
 
     private suspend fun initBook(book: Book) {
         val isSameBook = ReadBook.book?.bookUrl == book.bookUrl
+        val startup = ReadBookStartupPolicy.decide(
+            isEpub = book.isEpub,
+            useEpubCore = AppConfig.useEpubCore,
+            directText = !book.isEpub && book.usesDirectReader
+        )
         AppLog.put(
             "read-init: start, sameBook=$isSameBook, book=${book.name}, " +
                 "bookUrl=${book.bookUrl}, origin=${book.origin}, tocUrl=${book.tocUrl}, " +
@@ -130,7 +153,7 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
         if (isSameBook) {
             ReadBook.upData(book)
         } else {
-            ReadBook.resetData(book)
+            ReadBook.resetData(book, notifyContent = startup.notifyContentDuringReset)
         }
         AppLog.put(
             "read-init: after data, chapterSize=${ReadBook.chapterSize}, " +
@@ -147,7 +170,9 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
             AppLog.put("read-init: stop, reason=local_file_missing, bookUrl=${book.bookUrl}")
             return
         }
-        if ((ReadBook.chapterSize == 0 || book.isLocalModified()) && !loadChapterListAwait(book)) {
+        if ((ReadBook.chapterSize == 0 || book.isLocalModified()) &&
+            !loadChapterListAwait(book, loadContentAfterUpdate = false)
+        ) {
             AppLog.put(
                 "read-init: stop, reason=toc_failed, chapterSize=${ReadBook.chapterSize}, " +
                     "bookUrl=${book.bookUrl}, origin=${book.origin}"
@@ -155,7 +180,20 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
             return
         }
         ReadBook.upMsg(null)
-        if (!isSameBook) {
+        if (startup.contentLoader == ReadBookStartupPolicy.ContentLoader.DIRECT_EPUB) {
+            AppLog.put(
+                "read-init: directContent, mode=${if (isSameBook) "same" else "reset"}, " +
+                    "index=${ReadBook.durChapterIndex}, chapterSize=${ReadBook.chapterSize}"
+            )
+            ReadBook.callBack?.upContent(resetPageOffset = false) {
+                ReadBook.bookSource?.let {
+                    SourceCallBack.callBackBook(SourceCallBack.START_READ, it, book, ReadBook.curTextChapter?.chapter)
+                }
+            } ?: AppLog.put(
+                "read-init: stop, reason=reader_callback_missing, mode=direct, " +
+                    "bookUrl=${book.bookUrl}"
+            )
+        } else if (!isSameBook) {
             AppLog.put("read-init: loadContent, mode=reset, index=${ReadBook.durChapterIndex}")
             ReadBook.loadContent(resetPageOffset = true) {
                 ReadBook.bookSource?.let {
@@ -231,7 +269,10 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
-    private suspend fun loadChapterListAwait(book: Book): Boolean {
+    private suspend fun loadChapterListAwait(
+        book: Book,
+        loadContentAfterUpdate: Boolean = true
+    ): Boolean {
         if (book.isLocal) {
             kotlin.runCatching {
                 LocalBook.getChapterList(book).let {
@@ -240,7 +281,7 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                         appDb.bookChapterDao.insert(*it.toTypedArray())
                         appDb.bookDao.update(book)
                     }
-                    ReadBook.onChapterListUpdated(book)
+                    ReadBook.onChapterListUpdated(book, loadContentAfterUpdate)
                 }
                 return true
             }.onFailure {
@@ -272,6 +313,13 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                         )
                         val oldChapterList = appDb.bookChapterDao.getChapterList(oldBook.bookUrl)
                         BookHelp.remapContentCache(oldBook, oldChapterList, cList)
+                        // Loading the table of contents must not promote a sampled book onto
+                        // the shelf. The url may have been re-derived while fetching, so the
+                        // row about to be written can be a fresh one that never carried the
+                        // flag; take it from what the reader actually chose.
+                        if (!ReadBook.inBookshelf) {
+                            book.addType(BookType.notShelf)
+                        }
                         if (oldBook.bookUrl == book.bookUrl) {
                             appDb.bookDao.update(book)
                         } else {
@@ -282,7 +330,7 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
                             appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                             appDb.bookChapterDao.insert(*cList.toTypedArray())
                         }
-                        ReadBook.onChapterListUpdated(book)
+                        ReadBook.onChapterListUpdated(book, loadContentAfterUpdate)
                         return true
                     }.onFailure {
                         currentCoroutineContext().ensureActive()
@@ -336,9 +384,11 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
         changeSourceCoroutine?.cancel()
         changeSourceCoroutine = execute {
             ReadBook.upMsg(context.getString(R.string.loading))
-            ReadBook.book?.migrateTo(book, toc)
+            val oldBook = ReadBook.book
+            oldBook?.migrateTo(book, toc)
+            book.inheritNotShelfStateFrom(oldBook)
             book.removeType(BookType.updateError)
-            ReadBook.book?.delete()
+            oldBook?.delete()
             appDb.bookDao.insert(book)
             appDb.bookChapterDao.insert(*toc.toTypedArray())
             ReadBook.resetData(book)
@@ -406,15 +456,27 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
     fun removeFromBookshelf(success: (() -> Unit)?) {
         val book = ReadBook.book
         Coroutine.async {
-            val dbBook = book?.bookUrl?.let { appDb.bookDao.getBook(it) }
-            when {
-                dbBook?.isNotShelf == true -> dbBook.delete()
-                book?.isNotShelf == true && dbBook == null -> book.delete()
-                book != null -> AppLog.put(
-                    "跳过删除正式书架书: ${book.name}, bookUrl=${book.bookUrl}, inBookshelf=${ReadBook.inBookshelf}"
-                )
+            if (book != null) {
+                val byUrl = appDb.bookDao.deleteIfNotShelf(book.bookUrl)
+                // The row saved when the book was opened is not always the row this
+                // bookUrl points at now: a source can derive an unstable url, so the
+                // delete above may miss and leave a book the reader never added. Clear
+                // the temporary rows for this identity within the same source too.
+                val byIdentity = if (book.name.isNotBlank() && book.origin.isNotBlank()) {
+                    appDb.bookDao.deleteTempByIdentity(book.name, book.author, book.origin)
+                } else {
+                    0
+                }
+                if (byUrl == 0 && byIdentity == 0) {
+                    AppLog.put(
+                        "跳过删除正式书架书: ${book.name}, bookUrl=${book.bookUrl}, " +
+                            "inBookshelf=${ReadBook.inBookshelf}"
+                    )
+                }
             }
-        }.onSuccess {
+        }.onError {
+            AppLog.put("删除临时书失败: bookUrl=${book?.bookUrl}", it)
+        }.onFinally {
             success?.invoke()
         }
     }

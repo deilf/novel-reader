@@ -16,11 +16,12 @@ import io.legado.app.utils.toastOnUi
 class VideoPlayerViewModel(application: Application) : BaseViewModel(application) {
     val upStarMenuData = MutableLiveData<Boolean>()
     fun removeFromBookshelf(success: (() -> Unit)?) {
+        val bookUrl = VideoPlay.book?.bookUrl
         execute {
-            VideoPlay.book?.let {
-                appDb.bookDao.delete(it)
-            }
-        }.onSuccess {
+            bookUrl?.let(appDb.bookDao::deleteIfNotShelf)
+        }.onError {
+            AppLog.put("删除临时视频书失败: bookUrl=$bookUrl", it)
+        }.onFinally {
             success?.invoke()
         }
     }

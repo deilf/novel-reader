@@ -53,8 +53,8 @@ import androidx.core.view.isVisible
 import androidx.core.text.parseAsHtml
 import androidx.core.view.postDelayed
 import io.legado.app.R
+import io.legado.app.help.ImageSourceOptions
 import io.legado.app.help.TextViewTagHandler
-import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.noties.markwon.Markwon
 import io.noties.markwon.image.AsyncDrawableSpan
 
@@ -175,13 +175,19 @@ fun View.screenshot(bitmap: Bitmap? = null, canvas: Canvas? = null): Bitmap? {
         }
         val c = canvas ?: Canvas()
         c.setBitmap(screenshot)
-        c.drawColor(resolveScreenshotBackgroundColor())
-        c.withTranslation(-scrollX.toFloat(), -scrollY.toFloat()) {
-            this@screenshot.draw(this)
+        try {
+            c.drawColor(resolveScreenshotBackgroundColor())
+            c.withTranslation(-scrollX.toFloat(), -scrollY.toFloat()) {
+                this@screenshot.draw(this)
+            }
+            screenshot.prepareToDraw()
+            screenshot
+        } catch (error: Throwable) {
+            if (screenshot !== bitmap && !screenshot.isRecycled) screenshot.recycle()
+            throw error
+        } finally {
+            c.setBitmap(null)
         }
-        c.setBitmap(null)
-        screenshot.prepareToDraw()
-        screenshot
     } else {
         null
     }
@@ -261,19 +267,11 @@ fun TextView.setHtml(html: String, imageGetter: GlideImageGetter? = null, textVi
         val end = spanned.getSpanEnd(imageSpan)
         if (start >= 0 && end >= 0) {
             val source = imageSpan.source ?: continue
-            var click: String? = null
-            val urlMatcher = paramPattern.matcher(source)
-            if (urlMatcher.find()) {
-                val urlOptionStr = source.substring(urlMatcher.end())
-                GSON.fromJsonObject<Map<String, String>>(urlOptionStr).getOrNull()?.let {
-                    click = it["click"]
-                }
-            }
-            clickSpans.add(Triple((start to end),source, click))
+            clickSpans.add(Triple((start to end), source, ImageSourceOptions.click(source)))
         }
     }
     text = spanned
-    if (clickSpans.isNotEmpty()) {
+    if (clickSpans.isNotEmpty() || textViewTagHandler != null) {
         movementMethod = object : android.text.method.LinkMovementMethod() {
             private var lastClickTime = 0L
             private var longClickRunnable: Runnable?= null
@@ -351,15 +349,20 @@ fun TextView.setHtml(html: String, imageGetter: GlideImageGetter? = null, textVi
     }
 }
 
-fun TextView.setMarkdown(markwon: Markwon, spanned: Spanned, imgOnLongClickListener: (source: String) -> Unit) {
+fun TextView.setMarkdown(
+    markwon: Markwon,
+    spanned: Spanned,
+    imgOnLongClickListener: (source: String) -> Unit,
+    imgOnClickListener: (click: String) -> Unit = {}
+) {
     val imageSpans = spanned.getSpans(0, spanned.length, AsyncDrawableSpan::class.java)
-    val clickSpans = mutableListOf<Pair<Pair<Int, Int>, String>>()
+    val clickSpans = mutableListOf<Triple<Pair<Int, Int>, String, String?>>()
     for (imageSpan in imageSpans) {
         val start = spanned.getSpanStart(imageSpan)
         val end = spanned.getSpanEnd(imageSpan)
         if (start >= 0 && end >= 0) {
             val source = imageSpan.drawable.destination
-            clickSpans.add((start to end) to source)
+            clickSpans.add(Triple(start to end, source, ImageSourceOptions.click(source)))
         }
     }
     if (clickSpans.isNotEmpty()) {
@@ -379,9 +382,11 @@ fun TextView.setMarkdown(markwon: Markwon, spanned: Spanned, imgOnLongClickListe
                 val line = widget.layout.getLineForVertical(y)
                 val off = widget.layout.getOffsetForHorizontal(line, x.toFloat())
                 var durSource: String? = null
-                for ((position, source) in clickSpans) {
+                var durClick: String? = null
+                for ((position, source, click) in clickSpans) {
                     if (off in position.first..position.second) {
                         durSource = source
+                        durClick = click
                         break
                     }
                 }
@@ -401,6 +406,10 @@ fun TextView.setMarkdown(markwon: Markwon, spanned: Spanned, imgOnLongClickListe
                         isLongClickable = true
                         if (!isLongClick) {
                             cancelLongClick()
+                            durClick?.let {
+                                imgOnClickListener(it)
+                                return true
+                            }
                         }
                     }
                     MotionEvent.ACTION_MOVE -> {

@@ -23,7 +23,7 @@ import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.BubblePackageManager
 import io.legado.app.help.http.newCallResponseBody
-import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.http.importHttpClient as okHttpClient
 import io.legado.app.lib.cloud.CloudStorageType
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.model.ImageProvider
@@ -360,9 +360,12 @@ class BubbleManageActivity : BaseActivity<ActivityThemeManageBinding>(),
                 config = config,
                 isAdd = isAdd,
                 onSaved = { name, updatedConfig ->
+                    val resourceConfig = editingConfig ?: config
                     val next = updatedConfig.copy(
                         name = name.trim().ifBlank { updatedConfig.name },
-                        dirName = entry?.dirName.orEmpty()
+                        dirName = entry?.dirName.orEmpty(),
+                        formatVersion = resourceConfig.formatVersion,
+                        resources = resourceConfig.resources
                     )
                     editingConfig = next
                     runAction(

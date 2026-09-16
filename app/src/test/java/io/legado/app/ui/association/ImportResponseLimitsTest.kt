@@ -3,7 +3,9 @@ package io.legado.app.ui.association
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.zip.GZIPOutputStream
 
 class ImportResponseLimitsTest {
 
@@ -17,5 +19,17 @@ class ImportResponseLimitsTest {
     @Test(expected = IOException::class)
     fun rejectsResponseBeyondConfiguredLimit() {
         "a".repeat(33).toResponseBody().readLimitedImportText(32)
+    }
+
+    @Test
+    fun readsGzipResponseBodyWithinLimit() {
+        val compressed = ByteArrayOutputStream().also { output ->
+            GZIPOutputStream(output).use { it.write("{\"tasks\":[]}".toByteArray()) }
+        }.toByteArray()
+
+        assertEquals(
+            "{\"tasks\":[]}",
+            compressed.toResponseBody().readLimitedImportTextWithGzip(64)
+        )
     }
 }

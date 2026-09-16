@@ -99,6 +99,7 @@ abstract class PageDelegate(protected val readView: ReadView) {
             isMoved = false
             isRunning = false
             flushDeferredAnimationRefresh()
+            readView.flushPendingAdvancedTitleCompositions()
             readView.postInvalidateOnAnimation()
         }
     }
@@ -135,8 +136,8 @@ abstract class PageDelegate(protected val readView: ReadView) {
     open fun keyTurnPage(direction: PageDirection) {
         if (isRunning) return
         when (direction) {
-            PageDirection.NEXT -> nextPageByAnim(100)
-            PageDirection.PREV -> prevPageByAnim(100)
+            PageDirection.NEXT -> nextPageByAnim(readView.defaultAnimationSpeed)
+            PageDirection.PREV -> prevPageByAnim(readView.defaultAnimationSpeed)
             else -> return
         }
     }
@@ -213,7 +214,10 @@ abstract class PageDelegate(protected val readView: ReadView) {
                     deferredAnimationRefreshPosted = false
                     if (isStarted && isRunning && deferredAnimationRefresh) {
                         deferredAnimationRefresh = false
-                        setBitmap()
+                        if (!setBitmap()) {
+                            rejectSnapshotCapture()
+                            return@post
+                        }
                         readView.postInvalidateOnAnimation()
                     }
                 }
@@ -227,6 +231,13 @@ abstract class PageDelegate(protected val readView: ReadView) {
         deferredAnimationRefreshPosted = false
         readView.postInvalidateOnAnimation()
     }
+
+    /**
+     * Idle pre-capture for page-turn bitmaps (cover/slide/simulation).
+     * step: 0=cur, 1=next, 2=prev, 3=all dirty pages.
+     * Scroll mode no-ops.
+     */
+    open fun prewarmPageSnapshots(step: Int = 3) = Unit
 
     open fun onDestroy() {
         // run on destroy

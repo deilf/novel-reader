@@ -17,6 +17,7 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.RuleBigDataHelp
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.TextReadEnginePolicy
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.GSON
@@ -58,6 +59,14 @@ val Book.isLocalTxt: Boolean
 
 val Book.isEpub: Boolean
     get() = isLocal && originName.endsWith(".epub", true)
+
+val Book.usesDirectReader: Boolean
+    get() = TextReadEnginePolicy.usesDirect(
+        isEpub = isEpub,
+        isOrdinaryText = !isAudio && !isVideo && !isImage && !isPdf,
+        epubUsesCore = AppConfig.useEpubCore,
+        textEngine = AppConfig.textReadEngine
+    )
 
 val Book.isUmd: Boolean
     get() = isLocal && originName.endsWith(".umd", true)

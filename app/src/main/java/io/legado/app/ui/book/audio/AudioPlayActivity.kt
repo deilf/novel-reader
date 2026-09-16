@@ -27,8 +27,11 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.BookCover
+import io.legado.app.model.inheritNotShelfStateFrom
+import io.legado.app.model.resolveStoredBookshelfState
 import io.legado.app.service.AudioPlayService
 import io.legado.app.ui.about.AppLogDialog
+import io.legado.app.ui.book.ShelfExitRequestGate
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.cache.CacheManageViewModel
 import io.legado.app.ui.book.source.edit.BookSourceEditActivity
@@ -82,6 +85,7 @@ class AudioPlayActivity :
     private var lyricOn = false
     private var oldLyric: String? = null
     private var menuCustomBtn: MenuItem? = null
+    private val shelfExitRequestGate = ShelfExitRequestGate()
 
     private val tocActivityResult = registerForActivityResult(TocActivityResult()) {
         it?.let {
@@ -368,28 +372,34 @@ class AudioPlayActivity :
             AudioPlay.stop()
             lifecycleScope.launch {
                 withContext(IO) {
-                    AudioPlay.book?.migrateTo(book, toc)
+                    val oldBook = AudioPlay.book
+                    oldBook?.migrateTo(book, toc)
+                    book.inheritNotShelfStateFrom(oldBook)
                     book.removeType(BookType.updateError)
-                    AudioPlay.book?.delete()
+                    oldBook?.delete()
                     appDb.bookDao.insert(book)
                 }
-                startActivityForBook(book)
-                finish()
+                startActivityForBook(book) {
+                    putExtra("inBookshelf", resolveStoredBookshelfState(book))
+                }
+                super.finish()
             }
         }
     }
 
     override fun finish() {
+        if (isFinishing) return
         val book = AudioPlay.book ?: return super.finish()
         if (AudioPlay.inBookshelf) {
             callBackBookEnd()
             return super.finish()
         }
+        if (!shelfExitRequestGate.tryBegin()) return
         if (!AppConfig.showAddToShelfAlert) {
             callBackBookEnd()
             viewModel.removeFromBookshelf { super.finish() }
         } else {
-            alert(title = getString(R.string.add_to_bookshelf)) {
+            val dialog = alert(title = getString(R.string.add_to_bookshelf)) {
                 setMessage(getString(R.string.check_add_bookshelf, book.name))
                 okButton {
                     AudioPlay.book?.removeType(BookType.notShelf)
@@ -397,12 +407,15 @@ class AudioPlayActivity :
                     SourceCallBack.callBackBook(SourceCallBack.ADD_BOOK_SHELF, AudioPlay.bookSource, AudioPlay.book)
                     AudioPlay.inBookshelf = true
                     setResult(RESULT_OK)
+                    callBackBookEnd()
+                    super.finish()
                 }
                 noButton {
                     callBackBookEnd()
                     viewModel.removeFromBookshelf { super.finish() }
                 }
             }
+            dialog.setOnCancelListener { shelfExitRequestGate.cancel() }
         }
     }
 
