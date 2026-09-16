@@ -203,6 +203,30 @@ class GiteeReleaseSafetyTest(unittest.TestCase):
                 sync.download_github_apks(release, Path(self.directory.name))
         download.assert_not_called()
 
+    def test_gitee_release_description_defaults_to_title_when_notes_are_empty(self):
+        with patch.object(sync, 'token', return_value='synthetic'), \
+                patch.object(sync, 'gitee_get_release', return_value=None), \
+                patch.object(sync, 'request_json', return_value={'id': 42}) as request:
+            self.assertEqual(sync.upsert_gitee_release('v14', 'Release 14', ''), 42)
+        self.assertEqual(request.call_args.args[2]['body'], 'Release 14')
+
+    def test_new_release_and_channel_have_notes_when_created(self):
+        notes = Path(self.directory.name) / 'notes.md'
+        notes.write_text('Release notes for the new APK.', encoding='utf-8')
+        argv = [str(SCRIPT), '--tag', 'archive-v14', '--apk', str(self.apk),
+                '--body-file', str(notes), '--publish']
+        with patch.object(sys, 'argv', argv), \
+                patch.object(sync, 'token', return_value='synthetic'), \
+                patch.object(sync, 'ensure_gitee_tag'), \
+                patch.object(sync, 'gitee_get_release', return_value=None), \
+                patch.object(sync, 'upsert_gitee_release', side_effect=[41, 41, 42, 42]) as upsert, \
+                patch.object(sync, 'upload_apks'), \
+                patch.object(sync, 'verify_gitee_release'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(sync.main(), 0)
+        self.assertEqual(upsert.call_args_list[0].args[2], notes.read_text(encoding='utf-8'))
+        self.assertEqual(upsert.call_args_list[2].args[2], notes.read_text(encoding='utf-8'))
+
 
 if __name__ == '__main__':
     unittest.main()

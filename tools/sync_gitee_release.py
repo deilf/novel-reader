@@ -185,7 +185,7 @@ def upsert_gitee_release(tag_name, release_name, body, target=None):
         "access_token": token(),
         "tag_name": tag_name,
         "name": release_name,
-        "body": body,
+        "body": body or release_name,
         "prerelease": "false",
     }
     if release and release.get("id"):
@@ -370,7 +370,7 @@ def main():
         token()
         ensure_gitee_tag(tag_name)
         current = gitee_get_release(tag_name)
-        versioned_id = int(current["id"]) if current else upsert_gitee_release(tag_name, release_name, "")
+        versioned_id = int(current["id"]) if current else upsert_gitee_release(tag_name, release_name, body)
         upload_apks(versioned_id, apks)
         upsert_gitee_release(tag_name, release_name, body)
         verify_gitee_release(tag_name)
@@ -379,7 +379,7 @@ def main():
             channel = gitee_get_release(CHANNEL_TAG)
             if channel is None:
                 ensure_gitee_tag(CHANNEL_TAG, source_tag=tag_name)
-            channel_id = int(channel["id"]) if channel else upsert_gitee_release(CHANNEL_TAG, CHANNEL_NAME, "", CHANNEL_TAG)
+            channel_id = int(channel["id"]) if channel else upsert_gitee_release(CHANNEL_TAG, CHANNEL_NAME, body, CHANNEL_TAG)
             upload_apks(channel_id, apks, replace_old=True)
             upsert_gitee_release(CHANNEL_TAG, CHANNEL_NAME, body, CHANNEL_TAG)
             verify_gitee_release(CHANNEL_TAG)
