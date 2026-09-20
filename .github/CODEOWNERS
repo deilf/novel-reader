@@ -1,0 +1,13 @@
+# 维护者配置
+# 当有人提交 PR 或 Issue 时自动通知
+
+# 默认所有文件由仓库所有者维护
+* @OWNER
+
+# 特定目录的维护者
+# /src-tauri/ @tauri-maintainer
+# /src/ @frontend-maintainer
+
+# 代码所有者（批准 PR 需要这些人的审查）
+# 代码所有者将在创建 PR 时自动请求审查
+CODEOWNERS

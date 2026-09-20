@@ -1,0 +1,65 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+*.pdb
+
+# Tauri build artifacts
+/src-tauri/target/
+/src-tauri/gen/
+
+# Node modules
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+/dist/
+/build/
+*.exe
+*.dmg
+*.deb
+*.rpm
+*.apk
+*.aab
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.tmp/
+temp/
+
+# Android specific
+.gradle/
+local.properties
+*.iml
+.inspect/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Secrets (never commit these)
+*.pem
+*.key
+credentials.json
+secrets.json
