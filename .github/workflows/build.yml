@@ -37,7 +37,7 @@ jobs:
             npm
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm install
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
@@ -74,7 +74,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build Tauri app
         run: npm run tauri build -- --verbose
@@ -100,7 +100,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build Tauri app
         run: npm run tauri build -- --verbose
@@ -138,7 +138,7 @@ jobs:
             npm
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build Tauri app
         run: npm run tauri build -- --verbose
