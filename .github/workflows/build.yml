@@ -46,7 +46,9 @@ jobs:
           fi
 
       - name: Build Tauri app
-        run: npm run tauri build
+        run: |
+          npm run build
+          npx tauri build --no-bundle
 
       - name: Find APK files
         run: find src-tauri/target -name "*.apk" -type f 2>/dev/null || echo "No APK found"
