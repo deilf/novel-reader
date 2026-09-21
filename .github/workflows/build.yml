@@ -40,7 +40,11 @@ jobs:
         run: npm install
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
+        uses: android-actions/setup-android@v3
+        with:
+          api-version: 34
+          ndk-version: 26
+          build-tools-version: 34.0.0
 
       - name: Build Tauri app
         run: npm run tauri build -- --verbose
