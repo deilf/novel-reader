@@ -42,7 +42,7 @@ jobs:
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
       - name: Install Node.js dependencies
-        run: pnpm install --frozen-lockfile=false --config.onlyBuiltDependencies[]=esbuild --config.onlyBuiltDependencies[]=vue-demi
+        run: pnpm install --frozen-lockfile=false
 
       - name: Build frontend
         run: pnpm run build
