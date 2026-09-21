@@ -195,7 +195,7 @@
           <label>🔤 字体大小</label>
           <div class="setting-control">
             <button @click="decreaseFontSize" class="control-btn">-</button>
-            <span class="setting-value">{{ formatConfig.fontSize }}px</span>
+            <span class="setting-value">{{ formatConfig.font_size }}px</span>
             <button @click="increaseFontSize" class="control-btn">+</button>
           </div>
         </div>
@@ -205,13 +205,13 @@
           <div class="setting-control">
             <input
               type="range"
-              v-model.number="formatConfig.lineHeight"
+              v-model.number="formatConfig.line_height"
               min="1.2"
               max="2.5"
               step="0.1"
               class="range-slider"
             />
-            <span class="setting-value">{{ formatConfig.lineHeight.toFixed(1) }}</span>
+            <span class="setting-value">{{ formatConfig.line_height.toFixed(1) }}</span>
           </div>
         </div>
 
@@ -220,20 +220,20 @@
           <div class="setting-control">
             <input
               type="range"
-              v-model.number="formatConfig.paragraphSpacing"
+              v-model.number="formatConfig.paragraph_spacing"
               min="0.5"
               max="3"
               step="0.5"
               class="range-slider"
             />
-            <span class="setting-value">{{ formatConfig.paragraphSpacing }}em</span>
+            <span class="setting-value">{{ formatConfig.paragraph_spacing }}em</span>
           </div>
         </div>
 
         <div class="setting-item">
           <label>📝 首行缩进</label>
           <label class="switch">
-            <input type="checkbox" v-model="formatConfig.textIndent" />
+            <input type="checkbox" v-model="formatConfig.text_indent" />
             <span class="slider"></span>
           </label>
         </div>
