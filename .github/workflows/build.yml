@@ -45,14 +45,22 @@ jobs:
             ls /usr/lib/android-sdk
           fi
 
-      - name: Build Tauri app (debug)
-        run: npm run tauri build -- --debug
-        continue-on-error: true
+      - name: Build Tauri app
+        run: npm run tauri build
+
+      - name: Find APK files
+        run: find src-tauri/target -name "*.apk" -type f 2>/dev/null || echo "No APK found"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk-debug
-          path: src-tauri/target/debug/**/*.apk
+          name: novel-reader-apk
+          path: src-tauri/target/release/bundle/apk/**/*.apk
           retention-days: 7
-          if-no-files-found: ignore
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: novel-reader-apk-debug
+          path: src-tauri/target/debug/bundle/apk/**/*.apk
+          retention-days: 7
