@@ -2,69 +2,97 @@
   <div id="app" :class="{ 'dark-theme': isDarkTheme }">
     <!-- 搜索页面 -->
     <div v-if="currentView === 'search'" class="search-view">
+      <!-- 顶部标题栏 -->
       <header class="app-header">
-        <h1 class="app-title">小说阅读器</h1>
+        <h1 class="app-title">📚 小说阅读器</h1>
       </header>
 
+      <!-- 搜索区域 - 磁贴式输入框 -->
       <div class="search-container">
-        <div class="website-input">
-          <input
-            v-model="websiteUrl"
-            type="url"
-            placeholder="输入小说网站URL，如 https://example.com"
-            class="url-input"
-            @keyup.enter="handleSearch"
-          />
-          <button @click="handleSearch" class="search-btn" :disabled="isSearching">
-            {{ isSearching ? '搜索中...' : '搜索' }}
+        <div class="search-box">
+          <div class="input-tile">
+            <span class="tile-icon">🌐</span>
+            <input
+              v-model="websiteUrl"
+              type="url"
+              placeholder="输入小说网站URL"
+              class="url-input"
+              @keyup.enter="handleSearch"
+            />
+          </div>
+          <div class="input-tile keyword-tile">
+            <span class="tile-icon">🔍</span>
+            <input
+              v-model="searchKeyword"
+              type="text"
+              placeholder="输入小说名称或作者"
+              class="keyword-input-field"
+              @keyup.enter="handleSearch"
+            />
+          </div>
+          <button @click="handleSearch" class="search-tile-btn" :disabled="isSearching">
+            <span v-if="isSearching" class="loading-spinner">⏳</span>
+            <span v-else>🚀 搜索</span>
           </button>
-        </div>
-
-        <div class="keyword-input">
-          <input
-            v-model="searchKeyword"
-            type="text"
-            placeholder="输入小说名称或作者"
-            class="keyword-input-field"
-            @keyup.enter="handleSearch"
-          />
         </div>
       </div>
 
+      <!-- 搜索结果 - 磁贴网格布局 -->
       <div v-if="searchResults.length > 0" class="results-container">
         <div class="results-header">
-          <span>找到 {{ searchResults.length }} 个结果</span>
-          <button @click="clearResults" class="clear-btn">清除</button>
+          <span class="result-count">找到 {{ searchResults.length }} 个小说</span>
+          <button @click="clearResults" class="clear-btn">🗑️ 清空</button>
         </div>
-        <div class="novel-list">
+
+        <!-- 磁贴网格 -->
+        <div class="novel-grid">
           <div
             v-for="novel in searchResults"
             :key="novel.url"
-            class="novel-card"
+            class="novel-tile"
             @click="openNovel(novel)"
           >
-            <img
-              v-if="novel.cover_url"
-              :src="novel.cover_url"
-              :alt="novel.title"
-              class="novel-cover"
-              @error="handleImageError"
-            />
-            <div v-else class="novel-cover placeholder">
-              <span>暂无封面</span>
+            <!-- 封面图片 -->
+            <div class="tile-cover">
+              <img
+                v-if="novel.cover_url"
+                :src="novel.cover_url"
+                :alt="novel.title"
+                class="cover-image"
+                @error="handleImageError"
+              />
+              <div v-else class="cover-placeholder">
+                <span class="placeholder-icon">📖</span>
+                <span class="placeholder-text">暂无封面</span>
+              </div>
+              <div class="tile-overlay">
+                <span class="read-btn">📖 开始阅读</span>
+              </div>
             </div>
-            <div class="novel-info">
-              <h3 class="novel-title">{{ novel.title }}</h3>
-              <p class="novel-author">{{ novel.author }}</p>
-              <p class="novel-chapter">{{ novel.latest_chapter }}</p>
-              <p class="novel-source">来源: {{ novel.source }}</p>
+
+            <!-- 小说信息 -->
+            <div class="tile-info">
+              <h3 class="tile-title">{{ novel.title }}</h3>
+              <p class="tile-author">👤 {{ novel.author }}</p>
+              <p class="tile-chapter">📑 {{ novel.latest_chapter }}</p>
+              <div class="tile-footer">
+                <span class="tile-source">🏷️ {{ novel.source }}</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- 空状态 -->
+      <div v-if="searchResults.length === 0 && !isSearching" class="empty-state">
+        <div class="empty-icon">📚</div>
+        <p class="empty-text">输入网站和关键词开始搜索小说</p>
+        <p class="empty-hint">推荐网站：笔趣阁、起点中文网等</p>
+      </div>
+
+      <!-- 错误消息 -->
       <div v-if="error" class="error-message">
-        <p>{{ error }}</p>
+        <span>⚠️ {{ error }}</span>
         <button @click="error = ''" class="dismiss-btn">关闭</button>
       </div>
     </div>
@@ -72,51 +100,61 @@
     <!-- 小说详情页面 -->
     <div v-else-if="currentView === 'novel'" class="novel-view">
       <header class="app-header">
-        <button @click="goBack" class="back-btn">返回</button>
+        <button @click="goBack" class="back-btn">← 返回</button>
         <h1 class="page-title">{{ novelDetails?.title || '小说详情' }}</h1>
-        <div class="header-actions">
-          <button @click="toggleCoverSource" class="action-btn" title="切换封面">
-            <span>📷</span>
-          </button>
-        </div>
+        <button @click="toggleCoverSource" class="action-btn" title="切换封面">
+          🖼️
+        </button>
       </header>
 
       <div class="novel-detail" v-if="novelDetails">
-        <div class="detail-cover">
-          <img
-            v-if="currentCoverUrl"
-            :src="currentCoverUrl"
-            :alt="novelDetails.title"
-            class="detail-cover-img"
-          />
-          <div v-else class="detail-cover placeholder">
-            <span>暂无封面</span>
+        <!-- 大封面展示 -->
+        <div class="detail-hero">
+          <div class="hero-cover">
+            <img
+              v-if="currentCoverUrl"
+              :src="currentCoverUrl"
+              :alt="novelDetails.title"
+              class="hero-cover-img"
+            />
+            <div v-else class="hero-cover-placeholder">
+              <span>📖</span>
+            </div>
+          </div>
+          <div class="hero-info">
+            <h2 class="detail-title">{{ novelDetails.title }}</h2>
+            <p class="detail-author">👤 {{ novelDetails.author }}</p>
+            <p class="detail-desc">{{ novelDetails.description || '暂无简介' }}</p>
+            <div class="detail-actions">
+              <button class="action-tile" @click="readFirstChapter">
+                📖 开始阅读
+              </button>
+              <button class="action-tile secondary" @click="toggleCoverSource">
+                🖼️ 换封面
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="detail-info">
-          <h2 class="detail-title">{{ novelDetails.title }}</h2>
-          <p class="detail-author">作者: {{ novelDetails.author }}</p>
-          <p class="detail-desc">{{ novelDetails.description || '暂无简介' }}</p>
-        </div>
-
-        <div class="chapter-list-container">
-          <h3 class="section-title">目录 ({{ chapters.length }} 章)</h3>
-          <div class="chapter-list">
+        <!-- 章节列表 -->
+        <div class="chapter-section">
+          <h3 class="section-title">📚 目录 ({{ chapters.length }} 章)</h3>
+          <div class="chapter-grid">
             <div
               v-for="chapter in chapters"
               :key="chapter.url"
-              class="chapter-item"
+              class="chapter-tile"
               @click="readChapter(chapter)"
             >
+              <span class="chapter-num">{{ chapter.index + 1 }}</span>
               <span class="chapter-title">{{ chapter.title }}</span>
-              <span class="chapter-arrow">›</span>
             </div>
           </div>
         </div>
       </div>
 
       <div v-else class="loading">
+        <div class="loading-spinner">⏳</div>
         <p>加载中...</p>
       </div>
     </div>
@@ -124,10 +162,10 @@
     <!-- 阅读页面 -->
     <div v-else-if="currentView === 'reader'" class="reader-view">
       <header class="reader-header">
-        <button @click="closeReader" class="back-btn">返回</button>
+        <button @click="closeReader" class="back-btn">← 返回</button>
         <h1 class="reader-title">{{ currentChapter?.title || '阅读' }}</h1>
         <button @click="showSettings = true" class="action-btn" title="设置">
-          <span>⚙️</span>
+          ⚙️
         </button>
       </header>
 
@@ -137,13 +175,13 @@
 
       <div class="reader-footer">
         <button @click="prevChapter" class="nav-btn" :disabled="!hasPrevChapter">
-          上一章
+          ◀ 上一章
         </button>
-        <button @click="showChapterList = true" class="nav-btn">
-          目录
+        <button @click="showChapterList = true" class="nav-btn highlight">
+          📖 目录
         </button>
         <button @click="nextChapter" class="nav-btn" :disabled="!hasNextChapter">
-          下一章
+          下一章 ▶
         </button>
       </div>
     </div>
@@ -151,19 +189,19 @@
     <!-- 设置面板 -->
     <div v-if="showSettings" class="settings-overlay" @click.self="showSettings = false">
       <div class="settings-panel">
-        <h2 class="settings-title">阅读设置</h2>
+        <h2 class="settings-title">⚙️ 阅读设置</h2>
 
         <div class="setting-item">
-          <label>字体大小</label>
+          <label>🔤 字体大小</label>
           <div class="setting-control">
-            <button @click="decreaseFontSize">-</button>
-            <span>{{ formatConfig.fontSize }}px</span>
-            <button @click="increaseFontSize">+</button>
+            <button @click="decreaseFontSize" class="control-btn">-</button>
+            <span class="setting-value">{{ formatConfig.fontSize }}px</span>
+            <button @click="increaseFontSize" class="control-btn">+</button>
           </div>
         </div>
 
         <div class="setting-item">
-          <label>行高</label>
+          <label>📏 行高</label>
           <div class="setting-control">
             <input
               type="range"
@@ -171,13 +209,14 @@
               min="1.2"
               max="2.5"
               step="0.1"
+              class="range-slider"
             />
-            <span>{{ formatConfig.lineHeight.toFixed(1) }}</span>
+            <span class="setting-value">{{ formatConfig.lineHeight.toFixed(1) }}</span>
           </div>
         </div>
 
         <div class="setting-item">
-          <label>段间距</label>
+          <label>📐 段间距</label>
           <div class="setting-control">
             <input
               type="range"
@@ -185,13 +224,14 @@
               min="0.5"
               max="3"
               step="0.5"
+              class="range-slider"
             />
-            <span>{{ formatConfig.paragraphSpacing }}em</span>
+            <span class="setting-value">{{ formatConfig.paragraphSpacing }}em</span>
           </div>
         </div>
 
         <div class="setting-item">
-          <label>首行缩进</label>
+          <label>📝 首行缩进</label>
           <label class="switch">
             <input type="checkbox" v-model="formatConfig.textIndent" />
             <span class="slider"></span>
@@ -199,7 +239,7 @@
         </div>
 
         <div class="setting-item">
-          <label>主题</label>
+          <label>🎨 主题</label>
           <div class="theme-options">
             <button
               v-for="theme in themes"
@@ -208,13 +248,13 @@
               @click="setTheme(theme.value)"
               class="theme-btn"
             >
-              {{ theme.label }}
+              {{ theme.icon }} {{ theme.label }}
             </button>
           </div>
         </div>
 
         <button @click="showSettings = false" class="close-settings-btn">
-          关闭
+          ✓ 关闭
         </button>
       </div>
     </div>
@@ -223,7 +263,7 @@
     <div v-if="showChapterList" class="chapter-list-overlay" @click.self="showChapterList = false">
       <div class="chapter-list-panel">
         <div class="panel-header">
-          <h2>目录</h2>
+          <h2>📖 目录</h2>
           <button @click="showChapterList = false" class="close-btn">×</button>
         </div>
         <div class="panel-content">
@@ -244,7 +284,7 @@
     <!-- 封面来源切换 -->
     <div v-if="showCoverSwitcher" class="cover-switcher-overlay" @click.self="showCoverSwitcher = false">
       <div class="cover-switcher-panel">
-        <h2>选择封面来源</h2>
+        <h2>🖼️ 选择封面来源</h2>
         <div class="cover-sources">
           <div
             v-for="source in coverSources"
@@ -257,7 +297,7 @@
             <span class="source-name">{{ source.label }}</span>
           </div>
         </div>
-        <button @click="showCoverSwitcher = false" class="close-btn">关闭</button>
+        <button @click="showCoverSwitcher = false" class="close-btn-secondary">关闭</button>
       </div>
     </div>
   </div>
@@ -348,9 +388,9 @@ const formatConfig = ref<FormatConfig>({
 
 // 常量
 const themes = [
-  { value: 'light', label: '白天' },
-  { value: 'dark', label: '夜间' },
-  { value: 'sepia', label: '护眼' }
+  { value: 'light', label: '白天', icon: '☀️' },
+  { value: 'dark', label: '夜间', icon: '🌙' },
+  { value: 'sepia', label: '护眼', icon: '📜' }
 ]
 
 const coverSources = [
@@ -415,6 +455,12 @@ const openNovel = async (novel: SearchResult) => {
   } catch (e) {
     error.value = `获取小说详情失败: ${e}`
     currentView.value = 'search'
+  }
+}
+
+const readFirstChapter = () => {
+  if (chapters.value.length > 0) {
+    readChapter(chapters.value[0])
   }
 }
 
@@ -540,7 +586,6 @@ watch(formatConfig, async (newConfig) => {
 
 // 初始化
 onMounted(() => {
-  // 从本地存储恢复设置
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme) {
     setTheme(savedTheme)
@@ -558,13 +603,13 @@ onMounted(() => {
 #app {
   height: 100%;
   width: 100%;
-  background-color: #f5f5f5;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #333;
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 #app.dark-theme {
-  background-color: #1a1a1a;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   color: #ccc;
 }
 
@@ -573,25 +618,26 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  background-color: #fff;
-  border-bottom: 1px solid #e0e0e0;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
 .dark-theme .app-header {
-  background-color: #2a2a2a;
-  border-bottom-color: #3a3a3a;
+  background: rgba(30, 30, 50, 0.95);
 }
 
 .app-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #333;
-}
-
-.dark-theme .app-title {
-  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .page-title {
@@ -608,13 +654,15 @@ onMounted(() => {
   background: none;
   border: none;
   font-size: 16px;
-  color: #333;
+  color: #667eea;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: background 0.3s;
 }
 
-.dark-theme .back-btn {
-  color: #fff;
+.back-btn:hover {
+  background: rgba(102, 126, 234, 0.1);
 }
 
 .header-actions {
@@ -625,277 +673,396 @@ onMounted(() => {
 .action-btn {
   background: none;
   border: none;
-  font-size: 20px;
+  font-size: 24px;
   cursor: pointer;
-  padding: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.action-btn:hover {
+  background: rgba(102, 126, 234, 0.1);
+  transform: scale(1.1);
 }
 
 /* 搜索容器 */
 .search-container {
-  padding: 16px;
-  background-color: #fff;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  margin: 20px;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .dark-theme .search-container {
-  background-color: #2a2a2a;
+  background: rgba(30, 30, 50, 0.95);
 }
 
-.website-input {
+.search-box {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.url-input {
+.input-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  transition: all 0.3s;
+}
+
+.input-tile:focus-within {
+  border-color: #667eea;
+  box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+}
+
+.dark-theme .input-tile {
+  background: #2a2a3e;
+}
+
+.tile-icon {
+  font-size: 20px;
+}
+
+.url-input,
+.keyword-input-field {
   flex: 1;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 14px;
-  background-color: #fafafa;
+  border: none;
+  background: none;
+  font-size: 15px;
+  color: #333;
+  outline: none;
 }
 
-.dark-theme .url-input {
-  background-color: #3a3a3a;
-  border-color: #4a4a4a;
-  color: #fff;
+.dark-theme .url-input,
+.dark-theme .keyword-input-field {
+  color: #ccc;
 }
 
-.search-btn {
-  padding: 12px 24px;
-  background-color: #4CAF50;
+.url-input::placeholder,
+.keyword-input-field::placeholder {
+  color: #999;
+}
+
+.keyword-tile {
+  margin-top: 0;
+}
+
+.search-tile-btn {
+  padding: 14px 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.3s;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
-.search-btn:hover:not(:disabled) {
-  background-color: #45a049;
+.search-tile-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3);
 }
 
-.search-btn:disabled {
-  background-color: #ccc;
+.search-tile-btn:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
-}
-
-.keyword-input {
-  margin-top: 8px;
-}
-
-.keyword-input-field {
-  width: 100%;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 14px;
-  background-color: #fafafa;
-}
-
-.dark-theme .keyword-input-field {
-  background-color: #3a3a3a;
-  border-color: #4a4a4a;
-  color: #fff;
 }
 
 /* 结果容器 */
 .results-container {
-  padding: 16px;
+  padding: 0 20px 20px;
 }
 
 .results-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
-  font-size: 14px;
-  color: #666;
+  margin-bottom: 16px;
 }
 
-.dark-theme .results-header {
-  color: #999;
+.result-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 8px 16px;
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
 }
 
 .clear-btn {
-  background: none;
-  border: 1px solid #ddd;
-  padding: 4px 12px;
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 20px;
   cursor: pointer;
-  font-size: 12px;
-  color: #666;
+  font-size: 14px;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s;
 }
 
-.dark-theme .clear-btn {
-  border-color: #4a4a4a;
-  color: #999;
+.clear-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
-.novel-list {
+/* 磁贴网格 - Pinterest风格 */
+.novel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.novel-tile {
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.novel-tile:hover {
+  transform: translateY(-8px) scale(1.02);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+}
+
+.dark-theme .novel-tile {
+  background: rgba(40, 40, 70, 0.9);
+}
+
+.tile-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3/4;
+  overflow: hidden;
+}
+
+.cover-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s;
+}
+
+.novel-tile:hover .cover-image {
+  transform: scale(1.05);
+}
+
+.cover-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
-.novel-card {
-  display: flex;
-  background-color: #fff;
-  border-radius: 8px;
-  padding: 12px;
-  cursor: pointer;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s, box-shadow 0.2s;
+.placeholder-icon {
+  font-size: 48px;
 }
 
-.dark-theme .novel-card {
-  background-color: #2a2a2a;
+.placeholder-text {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
 }
 
-.novel-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-}
-
-.novel-cover {
-  width: 80px;
-  height: 110px;
-  border-radius: 4px;
-  object-fit: cover;
-  background-color: #e0e0e0;
-  flex-shrink: 0;
-}
-
-.dark-theme .novel-cover.placeholder {
-  background-color: #3a3a3a;
-}
-
-.novel-cover.placeholder {
+.tile-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  color: #999;
+  opacity: 0;
+  transition: opacity 0.3s;
 }
 
-.novel-info {
-  flex: 1;
-  margin-left: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow: hidden;
+.novel-tile:hover .tile-overlay {
+  opacity: 1;
 }
 
-.novel-title {
-  font-size: 16px;
+.read-btn {
+  padding: 10px 20px;
+  background: #667eea;
+  color: #fff;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  transform: translateY(20px);
+  transition: transform 0.3s;
+}
+
+.novel-tile:hover .read-btn {
+  transform: translateY(0);
+}
+
+.tile-info {
+  padding: 12px;
+}
+
+.tile-title {
+  font-size: 14px;
   font-weight: 600;
   color: #333;
+  margin-bottom: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dark-theme .novel-title {
+.dark-theme .tile-title {
   color: #fff;
 }
 
-.novel-author {
-  font-size: 14px;
+.tile-author,
+.tile-chapter {
+  font-size: 11px;
   color: #666;
-}
-
-.dark-theme .novel-author {
-  color: #999;
-}
-
-.novel-chapter {
-  font-size: 12px;
-  color: #4CAF50;
+  margin-bottom: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.novel-source {
-  font-size: 11px;
-  color: #999;
-  margin-top: auto;
+.dark-theme .tile-author,
+.dark-theme .tile-chapter {
+  color: #aaa;
+}
+
+.tile-footer {
+  margin-top: 8px;
+}
+
+.tile-source {
+  font-size: 10px;
+  color: #667eea;
+  background: rgba(102, 126, 234, 0.1);
+  padding: 4px 8px;
+  border-radius: 10px;
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.empty-icon {
+  font-size: 80px;
+  margin-bottom: 20px;
+  animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-20px); }
+}
+
+.empty-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.empty-hint {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 /* 错误消息 */
 .error-message {
   position: fixed;
   bottom: 80px;
-  left: 16px;
-  right: 16px;
-  background-color: #ff5252;
+  left: 20px;
+  right: 20px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
   color: #fff;
-  padding: 16px;
-  border-radius: 8px;
+  padding: 16px 20px;
+  border-radius: 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   z-index: 1000;
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.3);
 }
 
 .dismiss-btn {
   background: rgba(255, 255, 255, 0.2);
   border: none;
   color: #fff;
-  padding: 4px 12px;
-  border-radius: 4px;
+  padding: 6px 12px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
 /* 小说详情 */
 .novel-detail {
-  padding: 16px;
+  padding: 20px;
   overflow-y: auto;
-  height: calc(100% - 60px);
 }
 
-.detail-cover {
-  width: 150px;
-  height: 200px;
-  margin: 0 auto 16px;
-  border-radius: 8px;
+.detail-hero {
+  background: #fff;
+  border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  margin-bottom: 20px;
 }
 
-.detail-cover-img {
+.dark-theme .detail-hero {
+  background: rgba(40, 40, 70, 0.9);
+}
+
+.hero-cover {
+  width: 100%;
+  aspect-ratio: 16/9;
+  overflow: hidden;
+}
+
+.hero-cover-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.detail-cover.placeholder {
+.hero-cover-placeholder {
   width: 100%;
   height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #e0e0e0;
-  font-size: 14px;
-  color: #999;
+  font-size: 80px;
 }
 
-.dark-theme .detail-cover.placeholder {
-  background-color: #3a3a3a;
-}
-
-.detail-info {
-  text-align: center;
-  margin-bottom: 20px;
+.hero-info {
+  padding: 20px;
 }
 
 .detail-title {
-  font-size: 20px;
-  font-weight: 600;
-  margin-bottom: 8px;
+  font-size: 22px;
+  font-weight: 700;
   color: #333;
+  margin-bottom: 8px;
 }
 
 .dark-theme .detail-title {
@@ -909,76 +1076,131 @@ onMounted(() => {
 }
 
 .dark-theme .detail-author {
-  color: #999;
+  color: #aaa;
 }
 
 .detail-desc {
   font-size: 14px;
   color: #666;
   line-height: 1.6;
-  text-align: left;
+  margin-bottom: 16px;
 }
 
 .dark-theme .detail-desc {
-  color: #999;
+  color: #aaa;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.action-tile {
+  flex: 1;
+  padding: 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.action-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.action-tile.secondary {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.dark-theme .action-tile.secondary {
+  background: #2a2a3e;
+  color: #fff;
+}
+
+/* 章节列表 */
+.chapter-section {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.dark-theme .chapter-section {
+  background: rgba(40, 40, 70, 0.9);
 }
 
 .section-title {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 12px;
+  font-size: 18px;
+  font-weight: 700;
   color: #333;
+  margin-bottom: 16px;
 }
 
 .dark-theme .section-title {
   color: #fff;
 }
 
-.chapter-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
-.chapter-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.chapter-tile {
   padding: 12px;
-  background-color: #fff;
-  border-radius: 4px;
+  background: #f8f9fa;
+  border-radius: 10px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.dark-theme .chapter-item {
-  background-color: #2a2a2a;
+.chapter-tile:hover {
+  background: #667eea;
+  color: #fff;
+  transform: translateX(4px);
 }
 
-.chapter-item:hover {
-  background-color: #f0f0f0;
-}
-
-.dark-theme .chapter-item:hover {
-  background-color: #3a3a3a;
-}
-
-.chapter-item.active {
-  background-color: #4CAF50;
+.dark-theme .chapter-tile {
+  background: #2a2a3e;
   color: #fff;
 }
 
-.dark-theme .chapter-item.active {
-  background-color: #4CAF50;
+.chapter-num {
+  width: 28px;
+  height: 28px;
+  background: #667eea;
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
-.chapter-arrow {
-  font-size: 18px;
-  color: #999;
+.chapter-tile:hover .chapter-num {
+  background: #fff;
+  color: #667eea;
 }
 
-.dark-theme .chapter-arrow {
-  color: #666;
+.chapter-title {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 阅读器 */
@@ -986,26 +1208,22 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #f5f5f5;
-}
-
-.dark-theme .reader-view {
-  background-color: #1a1a1a;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
 .reader-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  background-color: #fff;
-  border-bottom: 1px solid #e0e0e0;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   flex-shrink: 0;
 }
 
 .dark-theme .reader-header {
-  background-color: #2a2a2a;
-  border-bottom-color: #3a3a3a;
+  background: rgba(30, 30, 50, 0.95);
 }
 
 .reader-title {
@@ -1018,15 +1236,11 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.dark-theme .reader-title {
-  color: #fff;
-}
-
 .reader-content {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
-  padding-bottom: 60px;
+  padding: 20px;
+  padding-bottom: 80px;
 }
 
 .reader-footer {
@@ -1036,28 +1250,36 @@ onMounted(() => {
   right: 0;
   display: flex;
   justify-content: space-around;
-  padding: 12px;
-  background-color: #fff;
-  border-top: 1px solid #e0e0e0;
-}
-
-.dark-theme .reader-footer {
-  background-color: #2a2a2a;
-  border-top-color: #3a3a3a;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .nav-btn {
-  padding: 8px 16px;
-  background-color: #4CAF50;
-  color: #fff;
+  padding: 10px 16px;
+  background: #f0f0f0;
+  color: #333;
   border: none;
-  border-radius: 4px;
+  border-radius: 20px;
   cursor: pointer;
   font-size: 14px;
+  font-weight: 500;
+  transition: all 0.3s;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: #667eea;
+  color: #fff;
+}
+
+.nav-btn.highlight {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
 }
 
 .nav-btn:disabled {
-  background-color: #ccc;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -1070,7 +1292,8 @@ onMounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -1081,26 +1304,27 @@ onMounted(() => {
 .chapter-list-panel,
 .cover-switcher-panel {
   width: 100%;
-  max-height: 80%;
-  background-color: #fff;
-  border-radius: 16px 16px 0 0;
-  padding: 20px;
+  max-height: 85%;
+  background: #fff;
+  border-radius: 24px 24px 0 0;
+  padding: 24px;
   overflow-y: auto;
 }
 
 .dark-theme .settings-panel,
 .dark-theme .chapter-list-panel,
 .dark-theme .cover-switcher-panel {
-  background-color: #2a2a2a;
+  background: #1e1e2e;
 }
 
 .settings-title,
 .panel-header h2,
 .cover-switcher-panel h2 {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
   margin-bottom: 20px;
   text-align: center;
+  color: #333;
 }
 
 .dark-theme .settings-title,
@@ -1113,18 +1337,18 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #e0e0e0;
+  padding: 16px 0;
+  border-bottom: 1px solid #f0f0f0;
 }
 
 .dark-theme .setting-item {
-  border-bottom-color: #3a3a3a;
+  border-bottom-color: #2a2a3e;
 }
 
 .setting-item label {
-  font-size: 14px;
+  font-size: 15px;
   color: #333;
+  font-weight: 500;
 }
 
 .dark-theme .setting-item label {
@@ -1134,27 +1358,42 @@ onMounted(() => {
 .setting-control {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
-.setting-control button {
-  width: 32px;
-  height: 32px;
-  border: 1px solid #ddd;
-  background-color: #fff;
-  border-radius: 4px;
+.control-btn {
+  width: 36px;
+  height: 36px;
+  border: 2px solid #667eea;
+  background: #fff;
+  color: #667eea;
+  border-radius: 50%;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 18px;
+  font-weight: 700;
+  transition: all 0.3s;
 }
 
-.dark-theme .setting-control button {
-  background-color: #3a3a3a;
-  border-color: #4a4a4a;
+.control-btn:hover {
+  background: #667eea;
   color: #fff;
 }
 
-.setting-control input[type="range"] {
+.dark-theme .control-btn {
+  background: #2a2a3e;
+}
+
+.setting-value {
+  min-width: 50px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #667eea;
+}
+
+.range-slider {
   width: 120px;
+  accent-color: #667eea;
 }
 
 .theme-options {
@@ -1163,35 +1402,36 @@ onMounted(() => {
 }
 
 .theme-btn {
-  padding: 8px 16px;
-  border: 1px solid #ddd;
-  background-color: #fff;
-  border-radius: 4px;
+  padding: 8px 14px;
+  background: #f0f0f0;
+  border: 2px solid transparent;
+  border-radius: 20px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
+  transition: all 0.3s;
 }
 
 .dark-theme .theme-btn {
-  background-color: #3a3a3a;
-  border-color: #4a4a4a;
+  background: #2a2a3e;
   color: #fff;
 }
 
 .theme-btn.active {
-  background-color: #4CAF50;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
-  border-color: #4CAF50;
+  border-color: #667eea;
 }
 
 .close-settings-btn {
   width: 100%;
-  padding: 12px;
-  background-color: #4CAF50;
+  padding: 14px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 600;
   margin-top: 20px;
 }
 
@@ -1206,18 +1446,70 @@ onMounted(() => {
 .close-btn {
   background: none;
   border: none;
-  font-size: 24px;
+  font-size: 28px;
   cursor: pointer;
-  color: #666;
+  color: #999;
+  padding: 4px 8px;
 }
 
-.dark-theme .close-btn {
-  color: #999;
+.close-btn:hover {
+  color: #667eea;
 }
 
 .panel-content {
   max-height: 400px;
   overflow-y: auto;
+}
+
+.chapter-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: all 0.3s;
+}
+
+.dark-theme .chapter-item {
+  background: #2a2a3e;
+  color: #fff;
+}
+
+.chapter-item:hover {
+  background: #667eea;
+  color: #fff;
+}
+
+.chapter-item.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.chapter-index {
+  width: 32px;
+  height: 32px;
+  background: #667eea;
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.chapter-item.active .chapter-index {
+  background: #fff;
+  color: #667eea;
+}
+
+.chapter-title {
+  flex: 1;
+  font-size: 14px;
 }
 
 /* 封面切换面板 */
@@ -1231,45 +1523,98 @@ onMounted(() => {
 .source-option {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   padding: 16px;
-  background-color: #f5f5f5;
-  border-radius: 8px;
+  background: #f8f9fa;
+  border-radius: 12px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.3s;
+  border: 2px solid transparent;
 }
 
 .dark-theme .source-option {
-  background-color: #3a3a3a;
-}
-
-.source-option:hover {
-  background-color: #e0e0e0;
-}
-
-.dark-theme .source-option:hover {
-  background-color: #4a4a4a;
-}
-
-.source-option.active {
-  background-color: #4CAF50;
+  background: #2a2a3e;
   color: #fff;
 }
 
+.source-option:hover {
+  border-color: #667eea;
+}
+
+.source-option.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border-color: #667eea;
+}
+
 .source-icon {
-  font-size: 24px;
+  font-size: 28px;
 }
 
 .source-name {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.close-btn-secondary {
+  width: 100%;
+  padding: 12px;
+  background: #f0f0f0;
+  color: #333;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
   font-size: 14px;
+  font-weight: 500;
+}
+
+.dark-theme .close-btn-secondary {
+  background: #2a2a3e;
+  color: #fff;
 }
 
 /* 加载状态 */
 .loading {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
   align-items: center;
-  height: 200px;
-  color: #999;
+  justify-content: center;
+  padding: 60px;
+}
+
+.loading-spinner {
+  font-size: 48px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 响应式设计 */
+@media (max-width: 480px) {
+  .novel-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .search-container {
+    margin: 12px;
+    padding: 16px;
+  }
+
+  .detail-actions {
+    flex-direction: column;
+  }
+
+  .chapter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 768px) {
+  .novel-grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
 }
 </style>
