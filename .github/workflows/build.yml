@@ -43,12 +43,18 @@ jobs:
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          ls $ANDROID_HOME 2>/dev/null || ls /opt/android-sdk 2>/dev/null || ls /usr/lib/android-sdk 2>/dev/null || echo "Checking standard locations"
+          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          echo "NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
+          echo "CARGO_HOME: $CARGO_HOME"
+          echo "ANDROID_HOME: $ANDROID_HOME"
+          ls -la $ANDROID_HOME 2>/dev/null || echo "Checking locations..."
 
       - name: Build Tauri app
-        run: npm run tauri build -- --verbose
+        run: npm run tauri build
         env:
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
