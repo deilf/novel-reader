@@ -14,16 +14,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libssl-dev \
-            pkg-config \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -32,11 +22,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+          targets: aarch64-linux-android, armv7-linux-androideabi
 
-      - name: Install Rust targets
-        run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v2
 
       - name: Install Node.js dependencies
         run: npm install
@@ -47,6 +36,7 @@ jobs:
       - name: Build Tauri app
         run: |
           cd src-tauri
+          export ANDROID_NDK_HOME="$HOME/android-ndk"
           cargo build --release --target aarch64-linux-android
           cargo build --release --target armv7-linux-androideabi
 
