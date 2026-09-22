@@ -29,9 +29,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install pnpm
-        run: npm install -g pnpm
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -42,10 +39,10 @@ jobs:
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
       - name: Install Node.js dependencies
-        run: pnpm install --frozen-lockfile=false
+        run: npm install
 
       - name: Build frontend
-        run: pnpm run build
+        run: npm run build
 
       - name: Build Tauri app
         run: |
