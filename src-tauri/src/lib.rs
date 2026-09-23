@@ -14,6 +14,7 @@ pub use core::*;
 pub use models::*;
 
 /// 运行Tauri应用
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log::info!("初始化Tauri应用...");
 
