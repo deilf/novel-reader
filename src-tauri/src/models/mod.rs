@@ -428,3 +428,79 @@ pub struct HttpResponse {
     pub content_type: String,
     pub body: String,
 }
+
+// ==================== 书签 ====================
+
+/// 书签
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Bookmark {
+    /// 小说（书源）URL
+    pub novel_url: String,
+    /// 小说标题
+    pub novel_title: String,
+    /// 章节 URL
+    pub chapter_url: String,
+    /// 章节标题
+    pub chapter_title: String,
+    /// 摘录文本（可选）
+    pub content: Option<String>,
+    /// 备注（可选）
+    pub note: Option<String>,
+    /// 创建时间（unix 秒）
+    pub created_at: i64,
+}
+
+// ==================== 替换净化规则 ====================
+
+/// 替换规则（Legado ReplaceRule 兼容子集）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplaceRule {
+    /// 规则名称
+    pub name: String,
+    /// 是否启用
+    pub enabled: bool,
+    /// 匹配内容是否为正则
+    pub isRegex: bool,
+    /// 匹配正则 / 原文
+    pub replaceRegex: String,
+    /// 替换为
+    pub replacement: String,
+    /// 作用范围：content（正文）/ toc（目录）/ global（全部）
+    pub scope: String,
+}
+
+// ==================== 本地书籍 ====================
+
+/// 本地书籍（TXT/EPUB）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalBook {
+    /// 书籍 ID（文件名）
+    pub id: String,
+    /// 书名
+    pub title: String,
+    /// 作者（可为空）
+    pub author: Option<String>,
+    /// 格式：txt / epub
+    pub format: String,
+    /// 原始文件路径
+    pub path: String,
+    /// 章节数
+    pub chapter_count: i64,
+    /// 导入时间（unix 秒）
+    pub added_at: i64,
+    /// 封面（epub 可选）
+    pub cover: Option<String>,
+}
+
+/// 本地章节
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalChapter {
+    /// 章节名
+    pub title: String,
+    /// 章节序号
+    pub index: i64,
+    /// TXT：内容偏移（字节）；EPUB：spine 序号
+    pub offset: i64,
+}

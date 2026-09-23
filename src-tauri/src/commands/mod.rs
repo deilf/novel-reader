@@ -10,3 +10,6 @@ pub mod cover;
 pub mod storage;
 pub mod http;
 pub mod book_source;
+pub mod bookmark;
+pub mod replace_rule;
+pub mod local_book;

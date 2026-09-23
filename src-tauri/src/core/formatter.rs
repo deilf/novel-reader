@@ -66,6 +66,11 @@ impl ContentFormatter {
             result = re.replace_all(&result, "\n\n").to_string();
         }
 
+        // 压缩连续空格
+        if let Ok(re) = Regex::new(r"[ ]{2,}") {
+            result = re.replace_all(&result, " ").to_string();
+        }
+
         result.trim().to_string()
     }
 

@@ -20,6 +20,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             log::info!("应用设置完成");
 
@@ -51,6 +52,21 @@ pub fn run() {
             commands::book_source::delete_book_source,
             commands::book_source::toggle_book_source,
             commands::book_source::clear_book_sources,
+            commands::bookmark::add_bookmark,
+            commands::bookmark::list_bookmarks,
+            commands::bookmark::remove_bookmark,
+            commands::replace_rule::import_replace_rules,
+            commands::replace_rule::list_replace_rules,
+            commands::replace_rule::update_replace_rule,
+            commands::replace_rule::delete_replace_rule,
+            commands::replace_rule::toggle_replace_rule,
+            commands::replace_rule::clear_replace_rules,
+            commands::local_book::import_local_book,
+            commands::local_book::list_local_books,
+            commands::local_book::remove_local_book,
+            commands::local_book::get_local_chapters,
+            commands::local_book::get_local_chapter_content,
+            commands::storage::get_all_reading_progress,
         ])
         .run(tauri::generate_context!())
         .expect("运行Tauri应用时发生错误");

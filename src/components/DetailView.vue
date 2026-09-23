@@ -3,6 +3,8 @@
     <div class="detail-header">
       <button class="back-btn" @click="$emit('back')">← 返回</button>
       <span class="loading" v-if="loading">加载中...</span>
+      <button v-if="book && !inShelf" class="shelf-btn" @click="addShelf">加入书架</button>
+      <span v-if="book && inShelf" class="in-shelf">已在书架 ✓</span>
     </div>
 
     <div v-if="book" class="book-info">
@@ -41,14 +43,19 @@
 import { onMounted, ref } from 'vue'
 import type { BookItem, BookSource, Chapter } from '../lib/bookSource/types'
 import { getBookInfoAndToc } from '../lib/bookSource/runner'
+import { addToBookshelf, getBookshelf } from '../lib/bookSource/shelf'
 
 const props = defineProps<{
   sources: BookSource[]
   book: BookItem
+  initialChapterUrl?: string
 }>()
+const emit = defineEmits<{ (e: 'back'): void; (e: 'read', chapter: Chapter): void }>()
+
 const loading = ref(true)
 const error = ref('')
-const book = ref<BookItem & { intro?: string; kind?: string; lastChapter?: string; coverUrl?: string } | null>(null)
+const inShelf = ref(false)
+const book = ref<BookItem | null>(null)
 const chapters = ref<Chapter[]>([])
 
 onMounted(async () => {
@@ -62,12 +69,41 @@ onMounted(async () => {
     const info = await getBookInfoAndToc(source, props.book)
     book.value = info
     chapters.value = info.chapters
+    // 续读定位：跳转到进度章节
+    if (props.initialChapterUrl && info.chapters.length > 0) {
+      const target = info.chapters.find((c) => c.chapterUrl === props.initialChapterUrl)
+      if (target) {
+        setTimeout(() => emit('read', target), 0)
+        return
+      }
+    }
+    // 检查书架状态
+    const shelf = await getBookshelf()
+    inShelf.value = shelf.some((n) => n.url === info.bookUrl)
   } catch (e) {
     error.value = `加载失败：${e}`
   } finally {
     loading.value = false
   }
 })
+
+async function addShelf() {
+  if (!book.value) return
+  try {
+    await addToBookshelf({
+      title: book.value.bookName,
+      author: book.value.author,
+      cover_url: book.value.coverUrl,
+      url: book.value.bookUrl,
+      source: book.value.source,
+      latest_chapter: book.value.lastChapter,
+    })
+    inShelf.value = true
+  } catch {
+    // 已存在等情况
+    inShelf.value = true
+  }
+}
 
 function onImgError(e: Event) {
   ;(e.target as HTMLImageElement).style.display = 'none'
@@ -93,6 +129,17 @@ function onImgError(e: Event) {
   font-size: 13px;
   cursor: pointer;
 }
+.shelf-btn {
+  margin-left: auto;
+  border: 1px solid #1677ff;
+  background: #1677ff;
+  color: #fff;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.in-shelf { margin-left: auto; font-size: 13px; color: #52c41a; }
 .loading { font-size: 13px; color: #888; }
 .book-info { display: flex; gap: 14px; }
 .cover {
