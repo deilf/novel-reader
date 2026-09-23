@@ -33,10 +33,10 @@ pub fn decode_html_entities(text: &str) -> String {
         ("&trade;", "™"),
         ("&hellip;", "…"),
         ("&middot;", "·"),
-        ("&lsquo;", """),
-        ("&rsquo;", """),
-        ("&ldquo;", """),
-        ("&rdquo;", """),
+        ("&lsquo;", "\u{2018}"),
+        ("&rsquo;", "\u{2019}"),
+        ("&ldquo;", "\u{201C}"),
+        ("&rdquo;", "\u{201D}"),
     ]
     .iter()
     .cloned()

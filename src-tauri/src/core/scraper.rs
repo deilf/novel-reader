@@ -77,12 +77,12 @@ impl WebScraper {
 
         // 尝试自动检测编码
         let (decoded, encoding, _) = encoding_rs::Encoding::for_bom(html)
-            .map(|e| {
+            .map(|(e, _)| {
                 let (decoded, _, had_errors) = e.decode(html);
                 (decoded.into_owned(), e.name().to_string(), had_errors)
             })
             .unwrap_or_else(|| {
-                let encoding = encoding_rs::Encoding::for_label(default_encoding)
+                let encoding = encoding_rs::Encoding::for_label(default_encoding.as_bytes())
                     .unwrap_or(encoding_rs::UTF_8);
                 let (decoded, _, _) = encoding.decode(html);
                 (decoded.into_owned(), encoding.name().to_string(), false)
@@ -127,7 +127,7 @@ impl WebScraper {
         let encoding = self.detect_encoding(&bytes, "UTF-8");
 
         // 解码内容
-        let encoding_obj = encoding_rs::Encoding::for_label(&encoding)
+        let encoding_obj = encoding_rs::Encoding::for_label(encoding.as_bytes())
             .unwrap_or(encoding_rs::UTF_8);
         let (text, _, _) = encoding_obj.decode(&bytes);
 
@@ -171,12 +171,12 @@ impl WebScraper {
         info!("在 {} 搜索小说: {}", website_url, keyword);
 
         let base_url = Url::parse(website_url)?;
-        let search_url = base_url.join("/search")?
+        let mut search_url = base_url.join("/search")?;
+        search_url
             .query_pairs_mut()
             .append_pair("keyword", keyword)
             .append_pair("searchkey", keyword)
-            .append_pair("s", keyword)
-            .finish();
+            .append_pair("s", keyword);
 
         debug!("搜索URL: {}", search_url);
 
@@ -263,14 +263,15 @@ impl WebScraper {
         let html = element.html();
 
         // 提取标题和链接
+        let a_selector = Selector::parse("a").ok();
         let title = element
             .select(&Selector::parse(".bookname, .title, h3, h2, .name").ok()?)
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_else(|| {
-                element
-                    .select(&Selector::parse("a").ok()?)
-                    .next()
+                a_selector
+                    .as_ref()
+                    .and_then(|sel| element.select(sel).next())
                     .map(|e| e.text().collect::<String>().trim().to_string())
                     .unwrap_or_default()
             });
@@ -349,9 +350,9 @@ impl WebScraper {
         ]).unwrap_or_else(|| String::from("未知作者"));
 
         // 提取封面
-        let cover_url = document
-            .select(&Selector::parse("img").ok()?)
-            .next()
+        let cover_url = Selector::parse("img")
+            .ok()
+            .and_then(|sel| document.select(&sel).next())
             .and_then(|img| img.value().attr("src"))
             .and_then(|src| Self::make_absolute_url(url, src))
             .unwrap_or_default();
@@ -496,10 +497,10 @@ impl WebScraper {
         let mut result = String::new();
 
         for element in document.root_element().children() {
-            if let Some(element_ref) = element.value().as_element() {
-                let tag_name = element_ref.name();
+            if let Some(element_ref) = scraper::ElementRef::wrap(element) {
+                let tag_name = element_ref.value().name();
                 if tag_name == "p" || tag_name == "div" || tag_name == "br" {
-                    let text = element.text().collect::<String>().trim().to_string();
+                    let text = element_ref.text().collect::<String>().trim().to_string();
                     if !text.is_empty() {
                         result.push_str(&text);
                         result.push_str("\n\n");

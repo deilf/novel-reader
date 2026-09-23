@@ -226,7 +226,7 @@ impl AdCleaner {
         }
 
         // 移除内联事件处理器
-        if let Ok(re) = Regex::new(r"\s+on\w+=[\"'][^\"']*[\"']") {
+        if let Ok(re) = Regex::new(r#"\s+on\w+=["'][^"']*["']"#) {
             result = re.replace_all(&result, "").to_string();
         }
 
