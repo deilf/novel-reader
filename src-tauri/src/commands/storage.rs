@@ -3,7 +3,7 @@
 //! 提供本地数据存储功能的Tauri命令
 
 use crate::models::{BookshelfNovel, ReadingProgress};
-use log::{error, info};
+use log::info;
 use std::fs;
 use std::path::PathBuf;
 

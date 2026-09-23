@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:engine": "tsx scripts/test-engine.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -19,6 +20,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-vue": "^5.0.4",
+    "linkedom": "^0.18.13",
+    "tsx": "^4.23.15",
     "typescript": "^5.4.2",
     "vite": "^5.1.6",
     "vue-tsc": "^2.0.6"

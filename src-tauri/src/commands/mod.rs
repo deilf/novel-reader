@@ -8,3 +8,5 @@ pub mod cleaner;
 pub mod formatter;
 pub mod cover;
 pub mod storage;
+pub mod http;
+pub mod book_source;

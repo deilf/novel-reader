@@ -44,6 +44,13 @@ pub fn run() {
             commands::storage::get_bookshelf,
             commands::storage::save_reading_progress,
             commands::storage::get_reading_progress,
+            commands::http::http_fetch,
+            commands::book_source::import_book_sources,
+            commands::book_source::list_book_sources,
+            commands::book_source::update_book_source,
+            commands::book_source::delete_book_source,
+            commands::book_source::toggle_book_source,
+            commands::book_source::clear_book_sources,
         ])
         .run(tauri::generate_context!())
         .expect("运行Tauri应用时发生错误");

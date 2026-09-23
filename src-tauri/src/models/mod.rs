@@ -322,3 +322,109 @@ fn chrono_now() -> String {
         .unwrap_or_default();
     format!("{}", duration.as_secs())
 }
+
+// ==================== 书源模型（兼容 Legado 格式） ====================
+
+/// 搜索规则
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchRule {
+    pub bookList: Option<String>,
+    pub name: Option<String>,
+    pub author: Option<String>,
+    pub coverUrl: Option<String>,
+    pub bookUrl: Option<String>,
+    pub intro: Option<String>,
+    pub kind: Option<String>,
+    pub lastChapter: Option<String>,
+}
+
+/// 书籍信息规则
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BookInfoRule {
+    pub name: Option<String>,
+    pub author: Option<String>,
+    pub coverUrl: Option<String>,
+    pub intro: Option<String>,
+    pub kind: Option<String>,
+    pub lastChapter: Option<String>,
+    pub init: Option<String>,
+}
+
+/// 目录规则
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TocRule {
+    pub chapterList: Option<String>,
+    pub chapterName: Option<String>,
+    pub chapterUrl: Option<String>,
+    pub nextTocUrl: Option<String>,
+}
+
+/// 正文规则
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContentRule {
+    pub content: Option<String>,
+    pub nextContent: Option<String>,
+}
+
+/// 书源（字段与 Legado 导出的书源 JSON 保持一致）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BookSource {
+    pub bookSourceUrl: String,
+    pub bookSourceName: String,
+    pub bookSourceGroup: Option<String>,
+    pub bookSourceType: i32,
+    pub bookUrlPattern: Option<String>,
+    pub customOrder: i32,
+    pub enabled: bool,
+    pub enabledExplore: bool,
+    pub jsLib: Option<String>,
+    pub enabledCookieJar: Option<bool>,
+    pub concurrentRate: Option<String>,
+    pub header: Option<String>,
+    pub loginUrl: Option<String>,
+    pub loginUi: Option<String>,
+    pub loginCheckJs: Option<String>,
+    pub coverDecodeJs: Option<String>,
+    pub bookSourceComment: Option<String>,
+    pub variableComment: Option<String>,
+    pub lastUpdateTime: i64,
+    pub respondTime: i64,
+    pub weight: i32,
+    pub exploreUrl: Option<String>,
+    pub exploreScreen: Option<String>,
+    pub ruleExplore: SearchRule,
+    pub searchUrl: Option<String>,
+    pub ruleSearch: SearchRule,
+    pub ruleBookInfo: BookInfoRule,
+    pub ruleToc: TocRule,
+    pub ruleContent: ContentRule,
+    pub ruleReview: SearchRule,
+    pub eventListener: bool,
+    pub customButton: bool,
+    pub nextPageLazyLoad: bool,
+    pub homepageModules: Option<String>,
+}
+
+/// 通用 HTTP 请求参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpRequest {
+    pub url: String,
+    pub method: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub body: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+/// 通用 HTTP 响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub final_url: String,
+    pub content_type: String,
+    pub body: String,
+}
