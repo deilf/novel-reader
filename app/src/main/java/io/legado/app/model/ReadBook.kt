@@ -28,6 +28,7 @@ import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.globalExecutor
 import io.legado.app.model.localBook.TextFile
@@ -1832,7 +1833,12 @@ object ReadBook : CoroutineScope by MainScope() {
         }
     }
 
+    fun usesPageTemplate(): Boolean = ReadBookConfig.usingEpubLayout && book?.isEpub == false
+
     fun pageAnim(): Int {
+        if (usesPageTemplate()) {
+            EpubReaderTemplateStore.pageAnimation(ReadBookConfig.config.readerTemplateId)?.let { return it }
+        }
         return book?.getPageAnim() ?: ReadBookConfig.pageAnim
     }
 

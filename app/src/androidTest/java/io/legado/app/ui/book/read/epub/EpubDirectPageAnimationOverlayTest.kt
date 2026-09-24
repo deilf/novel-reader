@@ -10,6 +10,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.legado.app.ui.book.read.epub.EpubDirectPageAnimationPolicy.Style
 import io.legado.app.ui.book.read.epub.EpubDirectPageAnimationPolicy.TurnAction
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -52,16 +53,47 @@ class EpubDirectPageAnimationOverlayTest {
     }
 
     @Test
-    fun completedOutgoingSimulationRevealsTheVerifiedLivePage() = onMain {
+    fun completedOutgoingSimulationKeepsThePreparedPage() = onMain {
         withOverlay(TurnAction.Next, 1) { overlay, _, target ->
             overlay.revealLiveTarget()
             overlay.progress = 1f
             val frame = checkNotNull(target.copy(Bitmap.Config.ARGB_8888, true))
             try {
                 overlay.draw(Canvas(frame))
-                assertTrue("finished fold must not cover the live page", target.sameAs(frame))
+                assertTrue("finished fold must keep the complete target", target.sameAs(frame))
             } finally {
                 frame.recycle()
+            }
+        }
+    }
+
+    @Test
+    fun everyStyleKeepsItsCompleteTargetUntilTheLiveCommit() = onMain {
+        for (style in Style.entries.filter { it != Style.None }) {
+            for (action in TurnAction.entries) {
+                for (direction in listOf(-1, 1)) {
+                    withOverlay(action, direction, style) { overlay, _, target ->
+                        assertFrameMatches(target, render(overlay, 1f))
+                        assertFalse(overlay.finishAnimation())
+                        assertFrameMatches(target, render(overlay, 1f))
+                        assertTrue(overlay.revealLiveTarget())
+                        assertFrameMatches(target, render(overlay, 1f))
+                        assertTrue(overlay.finishAnimation())
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun missingTargetNeverRevealsEmptyPixelsWhileDragging() = onMain {
+        for (style in Style.entries.filter { it != Style.None }) {
+            for (action in TurnAction.entries) {
+                withOverlay(action, 1, style, preparedTarget = false) { overlay, source, _ ->
+                    for (step in 0..10) assertFrameMatches(source, render(overlay, step / 10f))
+                    assertFalse(overlay.canAnimate)
+                    assertFalse(overlay.finishAnimation())
+                }
             }
         }
     }
@@ -69,6 +101,8 @@ class EpubDirectPageAnimationOverlayTest {
     private fun withOverlay(
         action: TurnAction,
         direction: Int,
+        style: Style = Style.Simulation,
+        preparedTarget: Boolean = true,
         block: (EpubDirectPageAnimationOverlay, Bitmap, Bitmap) -> Unit
     ) {
         val source = pageBitmap(Color.rgb(240, 226, 198), Color.rgb(80, 20, 10))
@@ -78,10 +112,10 @@ class EpubDirectPageAnimationOverlayTest {
             sourceBitmap = source,
             action = action,
             direction = direction,
-            style = Style.Simulation,
+            style = style,
             backgroundColor = Color.WHITE,
             opaqueBackground = true,
-            targetBitmap = target,
+            targetBitmap = target.takeIf { preparedTarget },
             simulationStartYFraction = 0.1f
         )
         overlay.measure(
@@ -93,6 +127,7 @@ class EpubDirectPageAnimationOverlayTest {
             block(overlay, source, target)
         } finally {
             overlay.release()
+            if (!target.isRecycled) target.recycle()
         }
     }
 

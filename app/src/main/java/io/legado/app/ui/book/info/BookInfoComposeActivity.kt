@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -25,14 +26,12 @@ import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
-import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CoverDisplayResolver
-import io.legado.app.help.WebCacheManager
 import io.legado.app.help.ai.AiImageGalleryManager
 import io.legado.app.help.book.BookCloudEntryMode
 import io.legado.app.help.book.BookCloudEntryModeStore
@@ -46,14 +45,9 @@ import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
-import io.legado.app.help.webView.WebJsExtensions
-import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
-import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
-import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.model.SourceCallBack
-import io.legado.app.model.localBook.epubcore.facade.EpubChapterMetadata
 import io.legado.app.model.remote.RemoteBookWebDav
 import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.ui.book.cache.CacheManageActivity
@@ -61,7 +55,6 @@ import io.legado.app.ui.book.changecover.ChangeCoverDialog
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.group.GroupSelectDialog
 import io.legado.app.ui.book.info.compose.BookInfoActions
-import io.legado.app.ui.book.info.compose.BookInfoChapterUi
 import io.legado.app.ui.book.info.compose.BookInfoComposeRoute
 import io.legado.app.ui.book.info.compose.BookInfoUiState
 import io.legado.app.ui.autoTask.showBookAutoTaskDialog
@@ -86,6 +79,7 @@ import io.legado.app.utils.sendToClip
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -128,6 +122,9 @@ class BookInfoComposeActivity :
     private var aiImagePaths: List<String> = emptyList()
     private var lastStableIntroBookUrl: String? = null
     private var lastStableIntro = ""
+    private val chapterPreviewCache = BookInfoChapterPreviewCache()
+    private val galleryLoader by lazy { BookInfoGalleryLoader(lifecycleScope) }
+    private var readTimeJob: Job? = null
 
     private val localBookTreeSelect = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { treeUri ->
@@ -204,17 +201,20 @@ class BookInfoComposeActivity :
             ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
         )
         composeView.setContent {
+            val actions = remember { composeActions() }
             BookInfoComposeRoute(
                 state = uiState,
-                actions = composeActions()
+                actions = actions
             )
         }
         viewModel.bookData.observe(this) { book ->
             showBook(book)
         }
         viewModel.chapterListData.observe(this) {
+            chapterPreviewCache.invalidate()
             updateUiState()
         }
+        viewModel.tocLoadStateData.observe(this) { updateUiState() }
         viewModel.waitDialogData.observe(this) {
             upWaitDialogStatus(it)
         }
@@ -223,7 +223,7 @@ class BookInfoComposeActivity :
 
     override fun onResume() {
         super.onResume()
-        viewModel.getBook(false)?.let { updateAiImages(it) }
+        viewModel.getBook(false)?.let { updateAiImages(it, forceRefresh = true) }
     }
 
     override fun observeLiveBus() {
@@ -497,12 +497,7 @@ class BookInfoComposeActivity :
     }
 
     private fun setupWebIntro(webView: WebView) {
-        BookInfoUseWebHost.configure(webView)
-        webView.addJavascriptInterface(WebCacheManager, nameCache)
-        viewModel.bookSource?.let { source ->
-            webView.addJavascriptInterface(source as BaseSource, nameSource)
-            webView.addJavascriptInterface(WebJsExtensions(source, null, webView), nameJava)
-        }
+        BookInfoUseWebHost.bindSource(webView, viewModel.bookSource)
     }
 
     private fun showBook(book: Book) {
@@ -526,20 +521,13 @@ class BookInfoComposeActivity :
             return
         }
         val chapterList = viewModel.chapterListData.value.orEmpty()
+        val tocPhase = viewModel.tocLoadPhase(book.bookUrl)
         val tocText = when {
             book.isWebFile -> getString(R.string.toc_s, getString(R.string.downloading))
-            chapterList.isEmpty() -> getString(R.string.toc_s, getString(R.string.error_load_toc))
+            chapterList.isEmpty() -> getString(R.string.toc_s, getString(tocPhase.emptyMessageRes))
             else -> getString(R.string.toc_s, book.durChapterTitle)
         }
-        val readableChapters = chapterList.filter {
-            !it.isVolume && !EpubChapterMetadata.isHiddenFromToc(it)
-        }
-        val currentChapterPosition = readableChapters
-            .indexOfFirst { it.index == book.durChapterIndex }
-            .takeIf { it >= 0 } ?: 0
-        val currentChapterStart = (currentChapterPosition - 4).coerceAtLeast(0)
-        val currentChapterEnd = (currentChapterPosition + 5)
-            .coerceAtMost(readableChapters.size)
+        val chapters = chapterPreviewCache.get(book.bookUrl, chapterList, book.durChapterIndex)
         val intro = resolveStableIntro(book)
         val coverPath = resolveStableCoverPath(CoverDisplayResolver.resolve(book).path)
         uiState = BookInfoUiState(
@@ -556,15 +544,12 @@ class BookInfoComposeActivity :
             customTags = BookTagHelper.parse(book.customTag),
             groupText = groupText,
             tocText = tocText,
-            chapterCount = readableChapters.size,
-            chapterPreview = readableChapters
-                .take(16)
-                .map { BookInfoChapterUi(it.index, it.title, it.isVolume) },
+            tocLoadPhase = tocPhase,
+            chapterCount = chapters.count,
+            chapterPreview = chapters.first,
             currentChapterIndex = book.durChapterIndex,
             currentChapterTitle = book.durChapterTitle.orEmpty(),
-            currentChapterPreview = readableChapters
-                .subList(currentChapterStart, currentChapterEnd)
-                .map { BookInfoChapterUi(it.index, it.title, it.isVolume) },
+            currentChapterPreview = chapters.current,
             aiImageCount = aiImageCount,
             aiImagePaths = aiImagePaths,
             inBookshelf = viewModel.inBookshelf,
@@ -573,9 +558,9 @@ class BookInfoComposeActivity :
             hasBookSource = viewModel.bookSource != null,
             canUpdate = book.canUpdate,
             cloudEntryMode = BookCloudEntryModeStore.get(book.bookUrl),
-            loading = false
+            loading = tocPhase.isLoading
         )
-        if (::refreshLayout.isInitialized) {
+        if (::refreshLayout.isInitialized && !tocPhase.isLoading) {
             refreshLayout.isRefreshing = false
         }
     }
@@ -657,22 +642,29 @@ class BookInfoComposeActivity :
     }
 
     private fun updateReadTime(targetBook: Book) {
-        lifecycleScope.launch {
+        val bookUrl = targetBook.bookUrl
+        val bookName = targetBook.name
+        readTimeJob?.cancel()
+        readTimeJob = lifecycleScope.launch {
             val readTime = withContext(IO) {
-                appDb.readRecordDao.getReadTime(targetBook.name) ?: 0L
+                appDb.readRecordDao.getReadTime(bookName) ?: 0L
             }
-            if (viewModel.getBook(false)?.bookUrl == targetBook.bookUrl) {
+            if (viewModel.getBook(false)?.let { it.bookUrl == bookUrl && it.name == bookName } == true) {
                 readTimeText = "${getString(R.string.reading_time_tag)} ${formatReadDuration(readTime)}"
-                updateUiState()
+                uiState = uiState.copy(readTimeText = readTimeText)
             }
         }
     }
 
     private fun updateGroup(targetBook: Book) {
-        viewModel.loadGroup(targetBook.group) {
-            if (viewModel.getBook(false)?.bookUrl != targetBook.bookUrl) return@loadGroup
+        val bookUrl = targetBook.bookUrl
+        val groupId = targetBook.group
+        val isLocal = targetBook.isLocal
+        viewModel.loadGroup(groupId) {
+            val currentBook = viewModel.getBook(false) ?: return@loadGroup
+            if (currentBook.bookUrl != bookUrl || currentBook.group != groupId) return@loadGroup
             groupText = if (it.isNullOrEmpty()) {
-                if (targetBook.isLocal) {
+                if (isLocal) {
                     getString(R.string.group_s, getString(R.string.local_no_group))
                 } else {
                     getString(R.string.group_s, getString(R.string.no_group))
@@ -680,21 +672,21 @@ class BookInfoComposeActivity :
             } else {
                 getString(R.string.group_s, it)
             }
-            updateUiState()
+            uiState = uiState.copy(groupText = groupText)
         }
     }
 
-    private fun updateAiImages(targetBook: Book) {
-        lifecycleScope.launch {
-            val images = withContext(IO) {
-                val key = AiImageGalleryManager.buildBookKey(targetBook.name, targetBook.author)
-                AiImageGalleryManager.listImages(AiImageGalleryManager.GalleryFilter.BOOK(key))
-            }
-            if (viewModel.getBook(false)?.bookUrl == targetBook.bookUrl) {
-                aiImageCount = images.size
-                aiImagePaths = images.take(12).map { it.localPath }
-                updateUiState()
-            }
+    private fun updateAiImages(targetBook: Book, forceRefresh: Boolean = false) {
+        val bookUrl = targetBook.bookUrl
+        val key = AiImageGalleryManager.buildBookKey(targetBook.name, targetBook.author)
+        galleryLoader.load(key, forceRefresh) { preview ->
+            val currentBook = viewModel.getBook(false) ?: return@load
+            if (currentBook.bookUrl != bookUrl ||
+                AiImageGalleryManager.buildBookKey(currentBook.name, currentBook.author) != key
+            ) return@load
+            aiImageCount = preview.count
+            aiImagePaths = preview.images.map { it.localPath }
+            uiState = uiState.copy(aiImageCount = aiImageCount, aiImagePaths = aiImagePaths)
         }
     }
 
@@ -740,7 +732,7 @@ class BookInfoComposeActivity :
 
     private fun openChapterListSafely() {
         if (viewModel.chapterListData.value.isNullOrEmpty()) {
-            toastOnUi(R.string.chapter_list_empty)
+            toastOnUi(uiState.tocLoadPhase.emptyMessageRes)
             return
         }
         viewModel.getBook()?.let { book ->

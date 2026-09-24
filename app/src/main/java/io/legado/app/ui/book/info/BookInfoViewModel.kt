@@ -53,6 +53,8 @@ import kotlinx.coroutines.Dispatchers.IO
 class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     val bookData = MutableLiveData<Book>()
     val chapterListData = MutableLiveData<List<BookChapter>>()
+    val tocLoadStateData = MutableLiveData(BookInfoTocLoadState())
+    private val tocLoadTracker = BookInfoTocLoadTracker { tocLoadStateData.postValue(it) }
     val webFiles = mutableListOf<WebFile>()
     var inBookshelf = false
     var hasCustomBtn = false
@@ -60,6 +62,18 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     private var changeSourceCoroutine: Coroutine<*>? = null
     val waitDialogData = MutableLiveData<Boolean>()
     val actionLive = MutableLiveData<String>()
+
+    fun tocLoadPhase(bookUrl: String): BookInfoTocPhase {
+        // A source can derive another book URL before the next loading-state emission.
+        // Keep the existing chapter consumers independent of this presentation state.
+        val chapters = chapterListData.value
+        val fallback = when {
+            chapters == null -> BookInfoTocPhase.NOT_LOADED
+            chapters.isEmpty() -> BookInfoTocPhase.EMPTY
+            else -> BookInfoTocPhase.READY
+        }
+        return tocLoadTracker.phaseFor(bookUrl, fallback)
+    }
 
     fun initData(intent: Intent) {
         execute {
@@ -156,6 +170,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private fun upBook(book: Book) {
+        val request = tocLoadTracker.begin(book.bookUrl)
         execute {
             bookSource = if (book.isLocal) null else
                 appDb.bookSourceDao.getBookSource(book.origin)?.also {
@@ -167,14 +182,21 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             bookData.postValue(book)
             upCoverByRule(book)
             if (book.tocUrl.isEmpty() && !book.isLocal) {
-                loadBookInfo(book, runPreUpdateJs = inBookshelf)
+                loadBookInfo(book, true, inBookshelf, viewModelScope, request)
             } else {
                 val chapterList = appDb.bookChapterDao.getChapterList(book.bookUrl)
                 if (chapterList.isNotEmpty()) {
                     chapterListData.postValue(chapterList)
+                    tocLoadTracker.complete(request, book.bookUrl, chapterList.size)
                 } else {
-                    loadChapter(book, isFromBookInfo = true)
+                    loadChapter(book, true, viewModelScope, true, request)
                 }
+            }
+        }.onError {
+            if (tocLoadTracker.isCurrent(request)) {
+                tocLoadTracker.fail(request, book.bookUrl)
+                AppLog.put(it.localizedMessage, it)
+                context.toastOnUi(it.localizedMessage)
             }
         }
     }
@@ -196,6 +218,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
     }
 
     fun refreshBook(book: Book) {
+        val request = tocLoadTracker.begin(book.bookUrl)
         executeLazy(executeContext = IO) {
             if (book.isLocal) {
                 book.tocUrl = ""
@@ -228,7 +251,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 }
             }
         }.onFinally {
-            loadBookInfo(book, false)
+            loadBookInfo(book, false, true, viewModelScope, request)
         }.start()
     }
 
@@ -238,13 +261,29 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         runPreUpdateJs: Boolean = true,
         scope: CoroutineScope = viewModelScope
     ) {
+        loadBookInfo(book, canReName, runPreUpdateJs, scope, tocLoadTracker.begin(book.bookUrl))
+    }
+
+    private fun loadBookInfo(
+        book: Book,
+        canReName: Boolean,
+        runPreUpdateJs: Boolean,
+        scope: CoroutineScope,
+        request: Long
+    ) {
         if (book.isLocal) {
-            LocalBook.upBookInfo(book)
-            bookData.postValue(book)
-            loadChapter(book)
+            try {
+                LocalBook.upBookInfo(book)
+                bookData.postValue(book)
+                loadChapter(book, true, viewModelScope, false, request)
+            } catch (exception: Exception) {
+                tocLoadTracker.fail(request, book.bookUrl)
+                throw exception
+            }
         } else {
             val bookSource = bookSource ?: let {
                 chapterListData.postValue(emptyList())
+                tocLoadTracker.fail(request, book.bookUrl)
                 context.toastOnUi(R.string.error_no_source)
                 return
             }
@@ -268,11 +307,12 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                         displayBook.save()
                     }
                     if (displayBook.isWebFile) {
-                        loadWebFile(displayBook)
+                        loadWebFile(displayBook, request)
                     } else {
-                        loadChapter(displayBook, runPreUpdateJs, isFromBookInfo = true)
+                        loadChapter(displayBook, runPreUpdateJs, viewModelScope, true, request)
                     }
                 }.onError {
+                    tocLoadTracker.fail(request, book.bookUrl)
                     AppLog.put("获取书籍信息失败\n${it.localizedMessage}", it)
                     context.toastOnUi(R.string.error_get_book_info)
                 }
@@ -284,6 +324,16 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         scope: CoroutineScope = viewModelScope,
         isFromBookInfo: Boolean = false
     ) {
+        loadChapter(book, runPreUpdateJs, scope, isFromBookInfo, tocLoadTracker.begin(book.bookUrl))
+    }
+
+    private fun loadChapter(
+        book: Book,
+        runPreUpdateJs: Boolean,
+        scope: CoroutineScope,
+        isFromBookInfo: Boolean,
+        request: Long
+    ) {
         if (book.isLocal) {
             execute(scope) {
                 LocalBook.getChapterList(book).let {
@@ -293,13 +343,16 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     ReadBook.onChapterListUpdated(book)
                     bookData.postValue(book)
                     chapterListData.postValue(it)
+                    tocLoadTracker.complete(request, book.bookUrl, it.size)
                 }
             }.onError {
+                tocLoadTracker.fail(request, book.bookUrl)
                 context.toastOnUi("LoadTocError:${it.localizedMessage}")
             }
         } else {
             val bookSource = bookSource ?: let {
                 chapterListData.postValue(emptyList())
+                tocLoadTracker.fail(request, book.bookUrl)
                 context.toastOnUi(R.string.error_no_source)
                 return
             }
@@ -323,8 +376,10 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     }
                     bookData.postValue(book)
                     chapterListData.postValue(it)
+                    tocLoadTracker.complete(request, book.bookUrl, it.size)
                 }.onError {
                     chapterListData.postValue(emptyList())
+                    tocLoadTracker.fail(request, book.bookUrl)
                     AppLog.put("获取目录失败\n${it.localizedMessage}", it)
                     context.toastOnUi(R.string.error_get_chapter_list)
                 }
@@ -340,7 +395,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
-    private fun loadWebFile(book: Book) {
+    private fun loadWebFile(book: Book, request: Long) {
         execute {
             webFiles.clear()
             val fileNameNoExtension = if (book.author.isBlank()) book.name
@@ -358,12 +413,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 WebFile(it, mFileName)
             }
         }.onError {
+            tocLoadTracker.fail(request, book.bookUrl)
             context.toastOnUi("LoadWebFileError\n${it.localizedMessage}")
         }.onSuccess {
             webFiles.addAll(it)
             book.latestChapterTitle = "已下载"
             bookData.postValue(book)
             chapterListData.postValue(emptyList())
+            tocLoadTracker.complete(request, book.bookUrl, 0)
         }
     }
 
@@ -440,13 +497,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
 
     fun changeTo(source: BookSource, book: Book, toc: List<BookChapter>) {
         changeSourceCoroutine?.cancel()
+        val request = tocLoadTracker.begin(book.bookUrl)
         changeSourceCoroutine = execute {
             bookSource = source.also {
                 hasCustomBtn = it.customButton
             }
             bookData.value?.migrateTo(book, toc)
             if (book.isWebFile) {
-                loadWebFile(book)
+                loadWebFile(book, request)
             }
             if (inBookshelf) {
                 book.removeType(BookType.updateError)
@@ -456,6 +514,13 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             }
             bookData.postValue(book)
             chapterListData.postValue(toc)
+            if (!book.isWebFile) tocLoadTracker.complete(request, book.bookUrl, toc.size)
+        }.onError {
+            if (tocLoadTracker.isCurrent(request)) {
+                tocLoadTracker.fail(request, book.bookUrl)
+                AppLog.put(it.localizedMessage, it)
+                context.toastOnUi(it.localizedMessage)
+            }
         }.onFinally {
             postEvent(EventBus.SOURCE_CHANGED, book.bookUrl)
         }

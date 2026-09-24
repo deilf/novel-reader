@@ -339,7 +339,7 @@ class EpubDirectSession internal constructor(
         return html.length.toLong()
             .plus(plainText.length)
             .plus(templateSourceHtml?.length ?: 0)
-            .plus(readerTemplate?.let { it.firstPageHtml.length.toLong() + it.otherPageHtml.length + it.css.length + it.javascript.length } ?: 0L)
+            .plus(readerTemplate?.let { it.firstPageHtml.length.toLong() + it.otherPageHtml.length + it.scrollHtml.length + it.css.length + it.javascript.length } ?: 0L)
             .plus(imageActionChars)
             .plus(imageResourceChars)
             .plus(sourceImages?.sourceKey?.length ?: 0)

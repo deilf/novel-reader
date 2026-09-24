@@ -35,18 +35,14 @@ internal class EpubVirtualDisplayFrameHost(
     private data class PendingCapture(
         val id: Long,
         val minimumFrameSequence: Long,
+        val beforeDelivery: ((Bitmap) -> Unit)?,
         val callback: (Result<Bitmap>) -> Unit
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val captureThread = HandlerThread("epub-virtual-frame").apply { start() }
-    private val captureHandler = Handler(captureThread.looper)
-    private val imageReader = ImageReader.newInstance(
-        width,
-        height,
-        PixelFormat.RGBA_8888,
-        MAX_IMAGES
-    )
+    private val captureThread: HandlerThread
+    private val captureHandler: Handler
+    private val imageReader: ImageReader
     private val frameSequence = AtomicLong(0L)
     private val requestSequence = AtomicLong(0L)
     private val stateLock = Any()
@@ -67,27 +63,37 @@ internal class EpubVirtualDisplayFrameHost(
         require(width > 0 && height > 0)
         require(densityDpi > 0)
 
-        imageReader.setOnImageAvailableListener(::onImageAvailable, captureHandler)
-        val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        virtualDisplay = checkNotNull(
-            displayManager.createVirtualDisplay(
-                DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-                imageReader.surface,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-            )
-        ) { "Unable to create EPUB virtual display" }
-        presentation = RenderPresentation(context, virtualDisplay.display, width, height)
+        val displayManager = checkNotNull(context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager) {
+            "EPUB virtual display service is unavailable"
+        }
+        captureThread = HandlerThread("epub-virtual-frame")
+        var reader: ImageReader? = null
+        var display: VirtualDisplay? = null
+        var window: RenderPresentation? = null
         try {
+            captureThread.start()
+            captureHandler = Handler(captureThread.looper)
+            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, MAX_IMAGES)
+                .also { reader = it }
+            virtualDisplay = checkNotNull(
+                displayManager.createVirtualDisplay(
+                    DISPLAY_NAME, width, height, densityDpi, imageReader.surface,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                )
+            ) { "Unable to create EPUB virtual display" }.also { display = it }
+            presentation = RenderPresentation(context, virtualDisplay.display, width, height)
+                .also { window = it }
             presentation.show()
+            imageReader.setOnImageAvailableListener(::onImageAvailable, captureHandler)
         } catch (throwable: Throwable) {
-            runCatching { virtualDisplay.release() }
-            imageReader.setOnImageAvailableListener(null, null)
-            imageReader.close()
-            captureThread.quitSafely()
+            closed = true
+            runCatching { reader?.setOnImageAvailableListener(null, null) }
+            runCatching { window?.dismiss() }
+            runCatching { display?.setSurface(null) }
+            runCatching { display?.release() }
+            runCatching { reader?.close() }
+            runCatching { captureThread.quitSafely() }
             throw throwable
         }
     }
@@ -108,6 +114,7 @@ internal class EpubVirtualDisplayFrameHost(
 
     fun capture(
         timeoutMillis: Long = DEFAULT_CAPTURE_TIMEOUT_MS,
+        beforeDelivery: ((Bitmap) -> Unit)? = null,
         callback: (Result<Bitmap>) -> Unit
     ) {
         checkMainThread()
@@ -134,6 +141,7 @@ internal class EpubVirtualDisplayFrameHost(
             val request = PendingCapture(
                 id = requestId,
                 minimumFrameSequence = frameSequence.get() + 1L,
+                beforeDelivery = beforeDelivery,
                 callback = callback
             )
             val replaced = synchronized(stateLock) {
@@ -189,6 +197,8 @@ internal class EpubVirtualDisplayFrameHost(
         }
         val result = runCatching { image.toBitmap(width, height) }
         image.close()
+        // The caller may copy owned raw pixels here. No UI or animation has the Bitmap yet.
+        result.getOrNull()?.let { bitmap -> runCatching { request.beforeDelivery?.invoke(bitmap) } }
         deliver(request, result)
     }
 
@@ -242,7 +252,12 @@ internal class EpubVirtualDisplayFrameHost(
             window?.apply {
                 setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 setLayout(width, height)
-                addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
+                // A render-only display must never take focus from the reader or
+                // acquire dialog dimming/input behaviour during frame prefetch.
+                addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             }
             setContentView(
                 container,

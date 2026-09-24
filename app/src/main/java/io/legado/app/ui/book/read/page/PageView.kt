@@ -1301,6 +1301,11 @@ class PageView(context: Context) : FrameLayout(context) {
         binding.contentTextView.selectStartMove(x - imgBgPaddingStart, y - headerHeight)
     }
 
+    fun refreshSelectionHandles() = binding.contentTextView.refreshSelectionHandles()
+
+    val selectionTop: Float get() = headerHeight + ChapterProvider.visibleRect.top
+    val selectionBottom: Float get() = headerHeight + ChapterProvider.visibleRect.bottom
+
     fun selectStartMoveIndex(
         relativePagePos: Int,
         lineIndex: Int,
@@ -2682,6 +2687,8 @@ class PageView(context: Context) : FrameLayout(context) {
         binding.contentTextView.getSelectedReadPosition()
 
     val selectStartPos get() = binding.contentTextView.selectStart
+
+    fun selectedStartPage(): TextPage? = binding.contentTextView.selectedStartPage()
 
     private companion object {
         const val ADVANCED_TITLE_SIZE_FACTOR = 1.25f

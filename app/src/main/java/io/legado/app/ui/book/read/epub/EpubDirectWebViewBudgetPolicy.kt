@@ -110,4 +110,19 @@ internal object EpubDirectWebViewBudgetPolicy {
             else -> NORMAL_SNAPSHOT_PIXELS
         }
     }
+
+    fun maxAdjacentFrames(
+        requested: Int,
+        viewportWidth: Int,
+        viewportHeight: Int,
+        isLowRamDevice: Boolean,
+        memoryClassMb: Int
+    ): Int {
+        // Keep native-resolution pixels; reduce the rolling window on large
+        // displays instead of scaling text or retaining an unbounded bitmap pool.
+        val pixels = viewportWidth.coerceAtLeast(1).toLong() * viewportHeight.coerceAtLeast(1)
+        val megabytes = if (isLowRamDevice) 32L else (memoryClassMb.toLong() / 3).coerceIn(24L, 128L)
+        val frameLimit = (megabytes * 1024L * 1024L / 4L / pixels).coerceIn(2L, Int.MAX_VALUE.toLong())
+        return minOf(requested.coerceAtLeast(2), frameLimit.toInt())
+    }
 }

@@ -32,10 +32,12 @@ import io.legado.app.lib.theme.ThemeStore
 import io.legado.app.lib.theme.bottomBackground
 import io.legado.app.model.CacheBook
 import io.legado.app.model.ReadBook
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.ui.book.read.config.BgTextConfigDialog
 import io.legado.app.ui.book.read.config.ClickActionConfigDialog
 import io.legado.app.ui.book.read.config.PaddingConfigDialog
 import io.legado.app.ui.book.read.config.PageKeyDialog
+import io.legado.app.ui.book.read.config.ReaderTemplateDialog
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.FileDoc
@@ -130,11 +132,13 @@ abstract class BaseReadBookActivity :
     }
 
     fun showPaddingConfig() {
-        showDialogFragment<PaddingConfigDialog>()
+        if (ReadBook.usesPageTemplate()) showDialogFragment<ReaderTemplateDialog>()
+        else showDialogFragment<PaddingConfigDialog>()
     }
 
     fun showBgTextConfig() {
-        showDialogFragment<BgTextConfigDialog>()
+        if (ReadBook.usesPageTemplate()) showDialogFragment<ReaderTemplateDialog>()
+        else showDialogFragment<BgTextConfigDialog>()
     }
 
     fun showClickRegionalConfig() {
@@ -168,6 +172,7 @@ abstract class BaseReadBookActivity :
         toolBarHide: Boolean = true,
         useBgMeanColor: Boolean = false
     ) {
+        upLayoutInDisplayCutoutMode()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.insetsController?.run {
                 if (toolBarHide && ReadBookConfig.hideNavigationBar) {
@@ -184,7 +189,15 @@ abstract class BaseReadBookActivity :
         }
         upSystemUiVisibilityO(isInMultiWindow, toolBarHide)
         if (toolBarHide) {
-            setLightStatusBar(ReadBookConfig.durConfig.curStatusIconDark())
+            if (ReadBook.usesPageTemplate()) {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                val template = EpubReaderTemplateStore.ensureReaderSelection()
+                val darkSky = template.css == EpubReaderTemplateStore.defaultTemplate.css
+                setLightStatusBar(!darkSky && ReadBookConfig.durConfig.curStatusIconDark())
+            } else {
+                setLightStatusBar(ReadBookConfig.durConfig.curStatusIconDark())
+            }
         } else {
             val statusBarColor =
                 if (AppConfig.readBarStyleFollowPage
@@ -257,15 +270,13 @@ abstract class BaseReadBookActivity :
      */
     private fun upLayoutInDisplayCutoutMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            window.attributes = window.attributes.apply {
-                layoutInDisplayCutoutMode = when {
-                    ReadBookConfig.readBodyToLh || isHuaweiSystemDevice ->
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-
-                    else -> {
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
-                    }
-                }
+            val mode = if (ReadBook.usesPageTemplate() || ReadBookConfig.readBodyToLh || isHuaweiSystemDevice) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
+            }
+            if (window.attributes.layoutInDisplayCutoutMode != mode) {
+                window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = mode }
             }
         }
     }
@@ -369,6 +380,13 @@ abstract class BaseReadBookActivity :
     }
 
     fun showPageAnimConfig(success: (previousPageAnim: Int) -> Unit) {
+        if (ReadBook.usesPageTemplate()) {
+            val id = ReadBookConfig.config.readerTemplateId.ifEmpty { EpubReaderTemplateStore.defaultId }
+            if (EpubReaderTemplateStore.resolve(id)?.isScrolling == true) {
+                showDialogFragment<ReaderTemplateDialog>()
+                return
+            }
+        }
         val items = listOf(
             getString(R.string.btn_default_s) to null,
             getString(R.string.page_anim_cover) to PageAnim.coverPageAnim,
@@ -380,7 +398,13 @@ abstract class BaseReadBookActivity :
         )
         selector(R.string.page_anim, items.map { it.first }) { _, i ->
             val previousPageAnim = ReadBook.pageAnim()
-            ReadBook.book?.setPageAnim(items.getOrNull(i)?.second ?: -1)
+            val selected = items.getOrNull(i)?.second
+            if (ReadBook.usesPageTemplate()) {
+                val templateId = ReadBookConfig.config.readerTemplateId.ifEmpty { EpubReaderTemplateStore.defaultId }
+                EpubReaderTemplateStore.savePageAnimation(templateId, selected)
+            } else {
+                ReadBook.book?.setPageAnim(selected ?: -1)
+            }
             if (ReadBook.pageAnim() != previousPageAnim) {
                 success(previousPageAnim)
             }

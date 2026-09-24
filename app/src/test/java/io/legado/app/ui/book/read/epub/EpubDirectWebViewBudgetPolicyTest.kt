@@ -6,6 +6,21 @@ import org.junit.Test
 class EpubDirectWebViewBudgetPolicyTest {
 
     @Test
+    fun `full resolution snapshot capacity follows both screen pixels and memory`() {
+        assertEquals(8, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(9, 1080, 2400, false, 256))
+        assertEquals(12, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(13, 1080, 2400, false, 768))
+        assertEquals(4, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(9, 1440, 3200, false, 256))
+        assertEquals(3, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(13, 1080, 2400, true, 768))
+        assertEquals(2, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(2, 1080, 2400, false, 768))
+    }
+
+    @Test
+    fun `extreme or not yet measured dimensions cannot overflow the snapshot budget`() {
+        assertEquals(2, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(13, Int.MAX_VALUE, Int.MAX_VALUE, false, Int.MAX_VALUE))
+        assertEquals(9, EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(9, 0, 0, false, 256))
+    }
+
+    @Test
     fun `smart mode prioritizes warm pages even with a small Java heap`() {
         assertEquals(
             EpubPerformanceMode.Smooth,

@@ -25,10 +25,13 @@ internal class EpubRenderedPageFrame(
     /** Full page-layout identity, including reader chrome geometry when enabled. */
     val layoutSignature: String = "",
     val readerChromeContentRevision: Long = 0L,
-    val renderStamp: EpubPageFrameStamp? = null
+    val renderStamp: EpubPageFrameStamp? = null,
+    private var persistentPixels: EpubSnapshotPixels? = null
 ) : Closeable {
 
     private var bitmapTransferred = false
+
+    fun takePersistentPixels(): EpubSnapshotPixels? = persistentPixels.also { persistentPixels = null }
 
     fun takeBitmap(): Bitmap? {
         if (bitmapTransferred || bitmap.isRecycled) return null
@@ -37,6 +40,7 @@ internal class EpubRenderedPageFrame(
     }
 
     override fun close() {
+        takePersistentPixels()?.close()
         if (!bitmapTransferred && !bitmap.isRecycled) bitmap.recycle()
     }
 }

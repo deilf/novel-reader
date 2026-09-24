@@ -4,6 +4,7 @@ import android.webkit.URLUtil
 import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.AiGeneratedImage
+import io.legado.app.data.entities.AiBookImagePreview
 import io.legado.app.data.entities.AiImageGroup
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.newCallResponse
@@ -171,6 +172,10 @@ object AiImageGalleryManager {
         val id = imageIdFromUri(src) ?: return null
         val image = getImage(id) ?: return null
         return File(image.localPath).takeIf { it.isFile }
+    }
+
+    suspend fun bookPreview(bookKey: String): AiBookImagePreview = withContext(Dispatchers.IO) {
+        AiBookImagePreviewLoader.load(appDb.aiGeneratedImageDao, bookKey)
     }
 
     fun listImages(filter: GalleryFilter): List<AiGeneratedImage> {

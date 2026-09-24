@@ -1,6 +1,7 @@
 (function (bootstrap) {
   'use strict';
   var init = bootstrap.init;
+  if (init.template && init.template.type === 'scroll') init.scrollMode = true;
   if (window.__legadoEpub && window.__legadoEpub.templateHost) {
     window.__legadoEpub.setToken(init.token);
     window.__legadoEpub.setTextImageMode(init.textImageMode);
@@ -13,7 +14,8 @@
   var childReady = false, disposed = false, terminal = '', lastError = '';
   var pageMap = [], fields = init.fields || {}, selectionActive = false, annotationVisible = false;
   var queued = [], lastFragmentPage = -1, lastStateKey = '', imageMode = init.textImageMode;
-  var motionState = 'settled';
+  var motionState = 'settled', contentRevision = -1, childVisualRevision = -1;
+  var heartbeatSequence = 0, heartbeatAcknowledged = 0;
   var cached = {pageCount: 1, pageIndex: 0, ready: false, resourcesReady: false,
     resourcesFailed: false, layoutRevision: 0, visualRevision: 0, layoutPending: true,
     sourceImagesPending: 0, activationTargetRevision: -1, activationTargetSatisfied: false,
@@ -84,6 +86,18 @@
     send('setPage', [index], true);
     return true;
   }
+  function commitPage(index, behavior, value, boundary) {
+    if (selectionActive) return false;
+    var target = boundary === 'end' ? cached.pageCount - 1 : boundary === 'start' ? 0 : boundedPage(index);
+    fields = Object.assign({}, value || {});
+    cached.pageIndex = target;
+    cached.activationTargetRevision = -1;
+    cached.activationTargetSatisfied = false;
+    // Android commits the target and its labels as one operation. Separate field
+    // and page commands cause two visual barriers and can publish an old page.
+    send('commitPage', [target, fields, boundary], true);
+    return true;
+  }
   function pageForOffset(offset) {
     offset = Math.max(0, Math.min(init.plainText.length, Number(offset) || 0));
     // The fragments come from canonical source positions, not the author's chrome.
@@ -129,6 +143,11 @@
     // Promotion can advance the host token before srcdoc has installed its listener.
     if (message.type === 'boot') { flush(); return; }
     if (message.token !== token) return;
+    if (message.type === 'heartbeat') {
+      if (Number.isSafeInteger(message.sequence) && message.sequence > heartbeatAcknowledged &&
+          message.sequence <= heartbeatSequence) heartbeatAcknowledged = message.sequence;
+      return;
+    }
     flush();
     if (message.type === 'motionState' && /^(settled|running|paused)$/.test(message.state)) {
       motionState = message.state;
@@ -141,7 +160,14 @@
            message.requestId > serial || message.requestId < acknowledged)) return;
       if (!Number.isSafeInteger(incoming.pageCount) || incoming.pageCount < 1 || incoming.pageCount > 100000 ||
           !Number.isSafeInteger(incoming.pageIndex) || incoming.pageIndex < 0 || incoming.pageIndex >= incoming.pageCount ||
+          !Number.isSafeInteger(incoming.visualRevision) || incoming.visualRevision < childVisualRevision ||
+          !Number.isSafeInteger(incoming.contentRevision) || incoming.contentRevision < contentRevision ||
           !Number.isSafeInteger(incoming.layoutRevision) || incoming.layoutRevision < cached.layoutRevision) return;
+      childVisualRevision = incoming.visualRevision;
+      if (Number.isSafeInteger(incoming.contentRevision) && incoming.contentRevision > contentRevision) {
+        contentRevision = incoming.contentRevision;
+        nativeMessage('contentChanged', {revision: contentRevision});
+      }
       if (Number.isSafeInteger(message.requestId)) acknowledged = Math.max(acknowledged, message.requestId);
       // An older command's acknowledgement cannot make a newer target captureable.
       if (pending > acknowledged) {
@@ -205,13 +231,22 @@
     get committedCommandRevision() { return acknowledged; },
     setToken: function (next) {
       if (token === next) return;
-      token = next; selectionActive = false; annotationVisible = false;
+      token = next; selectionActive = false; annotationVisible = false; heartbeatAcknowledged = 0;
       send('setToken', [next], true);
+    },
+    templateHeartbeat: function () {
+      if (disposed) return 0;
+      // Keep liveness separate from command acknowledgements and page revisions.
+      // The outer host may respond while an isolated author frame is blocked.
+      frame.contentWindow.postMessage({channel: channel, type: 'heartbeat', token: token,
+        sequence: ++heartbeatSequence}, '*');
+      return heartbeatAcknowledged;
     },
     metrics: metrics,
     report: function () { report(); send('report'); },
     replayRuntimeTerminal: function (expected) { if (expected === token) { report(); terminalReport(); } },
     setPage: setPage,
+    commitPage: commitPage,
     setActivationPage: function (boundary, index) {
       if (selectionActive) return false;
       var target = boundary === 'end' ? cached.pageCount - 1 : boundary === 'start' ? 0 : boundedPage(index);
@@ -279,9 +314,9 @@
     '<meta name="viewport" content="width=device-width,initial-scale=1"><base href="' +
     init.baseUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">' +
     '</head><body data-legado-text-reader="true"><script>window.__readerTemplateInit=' + scriptJson(init) + ';</script>' +
-    '<script src="' + origin + '/__reader_template__/paged.js"></script>' +
+    (init.template.type === 'scroll' ? '' : '<script src="' + origin + '/__reader_template__/paged.js"></script>') +
     '<script src="' + origin + '/__reader_template__/source-map.js"></script>' +
-    '<script src="' + origin + '/__reader_template__/page-alignment.js"></script>' +
+    (init.template.type === 'scroll' ? '' : '<script src="' + origin + '/__reader_template__/browser-flow.js"></script>') +
     '<script src="' + origin + '/__reader_template__/runtime.js"></script></body></html>';
   document.body.appendChild(frame);
   window.addEventListener('pagehide', function () { disposed = true; queued.length = 0; secret = ''; }, {once: true});

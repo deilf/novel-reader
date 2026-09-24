@@ -371,7 +371,8 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("activationTargetSatisfied:" in metricsBody)
         assertTrue("decodeImage(img)" in imageBody)
         assertTrue("stable=true" in stableBody)
-        assertTrue("flushLayoutRefresh(function()" in stableBody)
+        assertTrue("if(isLayoutPending()){flushLayoutRefresh(notifyStable);return;}" in stableBody)
+        assertTrue("revision!==visualRevision" in stableBody)
         assertFalse("markLayoutDirty()" in stableBody)
         assertTrue(
             "return Promise.all([fontsReady(),Promise.all(images)," +
@@ -461,8 +462,8 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("readerTemplateActiveClock.now() + 60_000L" in activityTimeoutBody)
         assertTrue("delay(EPUB_PREPARE_TIMEOUT_MS)" in activityTimeoutBody)
         assertTrue("private const val DOCUMENT_LOAD_TIMEOUT_MS = 12_000L" in webLayer)
-        assertTrue("private const val RUNTIME_STABLE_TIMEOUT_MS = 8_000L" in webLayer)
-        assertTrue("private const val TEMPLATE_STABLE_TIMEOUT_MS = 45_000L" in webLayer)
+        assertTrue("private const val RUNTIME_STABLE_TIMEOUT_MS = EpubRenderTimeoutPolicy.DIRECT_STARTUP_MS" in webLayer)
+        assertTrue("private const val TEMPLATE_STABLE_TIMEOUT_MS = EpubRenderTimeoutPolicy.TEMPLATE_STARTUP_MS" in webLayer)
         assertTrue("private const val PAGE_ACTIVATION_TIMEOUT_MS = 8_000L" in webLayer)
         assertTrue("private const val EPUB_PREPARE_TIMEOUT_MS = 15_000L" in activity)
         assertFalse("MAX_READY_ATTEMPTS" in webLayer)
@@ -615,16 +616,15 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("applyPage(view, index, animate = false)" in animationBody)
         assertTrue("verifyAnimationTargetPage(" in animationBody)
         assertTrue("revealLivePageAnimationTarget(overlay)" in animationBody)
-        assertTrue("restoreSource(\"target-timeout\"" in animationBody)
+        assertTrue("recoverUncommittedPageTurn(view, token, index)" in animationBody)
         assertTrue("commitPageAndReaderChrome(" in applyBody)
-        assertTrue("api.metrics()" in commitBody)
-        assertTrue("view.evaluateJavascript(MEASURE_VIEWPORT_SCRIPT)" in verificationBody)
+        assertTrue("api.metrics(true)" in commitBody)
+        assertTrue("evaluatePageJavascript(view, MEASURE_VIEWPORT_SCRIPT)" in verificationBody)
         assertTrue("EpubDirectActivationTargetPolicy.isSatisfied(" in verificationBody)
         assertStableRenderStateVerification(source, verificationBody)
         assertFalse("metrics.resourcesReady" in verificationBody)
         assertFalse("completeAfterCompositorFrames(view)" in verificationBody)
         assertTrue("postVisualStateCallback" in visualStateBody)
-        assertTrue("PAGE_ANIMATION_VISUAL_STATE_TIMEOUT_MS" in visualStateBody)
     }
 
     @Test
@@ -692,15 +692,6 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("MAX_BLOCKED_SNAPSHOT_RETRIES" in body)
         assertTrue("postDelayed(retry, SNAPSHOT_CAPTURE_RETRY_MS)" in body)
         assertTrue("committedSnapshotRefreshRunnable != null" in body)
-    }
-
-    @Test
-    fun `same chapter animation commits the requested native page`() {
-        val body = kotlinFunctionBody(webLayerSource(), "setPage")
-
-        assertTrue("maxOf(metrics?.pageCount ?: pageCount, target + 1, 1)" in body)
-        assertTrue("val nextIndex = target.coerceIn(0, nextCount - 1)" in body)
-        assertFalse("metrics?.pageIndex?.coerceIn" in body)
     }
 
     @Test
@@ -881,19 +872,27 @@ class EpubDirectRuntimeAssetTest {
 
         assertTrue("if (opaqueBackground || drawableTargetBitmap() != null)" in drawBody)
         assertTrue("fun revealLiveTarget()" in source)
-        assertTrue("private val targetBitmap: Bitmap?" in source)
+        val prepareBody = kotlinFunctionBody(source, "supplyPreparedTarget")
+        assertTrue("released || bitmap.isRecycled || !visualState.prepareTarget()" in prepareBody)
+        assertTrue("targetBitmap = bitmap" in prepareBody)
         assertTrue("fun takeTargetBitmap(): Bitmap?" in source)
         assertFalse("fun setTargetBitmap" in source)
     }
 
     @Test
-    fun `animation timeout restores the source before removing the overlay`() {
-        val body = kotlinFunctionBody(webLayerSource(), "startPageAnimation")
+    fun `animation timeout keeps the accepted target during same document recovery`() {
+        val source = webLayerSource()
+        val body = kotlinFunctionBody(source, "startPageAnimation")
+        val recovery = kotlinFunctionBody(source, "recoverUncommittedPageTurn")
 
-        assertTrue("restoreSource(\"target-timeout\"" in body)
-        assertTrue("applyPage(view, sourcePageIndex, animate = false)" in body)
-        assertTrue("finishRestore(verified = true)" in body)
-        assertTrue("cancelPageAnimation()" in body)
+        assertTrue("recoverUncommittedPageTurn(view, token, index)" in body)
+        assertFalse("applyPage(view, sourcePageIndex" in body)
+        assertTrue("overlay?.takeTargetBitmap()" in recovery)
+        assertTrue("evaluatePageJavascript(view, MEASURE_VIEWPORT_SCRIPT)" in recovery)
+        assertTrue("applyPage(view, targetPageIndex, animate = false" in recovery)
+        assertTrue("completeAppliedPage(" in recovery)
+        assertFalse("scheduleRenderRecovery(" in recovery)
+        assertTrue("showRecoverySnapshot(bitmap, pageTransition = true)" in recovery)
         assertFalse("startAfterCommit(null)" in body)
     }
 
@@ -907,7 +906,8 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("requestedStyle != EpubDirectPageAnimationPolicy.Style.None" in setPageBody)
         assertTrue("scheduleCommittedPageSnapshotRefresh(" in setPageBody)
         assertTrue("pageHandoffRequest = request" in setPageBody)
-        assertTrue("verifyPageHandoff(" in setPageBody)
+        assertTrue("completeAppliedPage(" in setPageBody)
+        assertTrue("verifyAnimationTargetPage(" in setPageBody)
         assertTrue(
             setPageBody.indexOf("scheduleCommittedPageSnapshotRefresh(") <
                 setPageBody.indexOf("pageHandoffRequest = request")
@@ -918,10 +918,7 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("api.setReaderChrome(" in commitBody)
         assertTrue("api.setReaderChromeData(" in commitBody)
         assertTrue("api.setPage(\$safePageIndex,0,'\$behavior')" in commitBody)
-        assertTrue(
-            commitBody.indexOf("api.setReaderChromeData(") <
-                commitBody.indexOf("pageCommand +")
-        )
+        assertTrue("api.commitPage(" in commitBody)
     }
 
     @Test
@@ -1004,7 +1001,7 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("val sourceBitmap = if (style != EpubDirectPageAnimationPolicy.Style.None)" in prepareBody)
         assertTrue("takeCommittedPageSnapshot(" in prepareBody)
         assertFalse("sourceBitmap = captureView(" in prepareBody)
-        assertTrue("val targetBitmap = sourceBitmap?.let" in prepareBody)
+        assertTrue("targetBitmap = sourceBitmap?.let" in prepareBody)
         assertTrue("takeAdjacentPageBitmap(" in prepareBody)
         assertTrue("expectedPageIndex = if (normalizedDirection > 0) 0 else null" in prepareBody)
         assertTrue("pendingChapterTurn = pending" in prepareBody)
@@ -1105,7 +1102,7 @@ class EpubDirectRuntimeAssetTest {
     }
 
     @Test
-    fun `adjacent frame pipeline renders near and far targets independently`() {
+    fun `adjacent frame lifecycle is bound to the reader and its prepared chapters`() {
         val source = webLayerSource()
         val syncBody = kotlinFunctionBody(source, "syncAdjacentPageFrames")
         val notifyBody = kotlinFunctionBody(source, "notifyPositionChanged")
@@ -1116,12 +1113,7 @@ class EpubDirectRuntimeAssetTest {
         val suspendBody = kotlinFunctionBody(adjacentFramePipelineSource(), "suspendScheduling")
         val resumeBody = kotlinFunctionBody(adjacentFramePipelineSource(), "resumeScheduling")
         val offerFrameBody = kotlinFunctionBody(adjacentFramePipelineSource(), "offerFrame")
-        val scheduleDirectionBody = kotlinFunctionBody(
-            adjacentFramePipelineSource(),
-            "scheduleDirection"
-        )
-
-        assertTrue("frameRenderer" in syncBody)
+        assertTrue("supportsAdjacentPageFrames()" in syncBody)
         assertTrue("pipeline.bindCurrent(" in syncBody)
         assertTrue("pipeline.offerPreparedChapter(" in syncBody)
         assertTrue(
@@ -1135,10 +1127,6 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("schedulingSuspended = true" in suspendBody)
         assertTrue("schedulingSuspended = false" in resumeBody)
         assertTrue("scheduleDesiredTargets()" in resumeBody)
-        assertTrue("if (schedulingSuspended)" in scheduleDirectionBody)
-        assertTrue("SlotKey(direction, Distance.Near)" in scheduleDirectionBody)
-        assertTrue("SlotKey(direction, Distance.Far)" in scheduleDirectionBody)
-        assertFalse("sequenceOf(" in scheduleDirectionBody)
         assertTrue("frameCache.put(target.cacheKey, frame)" in offerFrameBody)
         assertTrue("scheduleDesiredTargets()" in offerFrameBody)
         assertTrue(
@@ -1170,9 +1158,9 @@ class EpubDirectRuntimeAssetTest {
 
         assertTrue("deferredLiveTargetLayerRelease != null" in blockerBody)
         assertTrue("scheduleCommittedPageSnapshotRefresh(\"live-target-layer-restored\")" in layerReleaseBody)
-        assertTrue("liveTargetRevealed" in targetBody)
-        assertTrue("style != EpubDirectPageAnimationPolicy.Style.Simulation" in targetBody)
-        assertTrue("action == EpubDirectPageAnimationPolicy.TurnAction.Next" in targetBody)
+        assertTrue("targetBitmap?.takeUnless { it.isRecycled }" in targetBody)
+        assertFalse("liveTargetRevealed" in targetBody)
+        assertFalse("return null" in targetBody)
     }
 
     @Test
@@ -1208,6 +1196,7 @@ class EpubDirectRuntimeAssetTest {
         val body = kotlinFunctionBody(source, "finishPageAnimationAfterFinalFrame")
 
         assertTrue("OnDrawListener" in body)
+        assertTrue("!overlay.finishAnimation()" in body)
         assertTrue("postAtFrontOfQueue(finish)" in body)
         assertTrue("overlay.invalidate()" in body)
         assertTrue("postDelayed(finish, FINAL_FRAME_FALLBACK_MS)" in body)
@@ -1246,6 +1235,7 @@ class EpubDirectRuntimeAssetTest {
             "scheduleCommittedPageSnapshotRefresh"
         )
         val captureBody = kotlinFunctionBody(source, "requestCommittedPageSnapshot")
+        val currentSnapshotReadyBody = kotlinFunctionBody(source, "onCurrentSnapshotReady")
         val setPageBody = kotlinFunctionBody(source, "setPage")
         val internalSetPageBody = kotlinFunctionBody(source, "setPageFromPageTurn")
         val fragmentBody = kotlinFunctionBody(source, "navigateToFragment")
@@ -1271,7 +1261,7 @@ class EpubDirectRuntimeAssetTest {
         )
         assertTrue("preserveAnimationSourceAsAdjacentFrame(overlay)" in finishBody)
         assertTrue("preserveAnimationTargetAsCommittedSnapshot(overlay)" in finishBody)
-        assertTrue("if (targetSnapshotReady) scheduleQueuedPageTurnDrain()" in finishBody)
+        assertTrue("scheduleQueuedPageTurnDrain()" in finishBody)
         assertTrue("overlay.takeTargetBitmap()" in preserveTargetBody)
         assertTrue("targetFrameMatchesCommittedPage(metadata)" in preserveTargetBody)
         assertTrue("bitmap.takeUnless { it.isRecycled }?.recycle()" in preserveTargetBody)
@@ -1291,7 +1281,15 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("if (!queuedPageTurns.isEmpty) scheduleQueuedPageTurnDrain()" in materialFallbackBody)
         assertTrue("allowAnimationMaterialFallback(key)" in snapshotRefreshBody)
         assertTrue("if (committed)" in captureBody)
-        assertTrue("scheduleQueuedPageTurnDrain()" in captureBody)
+        // Both software and PixelCopy captures notify the shared readiness path,
+        // which warms adjacent frames and resumes accepted turns.
+        assertEquals(2, Regex("onCurrentSnapshotReady\\(\\)").findAll(captureBody).count())
+        assertTrue("syncAdjacentPageFrames()" in currentSnapshotReadyBody)
+        assertTrue("scheduleQueuedPageTurnDrain()" in currentSnapshotReadyBody)
+        assertTrue(
+            currentSnapshotReadyBody.indexOf("syncAdjacentPageFrames()") <
+                currentSnapshotReadyBody.indexOf("scheduleQueuedPageTurnDrain()")
+        )
         assertTrue("adjacentPageFrames?.offerFrame(frame)" in preserveSourceBody)
         assertTrue("overlay.takeSourceBitmap()" in takeSourceBody)
         assertTrue("EpubRenderedPageFrame(" in takeSourceBody)
@@ -1366,7 +1364,7 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("overlay.progress = progress" in progressBody)
         assertTrue("updateLivePageAnimationTarget(overlay.progress)" in progressBody)
         assertTrue("target.view.translationX" in targetBody)
-        assertTrue("if (target.revealed)" in targetBody)
+        assertTrue("if (target.revealed && !target.overlay.hasPreparedTarget)" in targetBody)
         assertTrue("liveTargetTranslationX(" in targetBody)
         assertTrue("target.revealed = true" in revealBody)
         assertTrue(
@@ -1374,6 +1372,7 @@ class EpubDirectRuntimeAssetTest {
                 revealBody.indexOf("target.revealed = true")
         )
         assertTrue("requiresMovingLiveTarget" in prepareBody)
+        assertTrue("if (target.overlay.hasPreparedTarget) return" in prepareBody)
         assertTrue("interactivePageTurn?.overlay === target.overlay" in prepareBody)
         assertTrue("View.LAYER_TYPE_HARDWARE" in prepareBody)
         assertTrue("target.view.buildLayer()" in prepareBody)
@@ -1422,7 +1421,7 @@ class EpubDirectRuntimeAssetTest {
         val revealBody = kotlinFunctionBody(source, "revealLiveTarget")
         val releaseBody = kotlinFunctionBody(source, "release")
 
-        assertTrue("private val targetBitmap: Bitmap?" in source)
+        assertFalse("sourceBitmap" in kotlinFunctionBody(source, "supplyPreparedTarget"))
         for (body in listOf(coverBody, slideBody, linkedBody)) {
             assertTrue("drawTarget(canvas, frame)" in body)
             assertTrue(
@@ -1435,9 +1434,8 @@ class EpubDirectRuntimeAssetTest {
         assertTrue("targetBitmap?.takeUnless" in drawableTargetBody)
         assertFalse("sourceBitmap.takeUnless" in drawableTargetBody)
         assertFalse("?: sourceBitmap" in drawableTargetBody)
-        assertTrue("liveTargetRevealed" in drawableTargetBody)
-        assertTrue("style != EpubDirectPageAnimationPolicy.Style.Simulation" in drawableTargetBody)
-        assertTrue("liveTargetRevealed = true" in revealBody)
+        assertFalse("liveTargetRevealed" in drawableTargetBody)
+        assertTrue("visualState.commitLiveTarget()" in revealBody)
         assertTrue("targetTransferred" in releaseBody)
         assertTrue("targetBitmap" in releaseBody)
     }
@@ -1536,10 +1534,14 @@ class EpubDirectRuntimeAssetTest {
         val trimBody = kotlinFunctionBody(source, "trimMemory")
         val hiddenBody = kotlinFunctionBody(source, "onHidden")
 
-        for (body in listOf(sizeBody, bindBody, pauseBody, trimBody, hiddenBody)) {
+        for (body in listOf(sizeBody, bindBody, pauseBody, hiddenBody)) {
             assertTrue("closeAdjacentPageFrames()" in body)
             assertTrue("clearQueuedPageTurns()" in body)
         }
+        assertTrue("closeAdjacentPageFrames()" in trimBody)
+        assertFalse("cancelPageAnimation()" in trimBody)
+        assertFalse("cancelPageHandoff()" in trimBody)
+        assertFalse("applyPage(" in trimBody)
     }
 
     @Test
@@ -1815,15 +1817,10 @@ class EpubDirectRuntimeAssetTest {
 
     private fun assertStableRenderStateVerification(source: String, verificationBody: String) {
         assertTrue("if (!isMeasuredRenderStateCurrent(view, metrics)) return false" in verificationBody)
-        // This guard has an expression body, so bracedBody would extract the next function.
-        val start = source.indexOf("private fun isMeasuredRenderStateCurrent(")
-        check(start >= 0) { "Render state verification function not found" }
-        val renderStateBody = source.substring(start).lineSequence()
-            .takeWhile { it.isNotBlank() }
-            .joinToString("\n")
-        assertTrue("!metrics.layoutPending" in renderStateBody)
-        assertTrue("!view.renderState.layoutPending" in renderStateBody)
-        assertTrue("metrics.visualRevision >= view.renderState.visualRevision" in renderStateBody)
+        val renderStateBody = kotlinFunctionBody(source, "isMeasuredRenderStateCurrent")
+        assertTrue("metrics.layoutPending" in renderStateBody)
+        assertFalse("!view.renderState.layoutPending" in renderStateBody)
+        assertTrue("metrics.visualRevision < view.renderState.visualRevision" in renderStateBody)
         assertFalse("metrics.resourcesReady" in renderStateBody)
     }
 

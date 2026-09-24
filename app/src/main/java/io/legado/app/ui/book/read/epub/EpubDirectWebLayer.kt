@@ -69,6 +69,8 @@ import io.legado.app.model.localBook.epubcore.template.EpubTemplateActiveClock
 import io.legado.app.model.localBook.epubcore.template.EpubTemplateDocument
 import io.legado.app.model.localBook.epubcore.template.EpubTemplateException
 import io.legado.app.model.localBook.epubcore.template.EpubTemplateTapGate
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplate
+import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.model.localBook.epubcore.web.EpubWebDocumentLoadMarker
 import io.legado.app.model.localBook.epubcore.web.EpubWebMainDocumentUrlMatcher
 import org.json.JSONArray
@@ -122,6 +124,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val sourceView: ReaderWebView,
         var sourceBitmap: Bitmap?,
         var targetBitmap: Bitmap?,
+        val targetFrame: CachedAnimationTarget? = null,
         var targetToken: Long? = null
     )
 
@@ -142,6 +145,13 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private data class AnimationSourceFrame(
         val overlay: EpubDirectPageAnimationOverlay,
         val metadata: PageFrameMetadata
+    )
+
+    private data class CachedAnimationTarget(
+        val pipeline: EpubAdjacentPageFramePipeline,
+        val target: EpubPageFrameTarget,
+        val pageIndex: Int,
+        val pageCount: Int
     )
 
     private data class LivePageAnimationTarget(
@@ -184,7 +194,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         var finishRequested: Boolean? = null,
         var navigationDispatched: Boolean = false,
         var settling: Boolean = false,
-        var restoring: Boolean = false
+        var restoring: Boolean = false,
+        val framePipeline: EpubAdjacentPageFramePipeline? = null,
+        val expectedFrameTarget: EpubPageFrameTarget? = null,
+        val sourceLayoutRevision: Long = -1L,
+        var cachedTargetFrame: CachedAnimationTarget? = null,
     )
 
     interface Listener {
@@ -281,6 +295,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private var styleReloadSequence = 0L
     private var pageApplySequence = 0L
     private var pageAnimationSequence = 0L
+    private var pageFinalFrameSequence: Long? = null
     private var pageAnimationOverlay: EpubDirectPageAnimationOverlay? = null
     private var pageAnimationSourceFrame: AnimationSourceFrame? = null
     private var pageAnimator: ValueAnimator? = null
@@ -307,11 +322,21 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (!bitmap.isRecycled) bitmap.recycle()
     }
     private var adjacentPageFrames: EpubAdjacentPageFramePipeline? = null
+    private var interactiveFrameReadyRunnable: Runnable? = null
+    private var adjacentFrameInitializationRetryAt = 0L
     private var adjacentPageFrameResumeRunnable: Runnable? = null
     private val queuedPageTurns = EpubPageTurnQueue(MAX_QUEUED_PAGE_TURN_RUNS)
     private var queuedPageTurnDrainRunnable: Runnable? = null
     private var internalPageTurnSetPage = false
     private var committedSnapshotRefreshRunnable: Runnable? = null
+    private var warmupActivatedAt = 0L
+    private var warmupResumeRunnable: Runnable? = null
+    private var startupSourceReported = false
+    private var startupInputCount = 0
+    private var startupInputAt = 0L
+    private var startupMotionReported = false
+    private var reviewedFieldTemplate: EpubReaderTemplate? = null
+    private var reviewedFieldReference: EpubReaderTemplate? = null
     private var animationMaterialWait: AnimationMaterialWait? = null
     private var animationMaterialTimeoutRunnable: Runnable? = null
     private var legacySnapshotBackendReported = false
@@ -350,7 +375,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             event.actionMasked == MotionEvent.ACTION_CANCEL
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             preloadGestureActive = true
+            pauseTemplateMotion(currentWebView)
             suspendAdjacentPageFrameScheduling()
+            adjacentPageFrames?.prepareGestureFrames()
         } else if (finished) {
             preloadGestureActive = false
         }
@@ -359,6 +386,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             preloadGestureActive = false
             resumeScheduledPreloads()
             scheduleAdjacentPageFrameResume()
+            scheduleCommittedPageSnapshotRefresh("gesture-finished")
         }
         return handled
     }
@@ -384,12 +412,16 @@ class EpubDirectWebLayer @JvmOverloads constructor(
 
     override fun onViewAdded(child: View) {
         super.onViewAdded(child)
-        if (childAffectsCommittedSnapshotScene(child)) markSnapshotSceneChanged()
+        if (childAffectsCommittedSnapshotScene(child)) {
+            markSnapshotSceneChanged(preserveCommittedPage = child is EpubDirectPageAnimationOverlay)
+        }
     }
 
     override fun onViewRemoved(child: View) {
         super.onViewRemoved(child)
-        if (childAffectsCommittedSnapshotScene(child)) markSnapshotSceneChanged()
+        if (childAffectsCommittedSnapshotScene(child)) {
+            markSnapshotSceneChanged(preserveCommittedPage = child is EpubDirectPageAnimationOverlay)
+        }
     }
 
     private fun childAffectsCommittedSnapshotScene(child: View): Boolean {
@@ -417,8 +449,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
      * pagination or chapter activation and is safe to call before any WebView is ready.
      */
     fun updateReaderChromeData(template: EpubReaderChromeData) {
-        val contentChanged = readerChromeTemplate.copy(contentRevision = 0L) !=
-            template.copy(contentRevision = 0L)
+        val contentChanged = renderedChromeFields(chapter, readerChromeTemplate).copy(contentRevision = 0L) !=
+            renderedChromeFields(chapter, template).copy(contentRevision = 0L)
         readerChromeTemplate = if (contentChanged) {
             template
         } else {
@@ -436,6 +468,23 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (contentChanged && activeChromeEnabled) invalidateCommittedPageSnapshot()
         if (contentChanged && (config?.readerChrome?.enabled == true || chapter?.readerTemplate != null)) syncAdjacentPageFrames()
         forEachReaderWebView(::applyReaderChromeToView)
+    }
+
+    private fun reviewedFrameReference(template: EpubReaderTemplate): EpubReaderTemplate? {
+        if (reviewedFieldTemplate !== template) {
+            reviewedFieldTemplate = template
+            reviewedFieldReference = EpubReaderTemplateStore.reviewedFrameTemplate(template)
+        }
+        return reviewedFieldReference
+    }
+
+    private fun renderedChromeFields(
+        prepared: EpubDirectChapter?,
+        data: EpubReaderChromeData
+    ): EpubReaderChromeData {
+        val template = prepared?.readerTemplate ?: return data
+        if (template.javascript.isBlank()) return data
+        return EpubTemplateFieldPolicy.renderedFields(template, reviewedFrameReference(template), data)
     }
 
     private fun forEachReaderWebView(action: (ReaderWebView) -> Unit) {
@@ -500,7 +549,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }.coerceIn(0, preparedCount - 1)
         val unresolvedRevisionData = EpubReaderChromeDataPolicy.resolve(
             config = resolvedConfig,
-            template = readerChromeTemplate.copy(contentRevision = 0L),
+            template = renderedChromeFields(preparedChapter, readerChromeTemplate).copy(contentRevision = 0L),
             page = EpubReaderChromeDataPolicy.Page(
                 chapterIndex = preparedChapter.chapterIndex,
                 chapterTitle = preparedChapter.title,
@@ -519,6 +568,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
 
     private fun applyReaderChromeToView(view: ReaderWebView) {
         if (destroyed || !view.loadComplete || !view.runtimeInstalled) return
+        // The in-flight page command owns its labels. A clock/battery callback
+        // still sees the old native index until commit and must not overwrite them.
+        if (view === currentWebView && (pageAnimationOverlay != null || pageHandoffRequest != null)) return
         val payload = readerChromePayload(view)
         if (view.appliedReaderChromeConfig == payload.config &&
             view.appliedReaderChromeData == payload.data
@@ -614,9 +666,10 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val script = "(function(){var api=window.__legadoEpub;" +
             "if(!api||api.token!==$token)return null;" +
             "api.setReaderChrome(${readerChromeConfigJson(payload.config)});" +
-            "api.setReaderChromeData(${readerChromeDataJson(payload.data)});" +
-            pageCommand +
-            "return JSON.stringify(api.metrics());})()"
+            "if(api.commitPage){api.commitPage($safePageIndex,'$behavior'," +
+            "${readerChromeDataJson(payload.data)},${boundary?.let(JSONObject::quote) ?: "null"});}" +
+            "else{api.setReaderChromeData(${readerChromeDataJson(payload.data)});$pageCommand}" +
+            "return JSON.stringify(api.metrics(true));})()"
         evaluateReaderCommand(view, script, returnMetrics = true) { raw ->
             val ownsChromeApply = view.readerChromeApplySequence == chromeApplySequence
             if (ownsChromeApply) view.readerChromeApplyInFlight = false
@@ -651,7 +704,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         onResult: (String?) -> Unit
     ) {
         if (view.preparedChapter?.readerTemplate == null) {
-            view.evaluateJavascript(script) { onResult(it) }
+            evaluatePageJavascript(view, script, onResult)
             return
         }
         val expectedToken = view.token
@@ -670,28 +723,74 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         start = Runnable start@{
             if (!current()) { finish(null); return@start }
             if (deferTemplateUntilResumed(view, start)) return@start
-            view.evaluateJavascript(script) initial@{ initialResult ->
+            evaluatePageJavascript(view, script) initial@{ initialResult ->
                 if (!current()) { finish(null); return@initial }
                 lateinit var poll: Runnable
                 poll = Runnable poll@{
                     if (completed) return@poll
                     if (!current()) { finish(null); return@poll }
                     if (deferTemplateUntilResumed(view, poll)) return@poll
-                    view.evaluateJavascript(MEASURE_SCRIPT) measured@{ settled ->
+                    evaluatePageJavascript(view, MEASURE_SCRIPT) measured@{ settled ->
                         if (!current()) { finish(null); return@measured }
                         if (deferTemplateUntilResumed(view, poll)) return@measured
                         val measured = parseMetrics(settled)
                         if (measured != null && !measured.layoutPending) {
                             finish(if (returnMetrics) settled else initialResult)
                         } else if (templateActiveClock.now() >= deadline) {
+                            val hasDisplayedDocument = view === currentWebView && documentReady
                             finish(null)
-                            onTemplateFailure(view, expectedToken, "页面提交超时，请检查模板的布局或脚本")
+                            if (!hasDisplayedDocument) {
+                                onTemplateFailure(view, expectedToken, "页面提交超时，请检查模板的布局或脚本")
+                            }
                         } else view.postDelayed(poll, 24L)
                     }
                 }
                 poll.run()
             }
         }
+        start.run()
+    }
+
+    /** Losing an evaluateJavascript callback is not evidence that the document was lost. */
+    private fun evaluatePageJavascript(
+        view: ReaderWebView,
+        script: String,
+        onResult: (String?) -> Unit
+    ) {
+        val token = view.token
+        val chapterKey = view.loadedChapterKey
+        val deadline = templateActiveClock.now() + PAGE_JAVASCRIPT_TIMEOUT_MS
+        var completed = false
+        lateinit var timeout: Runnable
+        lateinit var start: Runnable
+        fun current() = !destroyed && !view.surfaceDestroyed && view.token == token &&
+            view.loadedChapterKey == chapterKey
+        fun finish(result: String?) {
+            if (completed) return
+            completed = true
+            removeCallbacks(timeout)
+            templateResumeCallbacks.remove(timeout)
+            templateResumeCallbacks.remove(start)
+            if (!current()) return
+            val delivery = Runnable { if (current()) onResult(result) }
+            if (!deferTemplateUntilResumed(view, delivery)) delivery.run()
+        }
+        timeout = Runnable {
+            if (completed) return@Runnable
+            if (!current()) { finish(null); return@Runnable }
+            if (deferTemplateDeadline(this, timeout, deadline)) return@Runnable
+            finish(null)
+        }
+        start = Runnable {
+            if (completed) return@Runnable
+            if (!current()) { finish(null); return@Runnable }
+            if (deferTemplateUntilResumed(view, start)) return@Runnable
+            runCatching { view.evaluateJavascript(script, ::finish) }.onFailure {
+                AppLog.putDebug("EPUB page command callback unavailable", it)
+                finish(null)
+            }
+        }
+        postDelayed(timeout, PAGE_JAVASCRIPT_TIMEOUT_MS)
         start.run()
     }
 
@@ -812,18 +911,22 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     }
 
     /** The off-screen renderer can move within its committed document without reloading it. */
+    internal fun hasReusableChapterForFrame(
+        chapter: EpubDirectChapter,
+        config: EpubCoreLayoutConfig
+    ): Boolean = frameRenderer && !destroyed && documentReady &&
+        currentWebView.token == generation && currentWebView.runtimeStable &&
+        !currentWebView.renderState.layoutPending &&
+        currentWebView.preparedChapter === chapter && this.config == config &&
+        currentWebView.loadedChapterKey == chapterKey(chapter, config)
+
     internal fun reuseChapterForFrame(
         chapter: EpubDirectChapter,
         config: EpubCoreLayoutConfig,
         requestedPageIndex: Int,
         openAtEnd: Boolean
     ): Boolean {
-        if (!frameRenderer || destroyed || !documentReady || isPageTurnBusy() ||
-            currentWebView.token != generation || !currentWebView.runtimeStable ||
-            currentWebView.renderState.layoutPending ||
-            currentWebView.preparedChapter !== chapter || this.config != config ||
-            currentWebView.loadedChapterKey != chapterKey(chapter, config)
-        ) return false
+        if (!hasReusableChapterForFrame(chapter, config) || isPageTurnBusy()) return false
         val target = if (openAtEnd) pageCount - 1 else requestedPageIndex
         if (target !in 0 until pageCount) return false
         if (target != pageIndex) return setPage(target, animate = false)
@@ -1071,7 +1174,59 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun canStartPreload(): Boolean =
         !destroyed && !hostPaused && documentReady && currentWebView.token == generation &&
             !preloadGestureActive && loadingPreloadedWebViews.isEmpty() &&
-            !isPageTurnBusy() && interactivePageTurn == null && queuedPageTurns.isEmpty
+            !isPageTurnBusy() && interactivePageTurn == null && !isSelectionPageTurnBlocked() &&
+            EpubReaderWarmupPolicy.canStartChapterLayout(
+                sourceReady = hasReadyCurrentSnapshot(),
+                elapsedMillis = SystemClock.uptimeMillis() - warmupActivatedAt,
+                frameLayoutRunning = adjacentPageFrames?.hasColdLayoutInFlight() == true,
+                nearPagesReady = adjacentPageFrames?.hasNearForwardFrames() == true,
+                requiredForNearPages = pageCount - pageIndex - 1 < 2,
+                frameRenderingAvailable = adjacentPageFrames != null
+            )
+
+    private fun hasReadyCurrentSnapshot(): Boolean =
+        committedPageSnapshotKey()?.let(committedPageSnapshots::contains) == true
+
+    private fun beginFrameWarmup() {
+        warmupResumeRunnable?.let(::removeCallbacks)
+        warmupActivatedAt = SystemClock.uptimeMillis()
+        startupSourceReported = false
+        startupInputCount = 0
+        startupInputAt = 0L
+        startupMotionReported = false
+        if (frameRenderer) return
+        AppLog.putDebug("EPUB startup visible: chapter=${chapter?.chapterIndex}, page=$pageIndex, pages=$pageCount")
+        val expectedGeneration = generation
+        lateinit var resume: Runnable
+        resume = Runnable {
+            if (warmupResumeRunnable !== resume) return@Runnable
+            warmupResumeRunnable = null
+            if (destroyed || generation != expectedGeneration || !documentReady) return@Runnable
+            syncAdjacentPageFrames()
+            resumeScheduledPreloads()
+            val remaining = EpubReaderWarmupPolicy.NEAR_PAGE_PRIORITY_MS -
+                (SystemClock.uptimeMillis() - warmupActivatedAt)
+            if (remaining > 0L) {
+                warmupResumeRunnable = resume
+                postDelayed(resume, remaining)
+            }
+        }
+        warmupResumeRunnable = resume
+        // A failed main-surface capture must not starve all offscreen work.
+        postDelayed(resume, EpubReaderWarmupPolicy.SOURCE_HEAD_START_MS)
+    }
+
+    private fun onCurrentSnapshotReady() {
+        if (frameRenderer) return
+        if (!startupSourceReported) {
+            startupSourceReported = true
+            AppLog.putDebug("EPUB startup source-ready: chapter=${chapter?.chapterIndex}, " +
+                "page=$pageIndex, elapsedMs=${SystemClock.uptimeMillis() - warmupActivatedAt}")
+        }
+        syncAdjacentPageFrames()
+        scheduleQueuedPageTurnDrain()
+        currentWebView.resumePendingInteractiveDrag()
+    }
 
     private fun resumeScheduledPreloads() {
         if (!canStartPreload()) return
@@ -1101,7 +1256,6 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     ): EpubPageTurnResult {
         val direction = if (logicalDirection < 0) -1 else 1
         if (isSelectionPageTurnBlocked()) return EpubPageTurnResult.Rejected
-        if (documentReady && currentWebView.renderState.needsMetrics) requestRuntimeMetricsSync()
         if (isPageTurnBusy()) {
             val queued = queueIfBusy && enqueuePageTurn(direction)
             if (pendingChapterTurn != null) snapToCurrentHorizontalPage(currentWebView)
@@ -1206,8 +1360,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun isPageTurnBusy(): Boolean {
         return pendingChapterTurn != null || pageAnimationOverlay != null ||
             pageAnimator != null || pageHandoffRequest != null || pendingActivationView != null ||
-            foregroundRevealRunnable != null || runtimeMetricsSyncInFlight ||
-            runtimeMetricsSyncRunnable != null || currentWebView.renderState.needsMetrics
+            renderRecoveryRequest != null || foregroundRevealRunnable != null
     }
 
     private fun shouldWaitForPageAnimationMaterial(
@@ -1234,7 +1387,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 ?: return false
             targetPageIndex = if (direction > 0) 0 else null
         }
-        val requiresAdjacent = performanceBudget.adjacentFramesEnabled &&
+        val requiresAdjacent = supportsAdjacentPageFrames() &&
             !EpubDirectPageAnimationPolicy.hasRequiredBitmapFrames(
             style = style,
             action = action,
@@ -1349,6 +1502,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val replacingHandoff = pageHandoffRequest != null
         val changed = target != pageIndex
         if (!changed && !replacingHandoff) return false
+        // Cancel stale measurements only once a new command owns the position.
+        // Before that, a query may still help prepare the first animation source.
+        cancelRuntimeMetricsSync()
         cancelPageHandoff()
         clearSelection()
         val previous = pageIndex
@@ -1362,16 +1518,16 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val view = currentWebView
         fun reconcileAppliedPage(metrics: WebMetrics?) {
             if (request != pageApplySequence || token != generation || view !== currentWebView) return
-            val nextCount = maxOf(metrics?.pageCount ?: pageCount, target + 1, 1)
-            // The reference renderer commits the requested page when the transform is issued.
-            // A delayed or malformed metrics callback must not leave native progress behind the
-            // WebView that is already showing the target page.
-            val nextIndex = target.coerceIn(0, nextCount - 1)
+            val nextCount = (metrics?.pageCount ?: pageCount).coerceAtLeast(1)
+            // This result has passed target and visual verification. A reflow may
+            // have clamped the request to a new last page; keep that actual position.
+            val nextIndex = (metrics?.pageIndex ?: target).coerceIn(0, nextCount - 1)
             val positionChanged = nextCount != pageCount || nextIndex != pageIndex
             val layoutChanged = metrics?.layoutRevision?.takeIf { it >= 0L }
                 ?.let { it != currentLayoutRevision } == true
             pageCount = nextCount
             pageIndex = nextIndex
+            applyReaderChromeToView(view)
             if (layoutChanged) {
                 currentLayoutRevision = checkNotNull(metrics).layoutRevision
                 closeAdjacentPageFrames()
@@ -1404,21 +1560,44 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 token = token,
                 sourcePageIndex = previous,
                 transitionSnapshot = transitionSnapshot,
-                onResult = null
+                onResult = null,
+                forwardTargetPageIndex = target
             )
             applyPage(
                 view = view,
                 index = target,
                 animate = animate
-            ) {
-                verifyPageHandoff(
+            ) { appliedMetrics ->
+                completeAppliedPage(
                     view = view,
-                    request = request,
-                    token = token,
-                    expectedPageIndex = target,
-                    sourcePageIndex = previous,
-                    transitionSnapshot = transitionSnapshot,
-                    onCommitted = ::reconcileAppliedPage
+                    targetPageIndex = target,
+                    metrics = appliedMetrics,
+                    isActive = { isPageHandoffActive(view, request, token) },
+                    onCommitted = { metrics ->
+                        finishPageHandoff(request)
+                        reconcileAppliedPage(metrics)
+                        clearRecoverySnapshot(transitionSnapshot)
+                        syncAdjacentPageFrames()
+                        scheduleCommittedPageSnapshotRefresh("page-handoff-committed")
+                        scheduleQueuedPageTurnDrain()
+                    },
+                    onNeedsProbe = {
+                        verifyAnimationTargetPage(
+                            view = view,
+                            target = EpubDirectActivationTargetPolicy.pageIndex(target),
+                            requiresRenderableContent = chapter.requiresRenderableContent(),
+                            isActive = { isPageHandoffActive(view, request, token) },
+                            onVerified = { metrics ->
+                                finishPageHandoff(request)
+                                reconcileAppliedPage(metrics)
+                                clearRecoverySnapshot(transitionSnapshot)
+                                syncAdjacentPageFrames()
+                                scheduleCommittedPageSnapshotRefresh("page-handoff-committed")
+                                scheduleQueuedPageTurnDrain()
+                            },
+                            onFailure = { recoverUncommittedPageTurn(view, token, target) }
+                        )
+                    }
                 )
             }
         }
@@ -1488,7 +1667,10 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     }
 
     fun clearSelection() {
+        val hadSelection = selectionActive || currentWebView.hasLongPressSelectionGesture()
         selectionActive = false
+        // Ordinary navigation must not enqueue selection commands in the WebView.
+        if (!hadSelection) return
         currentWebView.evaluateJavascript(CLEAR_SELECTION_SCRIPT, null)
         post {
             resumePendingActivationAfterSelection()
@@ -1606,12 +1788,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             if (!isPageHandoffActive(view, request, token)) {
                 return@completeAfterVisualState
             }
+            val renderSequence = view.renderState.sequence
             view.evaluateJavascript(MEASURE_VIEWPORT_SCRIPT) { raw ->
                 if (!isPageHandoffActive(view, request, token)) {
                     return@evaluateJavascript
                 }
                 val metrics = parseMetrics(raw)
-                val verified = metrics?.let(::isVerified) == true
+                val verified = metrics != null && isVerified(metrics) && view.renderState.measured(
+                    token, metrics.visualRevision, metrics.layoutPending, renderSequence
+                )
                 if (!verified && attempt < MAX_PAGE_HANDOFF_VERIFY_ATTEMPTS) {
                     postDelayed({
                         verifyPageHandoff(
@@ -1717,13 +1902,21 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         token: Long,
         sourcePageIndex: Int,
         transitionSnapshot: EpubDirectRecoverySnapshotOverlay?,
-        onResult: ((Boolean) -> Unit)?
+        onResult: ((Boolean) -> Unit)?,
+        forwardTargetPageIndex: Int? = null
     ) {
         pageHandoffTimeoutRunnable?.let(::removeCallbacks)
+        val timeoutMillis = if (forwardTargetPageIndex == null) PAGE_HANDOFF_TIMEOUT_MS else PAGE_ANIMATION_COMMIT_TIMEOUT_MS
+        val deadline = templateActiveClock.now() + timeoutMillis
         lateinit var timeout: Runnable
         timeout = Runnable {
             if (pageHandoffTimeoutRunnable !== timeout) return@Runnable
+            if (deferTemplateDeadline(this, timeout, deadline)) return@Runnable
             pageHandoffTimeoutRunnable = null
+            if (forwardTargetPageIndex != null && isPageHandoffActive(view, request, token)) {
+                recoverUncommittedPageTurn(view, token, forwardTargetPageIndex)
+                return@Runnable
+            }
             restorePageAfterFailedHandoff(
                 view = view,
                 request = request,
@@ -1734,7 +1927,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             )
         }
         pageHandoffTimeoutRunnable = timeout
-        postDelayed(timeout, PAGE_HANDOFF_TIMEOUT_MS)
+        postDelayed(timeout, timeoutMillis)
     }
 
     private fun isPageHandoffActive(view: ReaderWebView, request: Long, token: Long): Boolean {
@@ -1762,6 +1955,10 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     fun reloadStyle(nextConfig: EpubCoreLayoutConfig) {
         val currentChapter = chapter ?: return
         val activeSession = session ?: return
+        if (selectionActive) {
+            clearSelection()
+            listener?.onSelectionCleared()
+        }
         closeAdjacentPageFrames()
         clearQueuedPageTurns()
         cancelPendingChapterTurn()
@@ -1820,16 +2017,28 @@ class EpubDirectWebLayer @JvmOverloads constructor(
 
     fun onHostPause() {
         if (destroyed) return
+        val unfinishedDrag = interactivePageTurn?.takeIf {
+            !it.boundary && it.finishRequested != true && it.sourceView === currentWebView &&
+                it.token == generation
+        }
         preloadGestureActive = false
         pauseTemplateMotion(currentWebView)
         standbyWebView?.let(::pauseTemplateMotion)
         templateActiveClock.pause()
         hostPaused = true
+        currentWebView.cancelPendingInteractiveDrag()
         cancelRuntimeMetricsSync()
         closeAdjacentPageFrames()
         clearQueuedPageTurns()
         cancelPendingChapterTurn()
         cancelPageAnimation()
+        // A gesture which was never released is a cancellation. Restore its source
+        // before resume reconciles progress; an accepted turn keeps its target.
+        unfinishedDrag?.let { turn ->
+            applyPage(turn.sourceView, turn.sourcePageIndex, animate = false) {
+                requestRuntimeMetricsSync()
+            }
+        }
         invalidateCommittedPageSnapshot()
         currentWebView.onPause()
         standbyWebView?.onPause()
@@ -1929,6 +2138,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     }
 
     fun onHidden() {
+        warmupResumeRunnable?.let(::removeCallbacks)
+        warmupResumeRunnable = null
         preloadGestureActive = false
         cancelForegroundReveal()
         closeAdjacentPageFrames()
@@ -1986,31 +2197,23 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     }
 
     fun trimMemory() {
+        // Memory pressure can arrive in the middle of a swipe. Release speculative
+        // work, while keeping the two bounded foreground frames and their commit.
+        // Cancelling that transaction used to expose/reset the source on every trim.
         closeAdjacentPageFrames()
-        clearQueuedPageTurns()
-        cancelPendingChapterTurn()
-        cancelPageAnimation()
         invalidateCommittedPageSnapshot()
-        val interruptedHandoff = pageHandoffRequest != null
-        cancelPageHandoff()
-        if (interruptedHandoff) {
-            applyPage(currentWebView, pageIndex, animate = false) {
-                completeAfterVisualState(currentWebView) {
-                    clearRecoverySnapshot()
-                    scheduleCommittedPageSnapshotRefresh("trim-restored")
-                }
-            }
-        } else {
-            clearRecoverySnapshot()
-        }
         cancelScheduledPreloads()
         clearPreloadedWebViews()
         discardStandbyForLifecycle(preserveForegroundCandidate = true)
     }
 
     fun destroy() {
+        warmupResumeRunnable?.let(::removeCallbacks)
+        warmupResumeRunnable = null
         if (destroyed) return
         destroyed = true
+        interactiveFrameReadyRunnable?.let(::removeCallbacks)
+        interactiveFrameReadyRunnable = null
         templateResumeCallbacks.clear()
         cancelRuntimeMetricsSync()
         cancelForegroundReveal()
@@ -2307,9 +2510,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         ) && (target.jsBoundary == null || metrics.activationTargetRevision == metrics.layoutRevision)
     }
 
-    private fun isMeasuredRenderStateCurrent(view: ReaderWebView, metrics: WebMetrics): Boolean =
-        !metrics.layoutPending && !view.renderState.layoutPending &&
-            metrics.visualRevision >= view.renderState.visualRevision
+    private fun isMeasuredRenderStateCurrent(view: ReaderWebView, metrics: WebMetrics): Boolean {
+        if (metrics.layoutPending || metrics.visualRevision < view.renderState.visualRevision ||
+            metrics.contentRevision < view.renderState.contentRevision
+        ) return false
+        reportTemplateContentChanged(view, view.token, metrics.contentRevision)
+        // A fresh settled query can complete a pending bridge notification. Requiring
+        // that notification to settle first makes the same page wait on its own result.
+        return true
+    }
 
     private fun completeActivation(
         view: ReaderWebView,
@@ -2391,6 +2600,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             (hasVisibleDocument && view !== currentWebView)
         activateWebView(view, keepOutgoingVisible = keepOutgoingVisible)
         documentReady = true
+        beginFrameWarmup()
         renderRecoveryAttempts = 0
         if (interactiveBoundaryTurn != null) {
             completeInteractiveChapterActivation(
@@ -2629,7 +2839,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         pageHandoffRestoreTimeoutRunnable?.let(::removeCallbacks)
         pageHandoffRestoreTimeoutRunnable = null
         requestTextReaderPosition()
-        requestRuntimeMetricsSync()
+        if (currentWebView.renderState.needsMetrics) scheduleRuntimeMetricsSync()
     }
 
     private fun failPendingLoad(view: ReaderWebView, token: Long, message: String, throwable: Throwable? = null) {
@@ -3015,6 +3225,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     view.preloadReady = true
                     view.preloading = false
                     preloadedWebViews.put(chapterKey, view)
+                    // Publish the verified page count now, so the snapshot window
+                    // can prepare this chapter's opening before the reader reaches it.
+                    syncAdjacentPageFrames()
                 }
             }
         }
@@ -3407,6 +3620,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val logicalDirection = if (sourceChapter.isRtlLayout()) -visualDirection else visualDirection
         val sourcePageIndex = pageIndex
         val targetPageIndex = sourcePageIndex + logicalDirection
+        adjacentPageFrames?.prepareGestureFrames(adjacentPageDirection(logicalDirection))
         if (targetPageIndex !in 0 until pageCount.coerceAtLeast(1)) {
             return beginInteractiveChapterTurn(
                 view = view,
@@ -3419,16 +3633,18 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
 
         val backgroundColor = sourceConfig.backgroundColor
-        val sourceBitmap = takeCommittedPageSnapshot(
-            view = view,
-            reason = "interactive-turn-source-unavailable"
-        )
-            ?: return false
+        // Check both frame identities before taking ownership. A cold adjacent
+        // frame must not copy/recycle a full-screen source on every MOVE event.
+        if (!hasCommittedPageSnapshot(view, "interactive-turn-source-unavailable")) return false
         suspendAdjacentPageFrameScheduling()
+        val framePipeline = adjacentPageFrames
+        val expectedFrameTarget = framePipeline?.target(adjacentPageDirection(logicalDirection))
+        var cachedTargetFrame: CachedAnimationTarget? = null
         val targetBitmap = takeAdjacentPageBitmap(
             logicalDirection = logicalDirection,
             expectedChapterIndex = sourceChapter.chapterIndex,
-            expectedPageIndex = targetPageIndex
+            expectedPageIndex = targetPageIndex,
+            onTaken = { cachedTargetFrame = it }
         )
         val action = EpubDirectPageAnimationPolicy.turnAction(logicalDirection)
         if (!EpubDirectPageAnimationPolicy.hasRequiredBitmapFrames(
@@ -3437,11 +3653,20 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 hasTargetBitmap = targetBitmap != null && !targetBitmap.isRecycled
             )
         ) {
-            sourceBitmap.takeUnless { it.isRecycled }?.recycle()
             targetBitmap?.takeUnless { it.isRecycled }?.recycle()
             scheduleAdjacentPageFrameResume()
             return false
         }
+        val sourceBitmap = takeCommittedPageSnapshot(
+            view = view,
+            reason = "interactive-turn-source-unavailable",
+            transferOwnership = true
+        ) ?: run {
+            targetBitmap?.takeUnless { it.isRecycled }?.recycle()
+            scheduleAdjacentPageFrameResume()
+            return false
+        }
+        cancelRuntimeMetricsSync()
         clearSelection()
         val mounted = mountPageAnimationOverlay(
             sourceBitmap = sourceBitmap,
@@ -3480,7 +3705,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             style = style,
             sequence = mounted.sequence,
             overlay = mounted.overlay,
-            gesture = EpubDirectGesturePolicy.DragState(visualDirection, touchSlop)
+            gesture = EpubDirectGesturePolicy.DragState(visualDirection, touchSlop),
+            framePipeline = framePipeline,
+            expectedFrameTarget = expectedFrameTarget,
+            sourceLayoutRevision = currentLayoutRevision,
+            cachedTargetFrame = cachedTargetFrame
         )
         interactivePageTurn = turn
         if (!bindLivePageAnimationTarget(
@@ -3504,11 +3733,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             }
             pageAnimationStartTimeout = null
             AppLog.putDebug(
-                "EPUB interactive target timed out; restoring committed source: " +
+                "EPUB interactive target commit timed out: " +
                     "chapter=${turn.sourceChapterIndex}, sourcePage=${turn.sourcePageIndex}, " +
                     "targetPage=${turn.targetPageIndex}, style=${turn.style}"
             )
-            restoreInteractiveSource(turn)
+            failInteractiveTarget(turn)
         }
         pageAnimationStartTimeout = targetTimeout
         postDelayed(targetTimeout, PAGE_ANIMATION_COMMIT_TIMEOUT_MS)
@@ -3519,39 +3748,44 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             ) {
                 return@applyPage
             }
-            verifyAnimationTargetPage(
+            val stillActive = {
+                isInteractivePageTurnActive(turn) && turn.request == pageApplySequence && !turn.restoring
+            }
+            val commitTarget: (WebMetrics) -> Unit = { verifiedMetrics ->
+                if (pageAnimationStartTimeout === targetTimeout) {
+                    removeCallbacks(targetTimeout)
+                    pageAnimationStartTimeout = null
+                }
+                turn.targetPageCount = verifiedMetrics.pageCount.coerceAtLeast(1)
+                turn.targetApplied = true
+                revealLivePageAnimationTarget(turn.overlay)
+                if (turn.finishRequested == null && !turn.settling) {
+                    setPageAnimationProgress(turn.overlay, turn.requestedProgress)
+                }
+                maybeStartInteractiveSettle(turn)
+            }
+            completeAppliedPage(
                 view = view,
-                target = EpubDirectActivationTargetPolicy.pageIndex(targetPageIndex),
-                requiresRenderableContent = sourceChapter.requiresRenderableContent(),
-                isActive = {
-                    isInteractivePageTurnActive(turn) && turn.request == pageApplySequence &&
-                        !turn.restoring
-                },
-                onVerified = { verifiedMetrics ->
-                    if (pageAnimationStartTimeout === targetTimeout) {
-                        removeCallbacks(targetTimeout)
-                        pageAnimationStartTimeout = null
-                    }
-                    turn.targetPageCount = maxOf(
-                        verifiedMetrics.pageCount,
-                        metrics?.pageCount ?: pageCount,
-                        targetPageIndex + 1,
-                        1
+                targetPageIndex = targetPageIndex,
+                metrics = metrics,
+                isActive = stillActive,
+                onCommitted = commitTarget,
+                onNeedsProbe = {
+                    verifyAnimationTargetPage(
+                        view = view,
+                        target = EpubDirectActivationTargetPolicy.pageIndex(targetPageIndex),
+                        requiresRenderableContent = sourceChapter.requiresRenderableContent(),
+                        isActive = stillActive,
+                        onVerified = commitTarget,
+                        onFailure = { failedMetrics ->
+                            AppLog.putDebug(
+                                "EPUB interactive target verification failed: " +
+                                    "chapter=${turn.sourceChapterIndex}, sourcePage=${turn.sourcePageIndex}, " +
+                                    "targetPage=${turn.targetPageIndex}, metrics=$failedMetrics"
+                            )
+                            failInteractiveTarget(turn)
+                        }
                     )
-                    turn.targetApplied = true
-                    revealLivePageAnimationTarget(turn.overlay)
-                    if (turn.finishRequested == null && !turn.settling) {
-                        setPageAnimationProgress(turn.overlay, turn.requestedProgress)
-                    }
-                    maybeStartInteractiveSettle(turn)
-                },
-                onFailure = { failedMetrics ->
-                    AppLog.putDebug(
-                        "EPUB interactive target verification failed; restoring committed source: " +
-                            "chapter=${turn.sourceChapterIndex}, sourcePage=${turn.sourcePageIndex}, " +
-                            "targetPage=${turn.targetPageIndex}, metrics=$failedMetrics"
-                    )
-                    restoreInteractiveSource(turn)
                 }
             )
         }
@@ -3571,7 +3805,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val pending = prepareChapterTurn(
             direction = logicalDirection,
             animate = true,
-            scheduleTimeout = false
+            scheduleTimeout = false,
+            interactive = true
         ) ?: run {
             scheduleAdjacentPageFrameResume()
             return false
@@ -3630,7 +3865,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             sequence = mounted.sequence,
             overlay = mounted.overlay,
             gesture = EpubDirectGesturePolicy.DragState(visualDirection, touchSlop),
-            boundary = true
+            boundary = true,
+            framePipeline = adjacentPageFrames,
+            expectedFrameTarget = adjacentPageFrames?.target(adjacentPageDirection(logicalDirection)),
+            sourceLayoutRevision = currentLayoutRevision,
+            cachedTargetFrame = pending.targetFrame
         )
         interactivePageTurn = turn
         prepareInteractiveBoundaryPreview(turn)
@@ -3801,6 +4040,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
 
     private fun startInteractiveSettle(turn: InteractivePageTurn, commit: Boolean) {
         if (!isInteractivePageTurnActive(turn) || turn.settling || turn.restoring) return
+        if (commit && !turn.overlay.canAnimate) return
         turn.settling = true
         if (!commit || turn.targetApplied) {
             pageAnimationStartTimeout?.let(::removeCallbacks)
@@ -3883,7 +4123,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (!isInteractivePageTurnActive(turn) || turn.restoring) return
         turn.settling = false
         if (!turn.boundary) {
-            val nextCount = maxOf(turn.targetPageCount ?: pageCount, turn.targetPageIndex + 1, 1)
+            val nextCount = (turn.targetPageCount ?: pageCount).coerceAtLeast(1)
             val nextIndex = turn.targetPageIndex.coerceIn(0, nextCount - 1)
             val changed = nextCount != pageCount || nextIndex != pageIndex
             pageCount = nextCount
@@ -3907,6 +4147,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             return
         }
         val restoreRequest = ++pageApplySequence
+        val restoreDeadline = templateActiveClock.now() + PAGE_HANDOFF_RESTORE_TIMEOUT_MS
+        fun isRestoring() = isInteractivePageTurnActive(turn) && restoreRequest == pageApplySequence
+        fun recoverSource() {
+            if (!isRestoring()) return
+            // Cancellation displays the source. Forward recovery normally keeps
+            // the target bitmap, so discard that ownership before restoring here.
+            turn.overlay.takeTargetBitmap()?.takeUnless { it.isRecycled }?.recycle()
+            recoverUncommittedPageTurn(turn.sourceView, turn.token, turn.sourcePageIndex)
+        }
         lateinit var restoreTimeout: Runnable
         restoreTimeout = Runnable {
             if (interactiveRestoreTimeout !== restoreTimeout ||
@@ -3915,20 +4164,32 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 return@Runnable
             }
             interactiveRestoreTimeout = null
-            completeInteractiveRollback(turn)
+            recoverSource()
         }
         interactiveRestoreTimeout = restoreTimeout
         postDelayed(restoreTimeout, PAGE_HANDOFF_RESTORE_TIMEOUT_MS)
         applyPage(turn.sourceView, turn.sourcePageIndex, animate = false) {
-            if (!isInteractivePageTurnActive(turn) || restoreRequest != pageApplySequence) {
-                return@applyPage
-            }
-            completePageAnimationVisualState(turn.sourceView, turn.sequence) {
-                if (!isInteractivePageTurnActive(turn) || restoreRequest != pageApplySequence) {
-                    return@completePageAnimationVisualState
-                }
-                completeInteractiveRollback(turn)
-            }
+            verifyAnimationTargetPage(
+                view = turn.sourceView,
+                target = EpubDirectActivationTargetPolicy.pageIndex(turn.sourcePageIndex),
+                requiresRenderableContent = turn.sourceView.preparedChapter.requiresRenderableContent(),
+                isActive = ::isRestoring,
+                onVerified = { metrics ->
+                    commitPageMetrics(metrics)
+                    completeInteractiveRollback(turn)
+                },
+                onFailure = { recoverSource() },
+                deadline = restoreDeadline
+            )
+        }
+    }
+
+    private fun failInteractiveTarget(turn: InteractivePageTurn) {
+        if (!isInteractivePageTurnActive(turn) || turn.restoring) return
+        if (turn.finishRequested == true && !turn.boundary) {
+            recoverUncommittedPageTurn(turn.sourceView, turn.token, turn.targetPageIndex)
+        } else {
+            restoreInteractiveSource(turn)
         }
     }
 
@@ -3941,11 +4202,25 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (pageAnimationOverlay === turn.overlay) pageAnimationOverlay = null
         pageAnimationSequence++
         preserveAnimationSourceForCurrentOrAdjacent(turn.overlay)
+        val returnedTarget = takeInteractiveTargetForCache(turn)
         releasePageAnimationOverlay(turn.overlay, deferTargetLayerRelease = true)
+        returnedTarget?.let { (owner, frame) -> owner.pipeline.returnFrame(owner.target, frame) }
         requestRuntimeMetricsSync()
         scheduleAdjacentPageFrameResume()
         scheduleCommittedPageSnapshotRefresh("interactive-turn-rolled-back")
         scheduleQueuedPageTurnDrain()
+    }
+
+    private fun takeInteractiveTargetForCache(
+        turn: InteractivePageTurn
+    ): Pair<CachedAnimationTarget, EpubRenderedPageFrame>? {
+        val owner = turn.cachedTargetFrame ?: return null
+        if (animationRenderStateChanged || turn.sourceLayoutRevision != currentLayoutRevision) return null
+        val bitmap = turn.overlay.takeTargetBitmap() ?: return null
+        return owner to EpubRenderedPageFrame(
+            owner.target.chapterIndex, owner.target.chapterHref, owner.pageIndex, owner.pageCount,
+            bitmap, owner.target.layoutSignature, owner.target.readerChromeContentRevision
+        )
     }
 
     private fun isInteractivePageTurnActive(turn: InteractivePageTurn): Boolean {
@@ -3963,6 +4238,32 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             turn.sourceView === currentWebView
     }
 
+    /** A command acknowledgement schedules a fresh check after the WebView can draw. */
+    private fun completeAppliedPage(
+        view: ReaderWebView,
+        targetPageIndex: Int,
+        metrics: WebMetrics?,
+        isActive: () -> Boolean,
+        onCommitted: (WebMetrics) -> Unit,
+        onNeedsProbe: () -> Unit
+    ) {
+        if (!isActive()) return
+        if (metrics == null || metrics.layoutPending) {
+            onNeedsProbe()
+            return
+        }
+        verifyAnimationTargetPage(
+            view = view,
+            target = EpubDirectActivationTargetPolicy.pageIndex(targetPageIndex),
+            requiresRenderableContent = view.preparedChapter.requiresRenderableContent(),
+            isActive = isActive,
+            onVerified = onCommitted,
+            onFailure = { onNeedsProbe() },
+            // Try once on the normal path; the caller owns bounded retry/recovery.
+            deadline = templateActiveClock.now()
+        )
+    }
+
     private fun verifyAnimationTargetPage(
         view: ReaderWebView,
         target: EpubDirectActivationTargetPolicy.Target,
@@ -3971,7 +4272,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         isActive: () -> Boolean,
         onVerified: (WebMetrics) -> Unit,
         onFailure: (WebMetrics?) -> Unit,
-        attempt: Int = 0
+        deadline: Long = templateActiveClock.now() + PAGE_ANIMATION_COMMIT_TIMEOUT_MS
     ) {
         if (!isActive()) return
         fun isVerified(metrics: WebMetrics): Boolean {
@@ -3992,32 +4293,130 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 ) && (!requireActivationTargetRevision ||
                     metrics.activationTargetRevision == metrics.layoutRevision)
         }
-        completeAfterVisualState(view) {
+        fun retry(metrics: WebMetrics?) {
+            if (!isActive()) return
+            if (templateActiveClock.now() >= deadline) {
+                onFailure(metrics)
+                return
+            }
+            postDelayed({
+                verifyAnimationTargetPage(
+                    view = view,
+                    target = target,
+                    requiresRenderableContent = requiresRenderableContent,
+                    requireActivationTargetRevision = requireActivationTargetRevision,
+                    isActive = isActive,
+                    onVerified = onVerified,
+                    onFailure = onFailure,
+                    deadline = deadline
+                )
+            }, PAGE_HANDOFF_RETRY_MS)
+        }
+        // Yield for drawing first, then inspect the current page. A late/missing
+        // visual notification must not pin input to a measurement made before it.
+        completeAfterVisualState(view, onUnavailable = { retry(null) }) {
             if (!isActive()) return@completeAfterVisualState
-            view.evaluateJavascript(MEASURE_VIEWPORT_SCRIPT) { raw ->
-                if (!isActive()) return@evaluateJavascript
+            val renderSequence = view.renderState.sequence
+            evaluatePageJavascript(view, MEASURE_VIEWPORT_SCRIPT) { raw ->
+                if (!isActive()) return@evaluatePageJavascript
                 val metrics = parseMetrics(raw)
-                val verified = metrics?.let(::isVerified) == true
-                if (verified) {
-                    onVerified(checkNotNull(metrics))
-                    return@evaluateJavascript
+                val previousVisualRevision = view.renderState.visualRevision
+                val verified = metrics != null && isVerified(metrics) &&
+                    view.renderState.measured(view.token, metrics.visualRevision, metrics.layoutPending, renderSequence)
+                if (!verified) {
+                    retry(metrics)
+                    return@evaluatePageJavascript
                 }
-                if (attempt < MAX_PAGE_HANDOFF_VERIFY_ATTEMPTS) {
-                    postDelayed({
-                        verifyAnimationTargetPage(
-                            view = view,
-                            target = target,
-                            requiresRenderableContent = requiresRenderableContent,
-                            requireActivationTargetRevision = requireActivationTargetRevision,
-                            isActive = isActive,
-                            onVerified = onVerified,
-                            onFailure = onFailure,
-                            attempt = attempt + 1
-                        )
-                    }, PAGE_HANDOFF_RETRY_MS)
-                } else {
-                    onFailure(metrics)
+                val accepted = checkNotNull(metrics)
+                if (view === currentWebView && view.preparedChapter?.readerTemplate == null &&
+                    previousVisualRevision >= 0L && accepted.visualRevision > previousVisualRevision
+                ) {
+                    animationRenderStateChanged = true
+                    invalidateCommittedPageSnapshot()
+                    closeAdjacentPageFrames()
                 }
+                onVerified(accepted)
+            }
+        }
+    }
+
+    /** Reconcile a failed command on its existing document; only renderer loss reloads it. */
+    private fun recoverUncommittedPageTurn(view: ReaderWebView, token: Long, targetPageIndex: Int) {
+        if (destroyed || view !== currentWebView || token != generation ||
+            view.token != token || !isPageTurnBusy()
+        ) return
+        val overlay = pageAnimationOverlay
+        // A prepared target may already be fully visible at the end of the animation.
+        // Keep those accepted pixels while its live document is being reconciled.
+        val bitmap = overlay?.takeTargetBitmap() ?: overlay?.takeSourceBitmap()
+        cancelPageAnimation()
+        val transition = if (bitmap != null && showRecoverySnapshot(bitmap, pageTransition = true)) {
+            pageTransitionSnapshotOverlay
+        } else {
+            preservePageTransitionSnapshot(view)
+        }
+        cancelPageHandoff()
+        cancelRuntimeMetricsSync()
+        invalidateCommittedPageSnapshot()
+        closeAdjacentPageFrames()
+        val request = ++pageApplySequence
+        pageHandoffRequest = request
+        val deadline = templateActiveClock.now() + PAGE_HANDOFF_RECOVERY_TIMEOUT_MS
+        fun current() = !destroyed && isPageHandoffActive(view, request, token)
+        fun finish(metrics: WebMetrics?) {
+            if (!current()) return
+            finishPageHandoff(request)
+            if (metrics != null) {
+                commitPageMetrics(metrics)
+            } else {
+                clearQueuedPageTurns()
+                cancelRuntimeMetricsSync()
+                // Stop the failed transaction without declaring its pixels ready.
+                // The next user turn or resume starts a fresh measurement.
+                view.renderState.requireMetrics()
+            }
+            clearRecoverySnapshot(transition)
+            if (metrics != null) {
+                syncAdjacentPageFrames()
+                scheduleCommittedPageSnapshotRefresh("page-command-recovered")
+                scheduleQueuedPageTurnDrain()
+            } else {
+                listener?.onError("页面绘制暂未完成，请再试一次", null)
+            }
+        }
+        lateinit var timeout: Runnable
+        timeout = Runnable {
+            if (pageHandoffTimeoutRunnable !== timeout || !current()) return@Runnable
+            if (deferTemplateDeadline(this, timeout, deadline)) return@Runnable
+            finish(null)
+        }
+        pageHandoffTimeoutRunnable = timeout
+        postDelayed(timeout, PAGE_HANDOFF_RECOVERY_TIMEOUT_MS)
+        fun probe() {
+            verifyAnimationTargetPage(
+                view = view,
+                target = EpubDirectActivationTargetPolicy.pageIndex(targetPageIndex),
+                requiresRenderableContent = chapter.requiresRenderableContent(),
+                isActive = ::current,
+                onVerified = { finish(it) },
+                onFailure = { finish(null) },
+                deadline = deadline
+            )
+        }
+        fun applied(metrics: WebMetrics?) {
+            completeAppliedPage(view, targetPageIndex, metrics, ::current, { finish(it) }, ::probe)
+        }
+        AppLog.putDebug("EPUB page command recovery on the current document: " +
+            "chapter=${chapter?.chapterIndex}, page=$targetPageIndex")
+        evaluatePageJavascript(view, MEASURE_VIEWPORT_SCRIPT) { raw ->
+            if (!current()) return@evaluatePageJavascript
+            val metrics = parseMetrics(raw)
+            if (metrics != null && metrics.pageIndex == targetPageIndex) {
+                // The command may have succeeded while its acknowledgement was lost.
+                applied(metrics)
+            } else {
+                // Absolute page assignment is idempotent. Retry it once, not a chapter load.
+                applyPage(view, targetPageIndex, animate = false, onApplied = ::applied)
             }
         }
     }
@@ -4101,10 +4500,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
 
         var handoffStarted = false
-        var restoring = false
+        var animationStarted = false
         var commitReported = false
         var lastTargetMetrics: WebMetrics? = null
-        var restoreTimeout: Runnable? = null
         val token = generation
 
         fun reportTargetCommit(metrics: WebMetrics?) {
@@ -4114,63 +4512,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             onApplied(lastTargetMetrics)
         }
 
-        fun finishRestore(verified: Boolean) {
-            restoreTimeout?.let(::removeCallbacks)
-            restoreTimeout = null
-            if (sequence != pageAnimationSequence || pageAnimationOverlay !== overlay ||
-                token != generation || view !== currentWebView || destroyed
-            ) return
-            if (!verified) {
-                AppLog.putDebug(
-                    "EPUB animated target rollback finished without verified source metrics: " +
-                        "chapter=${chapter?.chapterIndex}, sourcePage=$sourcePageIndex, targetPage=$index"
-                )
-            }
-            cancelPageAnimation()
-            scheduleCommittedPageSnapshotRefresh("page-animation-target-rolled-back")
-        }
-
-        fun restoreSource(reason: String, failedMetrics: WebMetrics?) {
-            if (handoffStarted || restoring || sequence != pageAnimationSequence ||
-                pageAnimationOverlay !== overlay || destroyed
-            ) return
-            restoring = true
-            pageAnimationStartTimeout?.let(::removeCallbacks)
-            pageAnimationStartTimeout = null
-            val restoreRequest = ++pageApplySequence
-            AppLog.putDebug(
-                "EPUB animated target unavailable; restoring committed source: " +
-                    "reason=$reason, chapter=${chapter?.chapterIndex}, sourcePage=$sourcePageIndex, " +
-                    "targetPage=$index, style=$style, metrics=$failedMetrics"
-            )
-            lateinit var timeout: Runnable
-            timeout = Runnable {
-                if (restoreTimeout !== timeout || restoreRequest != pageApplySequence) return@Runnable
-                finishRestore(verified = false)
-            }
-            restoreTimeout = timeout
-            postDelayed(timeout, PAGE_HANDOFF_RESTORE_TIMEOUT_MS)
-            applyPage(view, sourcePageIndex, animate = false) {
-                if (restoreRequest != pageApplySequence || sequence != pageAnimationSequence ||
-                    pageAnimationOverlay !== overlay || token != generation || view !== currentWebView
-                ) return@applyPage
-                verifyAnimationTargetPage(
-                    view = view,
-                    target = EpubDirectActivationTargetPolicy.pageIndex(sourcePageIndex),
-                    requiresRenderableContent = chapter.requiresRenderableContent(),
-                    isActive = {
-                        restoreRequest == pageApplySequence && sequence == pageAnimationSequence &&
-                            pageAnimationOverlay === overlay && token == generation &&
-                            view === currentWebView
-                    },
-                    onVerified = { finishRestore(verified = true) },
-                    onFailure = { finishRestore(verified = false) }
-                )
-            }
-        }
-
         fun startAfterCommit(metrics: WebMetrics) {
-            if (handoffStarted || restoring) return
+            if (handoffStarted) return
             handoffStarted = true
             pageAnimationStartTimeout?.let(::removeCallbacks)
             pageAnimationStartTimeout = null
@@ -4179,35 +4522,52 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             }
             reportTargetCommit(metrics)
             revealLivePageAnimationTarget(overlay)
-            startOverlayAnimator(sequence, overlay, style)
+            if (!animationStarted) {
+                animationStarted = true
+                startOverlayAnimator(sequence, overlay, style)
+            }
         }
 
-        // Keep the committed source opaque until Chromium verifies the real target viewport.
-        // The target remains the live WebView so compositor-only scrolling and resources are
-        // never flattened through View.draw(Canvas).
+        // A prepared target is already a complete hardware-rendered page. Animate its
+        // pixels immediately while the live WebView catches up underneath. Without it,
+        // retain the complete source until the live target is committed.
         pageAnimationStartTimeout = Runnable {
             if (sequence == pageAnimationSequence && pageAnimationOverlay === overlay && !destroyed) {
-                restoreSource("target-timeout", lastTargetMetrics)
+                recoverUncommittedPageTurn(view, token, index)
             }
         }.also {
             postDelayed(it, PAGE_ANIMATION_COMMIT_TIMEOUT_MS)
         }
+        if (overlay.hasPreparedTarget) {
+            animationStarted = true
+            startOverlayAnimator(sequence, overlay, style)
+        }
         applyPage(view, index, animate = false) { metrics ->
-            if (handoffStarted || restoring || sequence != pageAnimationSequence ||
+            if (handoffStarted || sequence != pageAnimationSequence ||
                 pageAnimationOverlay !== overlay || destroyed
             ) return@applyPage
             if (metrics != null) lastTargetMetrics = metrics
-            verifyAnimationTargetPage(
+            val stillActive = {
+                !handoffStarted && sequence == pageAnimationSequence &&
+                    pageAnimationOverlay === overlay && token == generation &&
+                    view === currentWebView
+            }
+            completeAppliedPage(
                 view = view,
-                target = EpubDirectActivationTargetPolicy.pageIndex(index),
-                requiresRenderableContent = activeChapter.requiresRenderableContent(),
-                isActive = {
-                    !handoffStarted && !restoring && sequence == pageAnimationSequence &&
-                        pageAnimationOverlay === overlay && token == generation &&
-                        view === currentWebView
-                },
-                onVerified = ::startAfterCommit,
-                onFailure = { restoreSource("target-not-renderable", it) }
+                targetPageIndex = index,
+                metrics = metrics,
+                isActive = stillActive,
+                onCommitted = ::startAfterCommit,
+                onNeedsProbe = {
+                    verifyAnimationTargetPage(
+                        view = view,
+                        target = EpubDirectActivationTargetPolicy.pageIndex(index),
+                        requiresRenderableContent = activeChapter.requiresRenderableContent(),
+                        isActive = stillActive,
+                        onVerified = ::startAfterCommit,
+                        onFailure = { recoverUncommittedPageTurn(view, token, index) }
+                    )
+                }
             )
         }
         return true
@@ -4313,6 +4673,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     ) {
         overlay.progress = progress
         updateLivePageAnimationTarget(overlay.progress)
+        val turn = interactivePageTurn
+        if (turn?.overlay === overlay && overlay.progress > 0f && !startupMotionReported &&
+            startupInputAt != 0L && startupInputCount <= 3
+        ) {
+            startupMotionReported = true
+            AppLog.putDebug("EPUB startup drag-moving: input=$startupInputCount, boundary=${turn.boundary}, " +
+                "preparedTarget=${overlay.hasPreparedTarget}, liveCommitted=${turn.targetApplied}, " +
+                "elapsedMs=${SystemClock.uptimeMillis() - startupInputAt}")
+        }
     }
 
     private fun updateLivePageAnimationTarget(progress: Float) {
@@ -4324,7 +4693,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             return
         }
         val viewportWidth = width.coerceAtLeast(target.view.width).coerceAtLeast(1)
-        target.view.translationX = if (target.revealed) {
+        target.view.translationX = if (target.revealed && !target.overlay.hasPreparedTarget) {
             EpubDirectPageAnimationPolicy.liveTargetTranslationX(
                 style = target.style,
                 action = target.action,
@@ -4354,12 +4723,16 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
         target.revealed = true
         updateLivePageAnimationTarget(overlay.progress)
-        overlay.revealLiveTarget()
+        val finalFrameWaiting = overlay.revealLiveTarget()
         overlay.bringToFront()
+        if (finalFrameWaiting) {
+            post { finishPageAnimationAfterFinalFrame(target.sequence, overlay) }
+        }
         return true
     }
 
     private fun prepareLivePageAnimationTarget(target: LivePageAnimationTarget) {
+        if (target.overlay.hasPreparedTarget) return
         if (!EpubDirectPageAnimationPolicy.requiresMovingLiveTarget(target.style, target.action)) return
         if (!target.transientStateSet) {
             target.view.setHasTransientState(true)
@@ -4368,7 +4741,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (interactivePageTurn?.overlay === target.overlay) return
         if (!target.view.isHardwareAccelerated || target.hardwareLayerPrepared) return
         runCatching {
-            markSnapshotSceneChanged()
+            markSnapshotSceneChanged(preserveCommittedPage = true)
             target.view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
             target.hardwareLayerPrepared = true
             target.view.buildLayer()
@@ -4442,7 +4815,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun restoreLiveTargetLayer(view: ReaderWebView, originalLayerType: Int) {
         runCatching {
             if (view.layerType != originalLayerType) {
-                markSnapshotSceneChanged()
+                markSnapshotSceneChanged(preserveCommittedPage = true)
                 view.setLayerType(originalLayerType, null)
             }
             view.invalidate()
@@ -4501,6 +4874,10 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     ) {
         if (sequence != pageAnimationSequence || pageAnimationOverlay !== overlay) return
         setPageAnimationProgress(overlay, 1f)
+        // Preserve the complete target bitmap if its animation finishes before the live
+        // WebView. Removing it on an animator timer exposes an uncommitted grey surface.
+        if (!overlay.finishAnimation() || pageFinalFrameSequence == sequence) return
+        pageFinalFrameSequence = sequence
         val completed = AtomicBoolean(false)
         val observer = overlay.viewTreeObserver
         lateinit var drawListener: android.view.ViewTreeObserver.OnDrawListener
@@ -4531,6 +4908,12 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         overlay: EpubDirectPageAnimationOverlay
     ) {
         if (sequence != pageAnimationSequence || pageAnimationOverlay !== overlay) return
+        if (startupInputAt != 0L && startupInputCount <= 3) {
+            AppLog.putDebug("EPUB startup turn-committed: input=$startupInputCount, " +
+                "page=$pageIndex, elapsedMs=${SystemClock.uptimeMillis() - startupInputAt}")
+            startupInputAt = 0L
+        }
+        pageFinalFrameSequence = null
         if (interactivePageTurn?.overlay === overlay) {
             interactivePageTurn = null
             interactiveRestoreTimeout?.let(::removeCallbacks)
@@ -4538,14 +4921,23 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
         pageAnimator = null
         pageAnimationOverlay = null
+        applyReaderChromeToView(currentWebView)
         requestTextReaderPosition()
-        val targetSnapshotReady = preserveAnimationTargetAsCommittedSnapshot(overlay)
+        // A drag may have committed while frame scheduling was suspended. Bind its
+        // actual position before offering the outgoing page for an immediate back turn.
+        syncAdjacentPageFrames()
+        preserveAnimationTargetAsCommittedSnapshot(overlay)
         preserveAnimationSourceAsAdjacentFrame(overlay)
         releasePageAnimationOverlay(overlay, deferTargetLayerRelease = true)
-        requestRuntimeMetricsSync()
+        // The handoff already measured and verified this target. Only a newer visual
+        // change needs another round trip before the next queued turn can start.
+        if (!currentWebView.renderState.canCapture) {
+            requestRuntimeMetricsSync()
+        }
         scheduleAdjacentPageFrameResume()
         scheduleCommittedPageSnapshotRefresh("page-animation-finished")
-        if (targetSnapshotReady) scheduleQueuedPageTurnDrain()
+        resumeScheduledPreloads()
+        scheduleQueuedPageTurnDrain()
     }
 
     private fun cancelPageAnimation(
@@ -4566,6 +4958,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         interactiveRestoreTimeout = null
         if (interactiveTurn != null) pageApplySequence++
         pageAnimationSequence++
+        pageFinalFrameSequence = null
         pageAnimationStartTimeout?.let(::removeCallbacks)
         pageAnimationStartTimeout = null
         pageAnimator?.removeAllListeners()
@@ -4858,14 +5251,32 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         return committedPageSnapshots.complete(request, key, snapshotSceneRevision, bitmap)
     }
 
-    private fun takeCommittedPageSnapshot(view: ReaderWebView, reason: String): Bitmap? {
-        if (!view.renderState.canCapture) return null
+    private fun hasCommittedPageSnapshot(view: ReaderWebView, reason: String): Boolean {
+        if (view.renderState.layoutPending) return false
+        val key = committedPageSnapshotKey(view) ?: return false
+        if (committedPageSnapshots.peek(key)?.isRecycled == false) return true
+        if (view.renderState.canCapture) scheduleCommittedPageSnapshotRefresh(reason, expectedKey = key)
+        return false
+    }
+
+    private fun takeCommittedPageSnapshot(
+        view: ReaderWebView,
+        reason: String,
+        transferOwnership: Boolean = false
+    ): Bitmap? {
+        if (view.renderState.layoutPending) return null
         val key = committedPageSnapshotKey(view) ?: return null
-        val cached = committedPageSnapshots.peek(key)
+        // A metrics-only query does not change these validated pixels. Actual
+        // layout/content notifications invalidate the cache before requesting it.
+        val cached = if (transferOwnership) committedPageSnapshots.take(key) else committedPageSnapshots.peek(key)
         if (cached != null && !cached.isRecycled) {
+            // The overlay now owns this immutable bitmap. Rollback already
+            // returns its source through preserveAnimationSourceForCurrentOrAdjacent.
+            if (transferOwnership) return cached
             val copy = runCatching { cached.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
             if (copy != null && !copy.isRecycled) return copy
         }
+        if (!view.renderState.canCapture) return null
         scheduleCommittedPageSnapshotRefresh(reason, expectedKey = key)
         return null
     }
@@ -4925,7 +5336,16 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 return@Runnable
             }
             val request = committedPageSnapshots.begin(key, snapshotSceneRevision)
-            completePageAnimationVisualState(view, request.sequence) {
+            completePageAnimationVisualState(view, request.sequence, onUnavailable = {
+                failCommittedPageSnapshotCapture(
+                    request = request,
+                    view = view,
+                    reason = reason,
+                    attempt = attempt,
+                    failure = "visual-commit-unavailable",
+                    windowRect = null
+                )
+            }) {
                 completeAfterCompositorFrames(view) {
                     if (committedPageSnapshotKey(view) != key) {
                         committedPageSnapshots.fail(request)
@@ -4984,7 +5404,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     }
 
     private fun resumeTemplateMotion(view: ReaderWebView) {
-        if (frameRenderer || destroyed || view !== currentWebView ||
+        if (frameRenderer || destroyed || preloadGestureActive || view !== currentWebView ||
             view.preparedChapter?.readerTemplate == null ||
             view.templateMotionSettlePending || hasCommittedSnapshotCaptureBlocker(view)
         ) return
@@ -4999,6 +5419,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun settleTemplateMotionForSnapshot(view: ReaderWebView, reason: String): Boolean {
         if (view.preparedChapter?.readerTemplate == null) return true
         if (view.templateMotionSettlePending) return false
+        val snapshotKey = committedPageSnapshotKey(view)
+        if (snapshotKey != null && view.templateMotionFailedSnapshotKey == snapshotKey) {
+            allowAnimationMaterialFallback(snapshotKey)
+            return false
+        }
         if (view.templateMotionState == "settled") return true
         val token = view.token
         val chapterKey = view.loadedChapterKey
@@ -5006,17 +5431,31 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         view.templateMotionSettlePending = true
         // This uses the template command acknowledgement, not a guessed animation
         // duration. The next capture obtains a new key after the settled revision.
-        evaluateReaderCommand(view, templateMotionScript(view, "settled")) { result ->
-            if (view.token != token || view.loadedChapterKey != chapterKey) return@evaluateReaderCommand
-            view.templateMotionSettlePending = false
-            if (destroyed || view.surfaceDestroyed || view !== currentWebView) return@evaluateReaderCommand
-            if (result != "true") {
-                onTemplateFailure(view, token, "页面动效未能暂停")
-                return@evaluateReaderCommand
+        fun settle(attempt: Int) {
+            evaluateReaderCommand(view, templateMotionScript(view, "settled")) { result ->
+                if (view.token != token || view.loadedChapterKey != chapterKey) return@evaluateReaderCommand
+                if (destroyed || view.surfaceDestroyed || view !== currentWebView) return@evaluateReaderCommand
+                if (result == null && attempt == 0) {
+                    // This setter is idempotent. Obtain its real acknowledgement again
+                    // instead of treating a missing return value as a broken template.
+                    settle(attempt + 1)
+                    return@evaluateReaderCommand
+                }
+                view.templateMotionSettlePending = false
+                if (result != "true") {
+                    view.templateMotionState = "unknown"
+                    view.templateMotionFailedSnapshotKey = committedPageSnapshotKey(view)
+                    view.templateMotionFailedSnapshotKey?.let(::allowAnimationMaterialFallback)
+                    AppLog.putDebug("EPUB template snapshot motion confirmation unavailable")
+                    resumeTemplateMotion(view)
+                    return@evaluateReaderCommand
+                }
+                view.templateMotionFailedSnapshotKey = null
+                requestRuntimeMetricsSync()
+                scheduleCommittedPageSnapshotRefresh(reason)
             }
-            requestRuntimeMetricsSync()
-            scheduleCommittedPageSnapshotRefresh(reason)
         }
+        settle(0)
         return false
     }
 
@@ -5069,8 +5508,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     bitmap
                 )
             ) {
+                runCatching { bitmap.prepareToDraw() }
                 resumeTemplateMotion(view)
-                scheduleQueuedPageTurnDrain()
+                onCurrentSnapshotReady()
             }
             return
         }
@@ -5111,68 +5551,88 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             )
             return
         }
+        val persistentPipeline = adjacentPageFrames
+        val persistentRequest = persistentPipeline?.persistentWriteRequest(
+            request.key.chapterIndex, request.key.pageIndex, pageCount
+        )
         runCatching {
             PixelCopy.request(
                 activity.window,
                 windowRect,
                 bitmap,
                 { result ->
-                    if (result != PixelCopy.SUCCESS) {
-                        failCommittedPageSnapshotCapture(
-                            request = request,
-                            view = view,
-                            reason = reason,
-                            attempt = attempt,
-                            failure = "pixel-copy-${pixelCopyResultName(result)}",
-                            windowRect = windowRect,
-                            pixelCopyResult = result,
-                            bitmap = bitmap
-                        )
-                        return@request
-                    }
-                    val currentKey = committedPageSnapshotKey(view)
-                    val captureSceneStable = snapshotSceneRevision == request.sceneRevision &&
-                        currentKey == request.key &&
-                        !hasCommittedSnapshotCaptureBlocker(view) &&
-                        committedSnapshotWindowRect(view) == windowRect
-                    if (!captureSceneStable) {
-                        discardCommittedPageSnapshotCapture(
-                            request = request,
-                            view = view,
-                            reason = reason,
-                            attempt = attempt,
-                            blockedAttempt = blockedAttempt,
-                            bitmap = bitmap
-                        )
-                        return@request
-                    }
-                    if (requireVisualContent &&
-                        !snapshotHasVisualContent(bitmap, backgroundColor)
-                    ) {
-                        failCommittedPageSnapshotCapture(
-                            request = request,
-                            view = view,
-                            reason = reason,
-                            attempt = attempt,
-                            failure = "pixel-copy-uniform-background",
-                            windowRect = windowRect,
-                            pixelCopyResult = result,
-                            bitmap = bitmap
-                        )
-                        return@request
-                    }
-                    val committed = committedPageSnapshots.complete(
-                        request = request,
-                        currentKey = currentKey,
-                        currentSceneRevision = snapshotSceneRevision,
-                        value = bitmap
-                    )
-                    if (committed) {
-                        resumeTemplateMotion(view)
-                        scheduleQueuedPageTurnDrain()
+                    var persistentPixels = if (result == PixelCopy.SUCCESS && persistentRequest != null) {
+                        EpubSnapshotPixels.copy(bitmap)
+                    } else null
+                    snapshotCallbackHandler.post applyCapture@{
+                        try {
+                            if (result != PixelCopy.SUCCESS) {
+                                failCommittedPageSnapshotCapture(
+                                    request = request,
+                                    view = view,
+                                    reason = reason,
+                                    attempt = attempt,
+                                    failure = "pixel-copy-${pixelCopyResultName(result)}",
+                                    windowRect = windowRect,
+                                    pixelCopyResult = result,
+                                    bitmap = bitmap
+                                )
+                                return@applyCapture
+                            }
+                            val currentKey = committedPageSnapshotKey(view)
+                            val captureSceneStable = snapshotSceneRevision == request.sceneRevision &&
+                                currentKey == request.key &&
+                                !hasCommittedSnapshotCaptureBlocker(view) &&
+                                committedSnapshotWindowRect(view) == windowRect
+                            if (!captureSceneStable) {
+                                discardCommittedPageSnapshotCapture(
+                                    request = request,
+                                    view = view,
+                                    reason = reason,
+                                    attempt = attempt,
+                                    blockedAttempt = blockedAttempt,
+                                    bitmap = bitmap
+                                )
+                                return@applyCapture
+                            }
+                            if (requireVisualContent &&
+                                !snapshotHasVisualContent(bitmap, backgroundColor)
+                            ) {
+                                failCommittedPageSnapshotCapture(
+                                    request = request,
+                                    view = view,
+                                    reason = reason,
+                                    attempt = attempt,
+                                    failure = "pixel-copy-uniform-background",
+                                    windowRect = windowRect,
+                                    pixelCopyResult = result,
+                                    bitmap = bitmap
+                                )
+                                return@applyCapture
+                            }
+                            val committed = committedPageSnapshots.complete(
+                                request = request,
+                                currentKey = currentKey,
+                                currentSceneRevision = snapshotSceneRevision,
+                                value = bitmap
+                            )
+                            if (committed) {
+                                // Queue GPU preparation while this is an idle,
+                                // validated snapshot, before the first drag draw.
+                                runCatching { bitmap.prepareToDraw() }
+                                persistentPixels?.let { pixels ->
+                                    persistentPixels = null
+                                    persistentPipeline?.persistPixels(persistentRequest, pixels) ?: pixels.close()
+                                }
+                                resumeTemplateMotion(view)
+                                onCurrentSnapshotReady()
+                            }
+                        } finally {
+                            persistentPixels?.close()
+                        }
                     }
                 },
-                snapshotCallbackHandler
+                if (persistentRequest == null) snapshotCallbackHandler else EpubPageSnapshotPersistence.captureHandler
             )
         }.onFailure { error ->
             failCommittedPageSnapshotCapture(
@@ -5340,10 +5800,14 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         markSnapshotSceneChanged()
     }
 
-    private fun markSnapshotSceneChanged() {
+    private fun markSnapshotSceneChanged(preserveCommittedPage: Boolean = false) {
         snapshotSceneRevision++
         cancelAnimationMaterialWait()
-        committedPageSnapshots.invalidate()
+        if (preserveCommittedPage) {
+            committedPageSnapshots.cancelPendingCapture()
+        } else {
+            committedPageSnapshots.invalidate()
+        }
     }
 
     private fun captureView(
@@ -5405,54 +5869,68 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         return EpubDirectSnapshotVisualPolicy.hasVisualContent(backgroundColor, colors)
     }
 
-    private fun completeAfterVisualState(view: ReaderWebView, callback: (() -> Unit)?) {
+    private fun completeAfterVisualState(
+        view: ReaderWebView,
+        onUnavailable: (() -> Unit)? = null,
+        callback: (() -> Unit)?
+    ) {
         callback ?: return
-        val completed = AtomicBoolean(false)
-        lateinit var fallback: Runnable
-        fun finish() {
-            if (!completed.compareAndSet(false, true)) return
-            removeCallbacks(fallback)
+        completePageAnimationVisualState(view, view.token, onUnavailable) {
             view.postOnAnimation(callback)
-        }
-        fallback = Runnable { finish() }
-        postDelayed(fallback, PAGE_ANIMATION_VISUAL_STATE_TIMEOUT_MS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            runCatching {
-                view.postVisualStateCallback(view.token, object : WebView.VisualStateCallback() {
-                    override fun onComplete(requestId: Long) {
-                        if (requestId == view.token) finish()
-                    }
-                })
-            }.onFailure { finish() }
-        } else {
-            view.postOnAnimation { finish() }
         }
     }
 
     private fun completePageAnimationVisualState(
         view: ReaderWebView,
         requestId: Long,
+        onUnavailable: (() -> Unit)? = null,
         callback: () -> Unit
     ) {
         val completed = AtomicBoolean(false)
-        lateinit var fallback: Runnable
-        fun finish() {
+        val token = view.token
+        val chapterKey = view.loadedChapterKey
+        val deadline = templateActiveClock.now() + VISUAL_FRAME_FALLBACK_MS
+        var timeout: Runnable? = null
+        fun finish(ready: Boolean) {
             if (!completed.compareAndSet(false, true)) return
-            removeCallbacks(fallback)
-            callback()
+            timeout?.let(::removeCallbacks)
+            timeout?.let(templateResumeCallbacks::remove)
+            if (destroyed || view.surfaceDestroyed || view.token != token || view.loadedChapterKey != chapterKey) return
+            val delivery = Runnable {
+                if (!destroyed && !view.surfaceDestroyed && view.token == token && view.loadedChapterKey == chapterKey) {
+                    if (ready) callback() else onUnavailable?.invoke()
+                }
+            }
+            if (!deferTemplateUntilResumed(view, delivery)) delivery.run()
         }
-        fallback = Runnable { finish() }
-        postDelayed(fallback, PAGE_ANIMATION_VISUAL_STATE_TIMEOUT_MS)
+        // Match the published reader's short drawing opportunity. This is not
+        // pixel verification: navigation measures the live target afterwards,
+        // and captures still validate PixelCopy, scene identity and nonempty pixels.
+        lateinit var wait: Runnable
+        wait = Runnable {
+            if (deferTemplateDeadline(this, wait, deadline)) return@Runnable
+            finish(true)
+        }
+        timeout = wait
+        if (!postDelayed(wait, VISUAL_FRAME_FALLBACK_MS)) {
+            finish(false)
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             runCatching {
                 view.postVisualStateCallback(requestId, object : WebView.VisualStateCallback() {
                     override fun onComplete(completedRequestId: Long) {
-                        if (completedRequestId == requestId) finish()
+                        if (completedRequestId == requestId) finish(true)
                     }
                 })
-            }.onFailure { finish() }
+                view.postInvalidateOnAnimation()
+            }.onFailure {
+                AppLog.putDebug("EPUB visual commit callback unavailable", it)
+                // Some WebView providers cannot deliver this notification; the
+                // scheduled drawing fallback still runs the caller's validation.
+            }
         } else {
-            view.postOnAnimation { finish() }
+            view.postOnAnimation { view.postOnAnimation { finish(true) } }
         }
     }
 
@@ -5545,7 +6023,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             append(chapter.chapterIndex).append('|').append(chapter.href).append('|')
             append(chapter.baseUrl).append('|')
             append(chapter.startFragmentId).append('|').append(chapter.endFragmentId).append('|')
-            append(chapter.html.hashCode()).append('|')
+            append(EpubPageFrameTarget.chapterContentRevision(chapter)).append('|')
             append(config.pageWidthPx).append('x').append(config.pageHeightPx).append('|')
             append(config.readerPaddingLeftPx).append(',').append(config.readerPaddingTopPx).append(',')
             append(config.readerPaddingRightPx).append(',').append(config.readerPaddingBottomPx).append('|')
@@ -5646,9 +6124,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun snapToCurrentHorizontalPage(view: ReaderWebView) {
         if (isSelectionPageTurnBlocked()) return
         val token = generation
+        val pageRequest = pageApplySequence
         view.postOnAnimation {
             if (destroyed || token != generation || view !== currentWebView ||
-                !documentReady || isVerticalMode()
+                !documentReady || isVerticalMode() || pageRequest != pageApplySequence ||
+                isPageTurnBusy() || isSelectionPageTurnBlocked()
             ) {
                 return@postOnAnimation
             }
@@ -5667,7 +6147,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun prepareChapterTurn(
         direction: Int,
         animate: Boolean,
-        scheduleTimeout: Boolean = true
+        scheduleTimeout: Boolean = true,
+        interactive: Boolean = false
     ): PendingChapterTurn? {
         val sourceChapter = chapter ?: return null
         val sourceConfig = config ?: return null
@@ -5692,20 +6173,47 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
         cancelPendingChapterTurn()
         val backgroundColor = sourceConfig.backgroundColor
+        var targetBitmap: Bitmap? = null
+        var targetFrame: CachedAnimationTarget? = null
+        if (interactive && style != EpubDirectPageAnimationPolicy.Style.None) {
+            if (!hasCommittedPageSnapshot(currentWebView, "interactive-chapter-source-unavailable")) return null
+            targetBitmap = takeAdjacentPageBitmap(
+                logicalDirection = normalizedDirection,
+                expectedChapterIndex = targetChapterIndex,
+                expectedPageIndex = if (normalizedDirection > 0) 0 else null,
+                onTaken = { targetFrame = it }
+            )
+            if (!EpubDirectPageAnimationPolicy.hasRequiredBitmapFrames(
+                    style = style,
+                    action = EpubDirectPageAnimationPolicy.turnAction(normalizedDirection),
+                    hasTargetBitmap = targetBitmap?.isRecycled == false
+                )
+            ) {
+                targetBitmap?.takeUnless { it.isRecycled }?.recycle()
+                return null
+            }
+        }
         val sourceBitmap = if (style != EpubDirectPageAnimationPolicy.Style.None) {
             takeCommittedPageSnapshot(
                 view = currentWebView,
-                reason = "chapter-turn-source-unavailable"
+                reason = "chapter-turn-source-unavailable",
+                transferOwnership = interactive
             )
         } else {
             null
         }
-        val targetBitmap = sourceBitmap?.let {
-            takeAdjacentPageBitmap(
-                logicalDirection = normalizedDirection,
-                expectedChapterIndex = targetChapterIndex,
-                expectedPageIndex = if (normalizedDirection > 0) 0 else null
-            )
+        if (interactive && sourceBitmap == null) {
+            targetBitmap?.takeUnless { it.isRecycled }?.recycle()
+            return null
+        }
+        if (!interactive) {
+            targetBitmap = sourceBitmap?.let {
+                takeAdjacentPageBitmap(
+                    logicalDirection = normalizedDirection,
+                    expectedChapterIndex = targetChapterIndex,
+                    expectedPageIndex = if (normalizedDirection > 0) 0 else null
+                )
+            }
         }
         val pending = PendingChapterTurn(
             sourceChapterIndex = sourceChapter.chapterIndex,
@@ -5735,7 +6243,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             ),
             sourceView = currentWebView,
             sourceBitmap = sourceBitmap,
-            targetBitmap = targetBitmap
+            targetBitmap = targetBitmap,
+            targetFrame = targetFrame
         )
         pendingChapterTurn = pending
         if (scheduleTimeout) scheduleChapterTurnTimeout()
@@ -5831,7 +6340,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
     private fun takeAdjacentPageBitmap(
         logicalDirection: Int,
         expectedChapterIndex: Int,
-        expectedPageIndex: Int?
+        expectedPageIndex: Int?,
+        onTaken: ((CachedAnimationTarget) -> Unit)? = null
     ): Bitmap? {
         val direction = adjacentPageDirection(logicalDirection)
         val pipeline = adjacentPageFrames ?: return null
@@ -5857,7 +6367,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 )
                 null
             } else {
-                rendered.takeBitmap()
+                rendered.takeBitmap()?.also {
+                    onTaken?.invoke(CachedAnimationTarget(pipeline, target, rendered.pageIndex, rendered.pageCount))
+                }
             }
         }
     }
@@ -5885,22 +6397,33 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         }
     }
 
-    private fun syncAdjacentPageFrames() {
-        if (frameRenderer || destroyed || !documentReady || width <= 0 || height <= 0 ||
-            // A template already retains its chapter pages. Rebuilding the entire
-            // chapter in extra snapshot WebViews repeats author scripts and layout.
-            chapter?.readerTemplate != null ||
-            !performanceBudget.adjacentFramesEnabled ||
-            isVerticalMode() || EpubDirectPageAnimationPolicy.style(
+    private fun supportsAdjacentPageFrames(): Boolean {
+        if (frameRenderer || !performanceBudget.adjacentFramesEnabled || isVerticalMode() ||
+            EpubDirectPageAnimationPolicy.style(
                 pageAnim = ReadBook.pageAnim(),
                 horizontal = true
             ) == EpubDirectPageAnimationPolicy.Style.None
+        ) return false
+        val template = chapter?.readerTemplate
+        // Ordinary books and static templates do not depend on any bundled
+        // template asset. Load the reference only to verify a scripted theme.
+        val reference = if (template?.javascript?.isNotBlank() == true) {
+            reviewedFrameReference(template)
+        } else null
+        return EpubTemplateFramePolicy.supports(template, reference)
+    }
+
+    private fun syncAdjacentPageFrames() {
+        if (!supportsAdjacentPageFrames() || destroyed || !documentReady || width <= 0 || height <= 0
         ) {
             closeAdjacentPageFrames()
             return
         }
         if (!currentWebView.renderState.canCapture) return
-        if (preloadGestureActive) return
+        if (adjacentPageFrames == null && SystemClock.uptimeMillis() < adjacentFrameInitializationRetryAt) return
+        // Updating targets does not start work while suspended, and must not leave
+        // the cache bound to the previous page throughout a drag.
+        if (preloadGestureActive && adjacentPageFrames == null) return
         val activeSession = session ?: return
         val activeChapter = chapter ?: return
         val activeConfig = config ?: return
@@ -5912,37 +6435,110 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 viewportHeight = height,
                 densityDpi = resources.displayMetrics.densityDpi,
                 farPrefetchEnabled = performanceBudget.farFramePrefetchEnabled,
-                cacheCapacity = performanceBudget.adjacentFrameCacheCapacity
+                cacheCapacity = adjacentFrameCacheCapacity(context, width, height, performanceBudget.adjacentFrameCacheCapacity),
+                canStartColdLayout = {
+                    EpubReaderWarmupPolicy.canStartFrameLayout(
+                        sourceReady = hasReadyCurrentSnapshot(),
+                        elapsedMillis = SystemClock.uptimeMillis() - warmupActivatedAt,
+                        chapterLayoutRunning = loadingPreloadedWebViews.isNotEmpty()
+                    )
+                }
             )
         }.onFailure {
+            // A missing display service or failed surface must not create four new
+            // WebViews again on every metrics/chrome notification.
+            adjacentFrameInitializationRetryAt = SystemClock.uptimeMillis() + ADJACENT_FRAME_INITIALIZATION_BACKOFF_MS
             AppLog.putDebug("EPUB adjacent frame pipeline initialization failed", it)
         }.getOrNull()?.also {
+            adjacentFrameInitializationRetryAt = 0L
             it.setListener(object : EpubAdjacentPageFramePipeline.Listener {
                 override fun onAdjacentFrameReady(
                     direction: EpubAdjacentPageFramePipeline.Direction,
                     target: EpubPageFrameTarget
                 ) {
+                    onAdjacentPageFrameReady(direction, target)
                     scheduleQueuedPageTurnDrain()
+                }
+
+                override fun onFrameWorkChanged() {
+                    resumeScheduledPreloads()
+                }
+
+                override fun hasCurrentFrame(): Boolean = hasReadyCurrentSnapshot()
+
+                override fun onCurrentFrameRestored(frame: EpubRenderedPageFrame) {
+                    restorePersistentCurrentFrame(frame)
                 }
             })
             adjacentPageFrames = it
         } ?: return
+        if (preloadGestureActive || interactivePageTurn != null) pipeline.suspendScheduling()
         pipeline.bindCurrent(
             activeSession,
             activeChapter,
             activeConfig,
             activePosition,
-            readerChromeTemplate
+            renderedChromeFields(activeChapter, readerChromeTemplate)
         )
 
         fun offer(view: ReaderWebView?) {
             val preparedChapter = view?.preparedChapter ?: return
             val preparedConfig = view.preparedConfig ?: return
-            pipeline.offerPreparedChapter(activeSession, preparedChapter, preparedConfig)
+            val preparedPageCount = view.preloadPageCount.takeIf {
+                (view.preloadReady || view.promotedReady) && !view.renderState.layoutPending
+            }
+            pipeline.offerPreparedChapter(activeSession, preparedChapter, preparedConfig, preparedPageCount)
         }
         offer(standbyWebView)
         preloadedWebViews.forEachValue(::offer)
         loadingPreloadedWebViews.values.toList().forEach(::offer)
+    }
+
+    private fun onAdjacentPageFrameReady(
+        direction: EpubAdjacentPageFramePipeline.Direction,
+        target: EpubPageFrameTarget
+    ) {
+        val turn = interactivePageTurn
+        if (turn == null) {
+            // Cache callbacks can run inside bindCurrent/prepareGestureFrames. Start
+            // a waiting gesture after that update, without requiring another MOVE.
+            if (interactiveFrameReadyRunnable != null) return
+            lateinit var ready: Runnable
+            ready = Runnable {
+                if (interactiveFrameReadyRunnable !== ready) return@Runnable
+                interactiveFrameReadyRunnable = null
+                if (!destroyed) currentWebView.resumePendingInteractiveDrag()
+            }
+            interactiveFrameReadyRunnable = ready
+            postOnAnimation(ready)
+            return
+        }
+        if (!isInteractivePageTurnActive(turn) || turn.restoring ||
+            turn.finishRequested == false || turn.overlay.canAnimate || animationRenderStateChanged ||
+            direction != adjacentPageDirection(turn.logicalDirection) ||
+            turn.framePipeline !== adjacentPageFrames || turn.expectedFrameTarget != target
+        ) return
+        val sourceStillCurrent = turn.token == generation && turn.sourceLayoutRevision == currentLayoutRevision
+        val boundaryActivating = turn.boundary && turn.navigationDispatched && turn.targetToken == generation
+        if (!sourceStillCurrent && !boundaryActivating) return
+        val expectedChapter = if (turn.boundary) target.chapterIndex else turn.sourceChapterIndex
+        val expectedPage = if (turn.boundary) {
+            if (turn.logicalDirection > 0) 0 else null
+        } else turn.targetPageIndex
+        if (!adjacentPageTargetMatches(target, expectedChapter, expectedPage)) return
+        var cachedTargetFrame: CachedAnimationTarget? = null
+        val bitmap = takeAdjacentPageBitmap(turn.logicalDirection, expectedChapter, expectedPage) {
+            cachedTargetFrame = it
+        } ?: return
+        if (!turn.overlay.supplyPreparedTarget(bitmap)) {
+            bitmap.takeUnless { it.isRecycled }?.recycle()
+            return
+        }
+        turn.cachedTargetFrame = cachedTargetFrame
+        // These pixels already passed the same checks as a frame available at DOWN.
+        // Do not wait for the slower live page command to unlock finger movement.
+        setPageAnimationProgress(turn.overlay, turn.requestedProgress)
+        maybeStartInteractiveSettle(turn)
     }
 
     private fun suspendAdjacentPageFrameScheduling() {
@@ -5974,6 +6570,29 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         adjacentPageFrames = null
     }
 
+    private fun restorePersistentCurrentFrame(frame: EpubRenderedPageFrame) {
+        frame.use {
+            val activeChapter = chapter ?: return
+            val activeConfig = config ?: return
+            val key = committedPageSnapshotKey() ?: return
+            if (destroyed || !documentReady || hasCommittedSnapshotCaptureBlocker(currentWebView) ||
+                committedPageSnapshots.contains(key) || frame.chapterIndex != activeChapter.chapterIndex ||
+                frame.chapterHref != activeChapter.href || frame.pageIndex != pageIndex || frame.pageCount != pageCount ||
+                frame.layoutSignature != EpubPageFrameTarget.layoutSignature(activeConfig, width, height) ||
+                frame.readerChromeContentRevision != EpubPageFrameTarget.readerChromeContentRevision(
+                    activeChapter, activeConfig, readerChromeTemplate)
+            ) return
+            val bitmap = frame.takeBitmap() ?: return
+            // The pipeline verified the stable content identity and the freshly measured page count.
+            // Rebind to this WebView's current key; never restore an old runtime token/revision.
+            if (preserveBitmapAsCommittedSnapshot(bitmap, currentWebView, requireViewportSize = true)) {
+                AppLog.putDebug("EPUB persisted source restored: chapter=${frame.chapterIndex}, page=${frame.pageIndex}")
+                resumeTemplateMotion(currentWebView)
+                onCurrentSnapshotReady()
+            }
+        }
+    }
+
     private fun reportRenderState(
         view: ReaderWebView,
         token: Long,
@@ -5983,7 +6602,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (destroyed || view.token != token || view.parent !== this ||
             !view.renderState.changed(token, visualRevision, layoutPending)
         ) return
-        if (pageAnimationOverlay != null &&
+        val contentChange = view.preparedChapter?.readerTemplate == null
+        if (contentChange && pageAnimationOverlay != null &&
             (view === currentWebView || view === livePageAnimationTarget?.view ||
                 view === interactivePageTurn?.sourceView || view === pendingChapterTurn?.sourceView ||
                 pageAnimationSourceFrame?.metadata?.let { source ->
@@ -5996,7 +6616,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         if (view !== currentWebView || token != generation) {
             // A warm neighbour can finish an image after its virtual frame was cached.
             // Its local counter cannot validate that independent frame's pixels.
-            if (view.preparedChapter?.sourceImages?.resources?.isNotEmpty() == true) {
+            if (contentChange && view.preparedChapter?.sourceImages?.resources?.isNotEmpty() == true) {
                 closeAdjacentPageFrames()
                 if (!layoutPending && !isPageTurnBusy()) syncAdjacentPageFrames()
             }
@@ -6005,14 +6625,26 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         // Invalidate at the start of a visual change, before its delayed metrics arrive.
         // This also rejects PixelCopy requests already in flight with the old scene.
         invalidateCommittedPageSnapshot()
-        closeAdjacentPageFrames()
+        if (contentChange) closeAdjacentPageFrames()
         if (!layoutPending) scheduleRuntimeMetricsSync()
+    }
+
+    private fun reportTemplateContentChanged(view: ReaderWebView, token: Long, revision: Long) {
+        if (destroyed || view.token != token || view.parent !== this ||
+            view.preparedChapter?.readerTemplate == null ||
+            !view.renderState.contentChanged(token, revision)
+        ) return
+        if (pageAnimationOverlay != null) animationRenderStateChanged = true
+        if (view === currentWebView) invalidateCommittedPageSnapshot()
+        closeAdjacentPageFrames()
+        if (view === currentWebView && !view.renderState.layoutPending) scheduleRuntimeMetricsSync()
     }
 
     private fun isRuntimeMetricsSyncBlocked(): Boolean =
         destroyed || hostPaused || !documentReady || currentWebView.token != generation ||
             isSelectionPageTurnBlocked() || pageAnimationOverlay != null || pageAnimator != null ||
-            pageHandoffRequest != null || pendingActivationView != null || pendingChapterTurn != null
+            pageHandoffRequest != null || pendingActivationView != null || pendingChapterTurn != null ||
+            renderRecoveryRequest != null
 
     private fun requestRuntimeMetricsSync() {
         if (destroyed || !documentReady) return
@@ -6070,6 +6702,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     val metrics = parseMetrics(raw)
                     if (isRuntimeMetricsSyncBlocked()) return@evaluateJavascript
                     if (pageRequest != pageApplySequence || metrics == null ||
+                        !isMeasuredRenderStateCurrent(view, metrics) ||
                         !EpubDirectActivationVisualPolicy.canNavigate(
                             requiresViewportContent = chapter?.sourceChapterUrl != null,
                             requiresRenderableContent = chapter.requiresRenderableContent(),
@@ -6120,30 +6753,30 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         layoutRevisionFromJs: Long
     ) {
         if (token != generation || !documentReady || currentWebView.token != token) return
-        if (isRuntimeMetricsSyncBlocked() || currentWebView.renderState.needsMetrics) {
-            requestRuntimeMetricsSync()
-            return
-        }
         val nextCount = if (chapter?.layoutMode?.singlePage == true) 1 else pageCountFromJs.coerceAtLeast(1)
         val nextIndex = pageIndexFromJs.coerceIn(0, nextCount - 1)
         val layoutChanged = layoutRevisionFromJs >= 0L && layoutRevisionFromJs != currentLayoutRevision
-        if (nextCount == pageCount && nextIndex == pageIndex && !layoutChanged) return
-        pageCount = nextCount
-        pageIndex = nextIndex
-        if (layoutChanged) {
-            currentLayoutRevision = layoutRevisionFromJs
-            closeAdjacentPageFrames()
+        if (!currentWebView.renderState.needsMetrics &&
+            nextCount == pageCount && nextIndex == pageIndex && !layoutChanged
+        ) return
+        if (isRuntimeMetricsSyncBlocked()) {
+            // The active page command owns its result. A delayed page notification
+            // must not invalidate that result or send navigation back to its source.
+            if (layoutChanged) currentWebView.renderState.requireMetrics()
+            return
         }
-        notifyPositionChanged()
-        invalidateCommittedPageSnapshot()
-        scheduleCommittedPageSnapshotRefresh("runtime-metrics-changed")
+        // Notifications can wait on Android's main queue. Read the live document
+        // before accepting a different position instead of committing an old page.
+        requestRuntimeMetricsSync()
     }
 
     private fun reportSelection(token: Long, json: String) {
-        if (token != generation) return
+        if (token != generation || currentWebView.token != token || destroyed || !documentReady) return
         val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
         val text = obj.optString("text")
         if (text.isBlank()) {
+            // Clearing an empty DOM range is not a page/layout state transition.
+            if (!selectionActive) return
             selectionActive = false
             clearQueuedPageTurns()
             listener?.onSelectionCleared()
@@ -6156,8 +6789,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         val viewportHeight = obj.optDouble("viewportHeight", height.toDouble()).toFloat().coerceAtLeast(1f)
         val scaleX = width.coerceAtLeast(1) / viewportWidth
         val scaleY = height.coerceAtLeast(1) / viewportHeight
+        if (!scaleX.isFinite() || !scaleY.isFinite() || scaleX <= 0f || scaleY <= 0f) return
         val rects = buildList {
-            for (index in 0 until rectsJson.length()) {
+            for (index in 0 until minOf(rectsJson.length(), 512)) {
                 val item = rectsJson.optJSONObject(index) ?: continue
                 val left = (item.optDouble("left").toFloat() * scaleX).coerceIn(0f, width.toFloat())
                 val top = (item.optDouble("top").toFloat() * scaleY).coerceIn(0f, height.toFloat())
@@ -6209,6 +6843,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             layoutRevision = obj.optLong("layoutRevision", -1L),
             layoutPending = obj.optBoolean("layoutPending", false),
             visualRevision = obj.optLong("visualRevision", 0L),
+            contentRevision = obj.optLong("contentRevision", -1L),
             sourceImagesPending = obj.optInt("sourceImagesPending", 0),
             activationTargetRevision = obj.optLong("activationTargetRevision", -1L),
             activationTargetSatisfied = obj.optBoolean("activationTargetSatisfied", false),
@@ -6273,6 +6908,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     "/__reader_template__/paged.js" -> "epub/vendor/paged.js"
                     "/__reader_template__/source-map.js" -> "epub/template-source-map.js"
                     "/__reader_template__/page-alignment.js" -> "epub/page-alignment.js"
+                    "/__reader_template__/browser-flow.js" -> "epub/template-browser-flow.js"
                     "/__reader_template__/runtime.js" -> "epub/template-runtime.js"
                     else -> return errorResponse(404, "Not Found")
                 }
@@ -6593,6 +7229,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         var readerChromeApplyInFlight = false
         var templateMotionState = "settled"
         var templateMotionSettlePending = false
+        var templateMotionFailedSnapshotKey: EpubCommittedPageSnapshotKey? = null
         private var downX = 0f
         private var downY = 0f
         private var downViewportY = 0f
@@ -6600,6 +7237,9 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         private var embeddedInteractionAtDown = 0L
         private var moved = false
         private var horizontalDrag = false
+        private var dragContactActive = false
+        private var lastDragDeltaX = 0f
+        private var lastDragYFraction = 0.5f
         private var multiPointerGesture = false
         private var longPressSelectionGesture = false
         private var selectionGestureArmRunnable: Runnable? = null
@@ -6796,16 +7436,18 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             cancelTemplateWatchdog()
             if (preparedChapter?.readerTemplate == null) return
             val expectedChapter = loadedChapterKey
-            var waitingSince = 0L
+            val watchdog = EpubTemplateRenderWatchdog(SystemClock::uptimeMillis)
+            var probeInFlight = false
             lateinit var pulse: Runnable
             pulse = Runnable {
                 if (templateWatchdog !== pulse || destroyed || loadedChapterKey != expectedChapter) return@Runnable
                 if (hostPaused) {
-                    waitingSince = 0L
+                    watchdog.pause()
                     postDelayed(pulse, 2_000L)
                     return@Runnable
                 }
-                if (waitingSince > 0L && SystemClock.uptimeMillis() - waitingSince >= 8_000L) {
+                watchdog.beginProbe()
+                if (watchdog.timedOut(runtimeStable, renderState.layoutPending)) {
                     cancelTemplateWatchdog()
                     // This timer runs on Android's UI thread, outside template JS.
                     // Destroy only this surface. WebView render processes may be
@@ -6814,10 +7456,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     onTemplateFailure(this@ReaderWebView, token, "模板脚本长时间无响应，已停止本次渲染")
                     return@Runnable
                 }
-                if (waitingSince == 0L) {
-                    waitingSince = SystemClock.uptimeMillis()
-                    evaluateJavascript("!!window.__legadoEpub") {
-                        if (templateWatchdog === pulse && loadedChapterKey == expectedChapter) waitingSince = 0L
+                if (!probeInFlight) {
+                    probeInFlight = true
+                    evaluateJavascript(
+                        "(function(){var a=window.__legadoEpub;return a&&a.templateHeartbeat?a.templateHeartbeat():0;})()"
+                    ) { raw ->
+                        if (templateWatchdog === pulse && loadedChapterKey == expectedChapter) {
+                            probeInFlight = false
+                            watchdog.acknowledge(raw?.toLongOrNull() ?: 0L)
+                        }
                     }
                 }
                 postDelayed(pulse, 2_000L)
@@ -7337,7 +7984,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             // preload. In the latter case it replays stable for the new token.
             val runtime = if (chapter.readerTemplate != null) {
                 EpubTemplateDocument.runtimeScript(installToken, chapter, config, templateSecret,
-                    readerChromeDataJson(readerChromePayload.data))
+                    readerChromeDataJson(readerChromePayload.data), TEMPLATE_STABLE_TIMEOUT_MS)
             } else runtimeScript(installToken, chapter, config)
             val script = runtime +
                 "\n;${readerChromeApplyScript(installToken, readerChromePayload)};" +
@@ -7377,7 +8024,26 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             }
         }
 
+        fun cancelPendingInteractiveDrag() {
+            dragContactActive = false
+        }
+
+        fun resumePendingInteractiveDrag() {
+            if (!dragContactActive || !horizontalDrag || !webTouchCancelled || multiPointerGesture ||
+                hostPaused || embeddedInteractionGesture || selectionActive || longPressSelectionGesture ||
+                this !== currentWebView || token != generation || templateTouchToken != token || interactivePageTurn != null
+            ) return
+            if (beginInteractivePageTurn(this, lastDragDeltaX, pageTouchSlop)) {
+                updateInteractivePageTurn(this, lastDragDeltaX, lastDragYFraction)
+            }
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> dragContactActive = true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN ->
+                    dragContactActive = false
+            }
             if (this === currentWebView && token == generation && !preloading) {
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> listener?.onSelectionInteractionChanged(true)
@@ -7427,6 +8093,17 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     downY = event.rawY
                     downViewportY = event.y
                     lastPageGestureYFraction = (downViewportY / height.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    lastDragDeltaX = 0f
+                    lastDragYFraction = lastPageGestureYFraction
+                    if (startupInputCount < 3 && !frameRenderer) {
+                        startupInputCount++
+                        startupInputAt = SystemClock.uptimeMillis()
+                        startupMotionReported = false
+                        AppLog.putDebug("EPUB startup input: input=$startupInputCount, page=$pageIndex, " +
+                            "sourceReady=${hasReadyCurrentSnapshot()}, " +
+                            "nearReady=${adjacentPageFrames?.hasNearForwardFrames() == true}, " +
+                            "elapsedMs=${startupInputAt - warmupActivatedAt}")
+                    }
                     embeddedInteractionAtDown = lastEmbeddedInteractionAt
                     moved = false
                     horizontalDrag = false
@@ -7441,6 +8118,8 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                     val dx = event.rawX - downX
                     val dy = event.rawY - downY
                     val touchYFraction = (downViewportY + dy) / height.coerceAtLeast(1)
+                    lastDragDeltaX = dx
+                    lastDragYFraction = touchYFraction
                     if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
                         moved = true
                         if (preparedChapter?.readerTemplate != null && !longPressSelectionGesture) {
@@ -7810,8 +8489,11 @@ class EpubDirectWebLayer @JvmOverloads constructor(
                 when (event.type) {
                     "stable" -> delegate.onStable(token)
                     "error" -> layer.onTemplateFailure(view, token, string("message"))
-                    "metrics" -> delegate.onMetrics(token, int("pageCount"), int("pageIndex"), long("layoutRevision"))
-                    "renderState" -> delegate.onRenderState(token, long("visualRevision"), p.get("layoutPending").asBoolean)
+                    // This dispatch already runs on the UI thread. Posting these again
+                    // lets an older pending notification overtake a fresh JS result.
+                    "metrics" -> layer.reportMetrics(token, int("pageCount"), int("pageIndex"), long("layoutRevision"))
+                    "renderState" -> layer.reportRenderState(view, token, long("visualRevision"), p.get("layoutPending").asBoolean)
+                    "contentChanged" -> layer.reportTemplateContentChanged(view, token, long("revision"))
                     "textPosition" -> delegate.onTextPosition(token, int("page"), long("revision"), int("offset"))
                     "selection" -> delegate.onSelection(token, p.toString())
                     "annotationState" -> delegate.onAnnotationState(token, p.get("visible").asBoolean)
@@ -7957,7 +8639,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         internal const val DOCUMENT_MIME_TYPE = "text/html"
         private const val BRIDGE_NAME = "LegadoEpubBridge"
         private const val TEMPLATE_BRIDGE_NAME = "LegadoTemplateHost"
-        private const val TEMPLATE_STABLE_TIMEOUT_MS = 45_000L
+        private const val TEMPLATE_STABLE_TIMEOUT_MS = EpubRenderTimeoutPolicy.TEMPLATE_STARTUP_MS
         private const val WebViewBlank = "about:blank"
         private const val MAX_RESOURCE_FAILURE_REPORTS = 32
         private const val MAX_PAGE_HANDOFF_VERIFY_ATTEMPTS = 16
@@ -7970,7 +8652,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         // A cold WebView may spend several frames measuring a large XHTML document after
         // resources/fonts settle. Keep this finite, but leave enough room for that one bounded
         // layout pass so a slow first chapter is not reported as a stability failure.
-        private const val RUNTIME_STABLE_TIMEOUT_MS = 8_000L
+        private const val RUNTIME_STABLE_TIMEOUT_MS = EpubRenderTimeoutPolicy.DIRECT_STARTUP_MS
         private const val PRELOAD_VERIFICATION_TIMEOUT_MS = 6_000L
         // Resource/font reflow is bounded but may legitimately span several
         // compositor frames on a cold WebView. Keep the timeout finite without
@@ -7980,13 +8662,16 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         // become perceptible through a transparent foreground reading surface.
         private const val CANDIDATE_RENDER_ALPHA = 0.001f
         private const val PAGE_ANIMATION_COMMIT_TIMEOUT_MS = 900L
-        private const val PAGE_ANIMATION_VISUAL_STATE_TIMEOUT_MS = 96L
+        private const val PAGE_HANDOFF_RECOVERY_TIMEOUT_MS = 600L
+        private const val PAGE_JAVASCRIPT_TIMEOUT_MS = 160L
+        private const val VISUAL_FRAME_FALLBACK_MS = 96L
         private const val SNAPSHOT_CAPTURE_RETRY_MS = 48L
         private const val SNAPSHOT_DIAGNOSTIC_TIMEOUT_MS = 160L
         private const val MAX_SNAPSHOT_CAPTURE_RETRIES = 3
         private const val MAX_BLOCKED_SNAPSHOT_RETRIES = 16
         private const val MAX_QUEUED_PAGE_TURN_RUNS = 8
         private const val PAGE_ANIMATION_MATERIAL_TIMEOUT_MS = 180L
+        private const val ADJACENT_FRAME_INITIALIZATION_BACKOFF_MS = 30_000L
         private const val SNAPSHOT_SAMPLE_GRID = 64
         private const val FINAL_FRAME_FALLBACK_MS = 48L
         private const val SELECTION_REPORT_SETTLE_MS = 96L
@@ -8040,6 +8725,7 @@ class EpubDirectWebLayer @JvmOverloads constructor(
             val layoutRevision: Long,
             val layoutPending: Boolean,
             val visualRevision: Long,
+            val contentRevision: Long,
             val sourceImagesPending: Int,
             val activationTargetRevision: Long,
             val activationTargetSatisfied: Boolean,
@@ -8059,6 +8745,15 @@ class EpubDirectWebLayer @JvmOverloads constructor(
         private fun snapshotPixelBudget(context: Context): Long {
             val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             return EpubDirectWebViewBudgetPolicy.maxSnapshotPixels(
+                isLowRamDevice = activityManager?.isLowRamDevice == true,
+                memoryClassMb = activityManager?.memoryClass ?: 256
+            )
+        }
+
+        private fun adjacentFrameCacheCapacity(context: Context, width: Int, height: Int, requested: Int): Int {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            return EpubDirectWebViewBudgetPolicy.maxAdjacentFrames(
+                requested, width, height,
                 isLowRamDevice = activityManager?.isLowRamDevice == true,
                 memoryClassMb = activityManager?.memoryClass ?: 256
             )

@@ -58,7 +58,6 @@ import io.legado.app.constant.PageAnimationSpeed
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReaderFontWeight
-import io.legado.app.help.book.isEpub
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.uiTypeface
 import io.legado.app.model.ReadBook
@@ -104,6 +103,7 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
     @Composable
     private fun ReadStyleContent() {
         var selectedAnim by rememberSaveable { mutableIntStateOf(ReadBook.pageAnim()) }
+        val templateOnly = ReadBook.usesPageTemplate()
         ReaderBottomSheetFrame(maxHeightFraction = maxSheetHeightFraction) { style ->
             Column(
                 modifier = Modifier
@@ -113,20 +113,21 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = stringResource(if (ReadBookConfig.usingEpubLayout) R.string.epub_layout_profile else R.string.native_layout_profile),
+                    text = stringResource(if (templateOnly) R.string.reader_template_title else if (ReadBookConfig.usingEpubLayout) R.string.epub_layout_profile else R.string.native_layout_profile),
                     color = style.primaryText,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
-                TextMetricSection(style = style)
-                if (ReadBookConfig.usingEpubLayout && ReadBook.book?.isEpub == false) {
+                if (templateOnly) {
                     ReaderTextAction(
                         text = stringResource(R.string.reader_template_title),
                         style = style,
                         onClick = { showDialogFragment<ReaderTemplateDialog>() }
                     )
+                    return@Column
                 }
+                TextMetricSection(style = style)
                 AnimAndToolsSection(
                     style = style,
                     selectedAnim = selectedAnim,
@@ -659,6 +660,7 @@ class ReadStyleDialog : ReaderBottomSheetComposeDialogFragment(),
         get() = ReadBookConfig.textFont
 
     override fun selectFont(path: String) {
+        if (ReadBook.usesPageTemplate()) return
         if (path != ReadBookConfig.textFont || path.isEmpty()) {
             ReadBookConfig.textFont = path
             postEvent(EventBus.UP_CONFIG, arrayListOf(8, 5))

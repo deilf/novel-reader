@@ -15,6 +15,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.ImageView
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -71,11 +72,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -91,6 +94,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -113,7 +117,6 @@ import io.legado.app.help.config.BookInfoQuickActionItem
 import io.legado.app.help.config.BookInfoQuickActionType
 import io.legado.app.help.book.BookCloudEntryMode
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.glide.OkHttpModelLoader
 import io.legado.app.help.webView.WebJsExtensions.Companion.getInjectionString
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.composeActionRadius
@@ -122,6 +125,11 @@ import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.lib.theme.secondaryTextColor
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.book.info.BookInfoUseWebHost
+import io.legado.app.ui.book.info.BookInfoTocPhase
+import io.legado.app.ui.book.info.BookInfoWebIntroDocument
+import io.legado.app.ui.book.info.BookInfoWebIntroHeightScheduler
+import io.legado.app.ui.book.info.BookInfoWebIntroLifecycle
+import io.legado.app.ui.book.info.createBookInfoMarkwon
 import io.legado.app.ui.widget.image.CoverImageView
 import io.legado.app.help.GlideImageGetter
 import io.legado.app.help.TextViewTagHandler
@@ -131,13 +139,10 @@ import io.legado.app.utils.openUrl
 import io.legado.app.utils.setHtml
 import io.legado.app.utils.setMarkdown
 import com.bumptech.glide.Glide
-import com.bumptech.glide.request.RequestOptions
-import io.noties.markwon.Markwon
-import io.noties.markwon.ext.tables.TablePlugin
-import io.noties.markwon.html.HtmlPlugin
-import io.noties.markwon.image.glide.GlideImagesPlugin
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -165,6 +170,7 @@ data class BookInfoUiState(
     val customTags: List<String> = emptyList(),
     val groupText: String = "",
     val tocText: String = "",
+    val tocLoadPhase: BookInfoTocPhase = BookInfoTocPhase.NOT_LOADED,
     val chapterCount: Int = 0,
     val chapterPreview: List<BookInfoChapterUi> = emptyList(),
     val currentChapterIndex: Int = -1,
@@ -434,7 +440,7 @@ fun BookInfoComposeRoute(
                 BookInfoCoverBackdrop(
                     coverPath = state.coverPath,
                     style = style,
-                    scrollOffset = pageScrollState.value,
+                    scrollState = pageScrollState,
                     modifier = Modifier.matchParentSize()
                 )
                 Column(
@@ -465,22 +471,13 @@ fun BookInfoComposeRoute(
                 }
             }
             BookInfoContentPanel(style = style) {
-                Column {
-                    if (state.canScheduleUpdate) {
-                        Box(modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) {
-                            BookInfoMoreActionItem(stringResource(R.string.auto_task_book_update), style) {
-                                actions.onBookAutoTask()
-                            }
-                        }
-                    }
-                    BookInfoIntroPanel(
-                        intro = state.intro,
-                        state = state,
-                        actions = actions,
-                        style = style,
-                        webIntroExpandPages = webIntroExpandPages
-                    )
-                }
+                BookInfoIntroPanel(
+                    intro = state.intro,
+                    state = state,
+                    actions = actions,
+                    style = style,
+                    webIntroExpandPages = webIntroExpandPages
+                )
             }
             Spacer(
                 modifier = Modifier
@@ -596,6 +593,7 @@ private fun BookInfoStatusStrip(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         HorizontalPager(
             state = pagerState,
+            pageSpacing = 9.dp,
             modifier = Modifier.fillMaxWidth()
         ) { page ->
             Row(
@@ -663,7 +661,6 @@ private fun BookInfoQuickActionItem.toQuickActionUi(
     onSelectCloudEntry: () -> Unit
 ): BookInfoQuickActionUi? {
     if (!enabled) return null
-    val customAlias = BookInfoQuickActionConfig.customButtonAlias(state.sourceUrl)
     return when (type) {
         BookInfoQuickActionType.SOURCE -> BookInfoQuickActionUi(
             label = alias.ifBlank { "书源" },
@@ -699,6 +696,7 @@ private fun BookInfoQuickActionItem.toQuickActionUi(
         )
         BookInfoQuickActionType.CUSTOM_BUTTON -> {
             if (!state.hasCustomButton) return null
+            val customAlias = BookInfoQuickActionConfig.customButtonAlias(state.sourceUrl)
             BookInfoQuickActionUi(
                 label = stringResource(R.string.custom_button),
                 value = customAlias.ifBlank { alias.ifBlank { stringResource(R.string.custom_button) } },
@@ -959,7 +957,7 @@ private fun BookInfoTocMetricPreview(
     val chapters = state.currentChapterPreview.ifEmpty { state.chapterPreview.take(8) }
     if (chapters.isEmpty()) {
         Text(
-            text = stringResource(R.string.error_load_toc),
+            text = stringResource(state.tocLoadPhase.emptyMessageRes),
             color = style.colors.secondaryText,
             fontSize = 13.sp
         )
@@ -1658,28 +1656,41 @@ private fun BookInfoTopIcon(
 private fun BookInfoCoverBackdrop(
     coverPath: String?,
     style: BookInfoComposeStyle,
-    scrollOffset: Int,
+    scrollState: ScrollState,
     modifier: Modifier = Modifier
 ) {
-    val blurRadius = (scrollOffset / 72f).coerceIn(0f, 10f).dp
-    val imageDarkenAlpha = (0.15f + scrollOffset / 1800f).coerceIn(0.15f, 0.34f)
-    val parallaxOffset = scrollOffset * 0.22f
+    val density = LocalDensity.current.density
+    val blurEffects = remember(density) {
+        List(41) { step ->
+            if (step == 0) null else {
+                val radius = step * 0.25f * density
+                BlurEffect(radius, radius, TileMode.Decal)
+            }
+        }
+    }
     Box(modifier = modifier.background(style.colors.contentTop)) {
         BookInfoBackdropImage(
             path = coverPath,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = parallaxOffset
+                    translationY = scrollState.value * 0.22f
                     scaleX = 1.06f
                     scaleY = 1.06f
                 }
-                .blur(blurRadius)
+                .graphicsLayer {
+                    val blurStep = (scrollState.value / 72f * 4f).roundToInt().coerceIn(0, 40)
+                    renderEffect = blurEffects[blurStep]
+                    clip = true
+                }
         )
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(style.colors.scrim.copy(alpha = imageDarkenAlpha))
+                .drawBehind {
+                    val alpha = (0.15f + scrollState.value / 1800f).coerceIn(0.15f, 0.34f)
+                    drawRect(style.colors.scrim.copy(alpha = alpha))
+                }
         )
         Box(
             modifier = Modifier
@@ -2027,26 +2038,11 @@ private fun BookInfoRichIntro(
         (context.resources.displayMetrics.widthPixels - 44.dpToPx()).coerceAtLeast(1)
     }
     val imageMaxWidth = contentWidth.takeIf { it > 0 } ?: fallbackImageWidth
-    val markwon = remember(context, sourceUrl, imageMaxWidth) {
-        val requestOptions = RequestOptions()
-            .override(imageMaxWidth)
-            .encodeQuality(88)
-        if (sourceUrl.isNotBlank()) {
-            requestOptions.set(
-                OkHttpModelLoader.sourceOriginOption,
-                sourceUrl
-            )
+    val markwon = if (rawIntro.startsWith("<md>", ignoreCase = true)) {
+        remember(context, sourceUrl, imageMaxWidth) {
+            createBookInfoMarkwon(context, sourceUrl, imageMaxWidth)
         }
-        Markwon.builder(context)
-            .usePlugin(
-                GlideImagesPlugin.create(
-                    Glide.with(context).applyDefaultRequestOptions(requestOptions)
-                )
-            )
-            .usePlugin(HtmlPlugin.create())
-            .usePlugin(TablePlugin.create(context))
-            .build()
-    }
+    } else null
     AndroidView(
         modifier = Modifier
             .fillMaxWidth()
@@ -2089,9 +2085,10 @@ private fun BookInfoRichIntro(
             ) {
                 when {
                     rawIntro.startsWith("<md>", ignoreCase = true) -> {
-                        val markdown = markwon.toMarkdown(rawIntro.extractWrappedIntro(4))
+                        val renderer = checkNotNull(markwon)
+                        val markdown = renderer.toMarkdown(rawIntro.extractWrappedIntro(4))
                         textView.setMarkdown(
-                            markwon,
+                            renderer,
                             markdown,
                             imgOnLongClickListener = { source ->
                                 currentActions.onIntroImageLongClick(source)
@@ -2163,6 +2160,7 @@ private fun BookInfoIntroContent(
         BookInfoWebIntro(
             rawIntro = rawIntro,
             bookUrl = state.bookUrl,
+            sourceUrl = state.sourceUrl,
             actions = actions,
             style = style,
             expandPages = webIntroExpandPages
@@ -2177,11 +2175,14 @@ private fun BookInfoIntroContent(
 private fun BookInfoWebIntro(
     rawIntro: String,
     bookUrl: String,
+    sourceUrl: String,
     actions: BookInfoActions,
     style: BookInfoComposeStyle,
     expandPages: Int
 ) {
     val context = LocalContext.current
+    val currentActions by rememberUpdatedState(actions)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val pageHeight = configuration.screenHeightDp.dp.coerceAtLeast(520.dp)
@@ -2195,39 +2196,11 @@ private fun BookInfoWebIntro(
     val themeCss = remember(style) {
         bookInfoUseWebThemeCss(style)
     }
-    val transparentHtml = remember(html, textColor, themeCss) {
-        """
-            <html>
-            <head>
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <style>
-                html, body {
-                  background: transparent !important;
-                  color: $textColor;
-                  margin: 0;
-                  padding: 0;
-                  font-size: 14px;
-                  line-height: 1.72;
-                  word-break: break-word;
-                  -webkit-user-select: text !important;
-                  user-select: text !important;
-                }
-                body * {
-                  -webkit-user-select: text !important;
-                  user-select: text !important;
-                }
-                img, video, iframe {
-                  max-width: 100%;
-                  height: auto;
-                }
-              </style>
-            </head>
-            <body>$html<style id="legado-book-info-theme">$themeCss</style></body>
-            </html>
-        """.trimIndent()
+    val content = remember(bookUrl, sourceUrl, baseUrl, html) {
+        BookInfoWebIntroDocument.Content(bookUrl, sourceUrl, baseUrl, html)
     }
-    val loadKey = remember(baseUrl, transparentHtml) { "${baseUrl.orEmpty()}\n$transparentHtml" }
-    var contentHeightPx by remember(loadKey) { mutableStateOf(0) }
+    val theme = remember(textColor, themeCss) { BookInfoWebIntroDocument.Theme(textColor, themeCss) }
+    var contentHeightPx by remember(content) { mutableStateOf(0) }
     val webHeight = remember(contentHeightPx, expandPages, density, pageHeight) {
         if (contentHeightPx > 0) {
             val contentHeight = with(density) { contentHeightPx.toDp() }
@@ -2241,7 +2214,7 @@ private fun BookInfoWebIntro(
             pageHeight
         }
     }
-    val loadToken = remember { AtomicLong(0L) }
+    val loadToken = remember(context) { AtomicLong(0L) }
     val webContainer = remember(context) {
         FrameLayout(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -2277,11 +2250,66 @@ private fun BookInfoWebIntro(
             isFocusable = true
             isFocusableInTouchMode = true
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
     }
-    DisposableEffect(webContainer, webView) {
+    val isTokenActive = remember(loadToken) {
+        { token: Long -> token > 0L && loadToken.get() == token }
+    }
+    val onContentHeight by rememberUpdatedState<(Long, Int) -> Unit> { token, heightPx ->
+        if (isTokenActive(token) && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            kotlin.math.abs(heightPx - contentHeightPx) > 8
+        ) {
+            contentHeightPx = heightPx
+        }
+    }
+    val heightScheduler = remember(webView, loadToken) {
+        BookInfoWebIntroHeightScheduler(
+            postDelayed = { task, delay -> webView.postDelayed(task, delay) },
+            removeCallbacks = { task -> webView.removeCallbacks(task) },
+            isTokenActive = isTokenActive,
+            measure = { token ->
+                if (webView.handler != null && webView.isAttachedToWindow) {
+                    measureBookInfoWebIntroHeight(webView, token, isTokenActive) { activeToken, height ->
+                        onContentHeight(activeToken, height)
+                    }
+                }
+            }
+        )
+    }
+    val document = remember(webView, heightScheduler) {
+        BookInfoWebIntroDocument(
+            webView = webView,
+            onNewDocument = {
+                heightScheduler.cancel()
+                loadToken.incrementAndGet().also {
+                    heightScheduler.request(it, longArrayOf(300L, 900L))
+                }
+            },
+            isTokenActive = isTokenActive,
+            onThemeApplied = { heightScheduler.request(it, longArrayOf(0L, 360L)) }
+        )
+    }
+    val webLifecycle = remember(webView, webContainer, heightScheduler) {
+        BookInfoWebIntroLifecycle(webView, webContainer, heightScheduler) { loadToken.get() }
+    }
+    DisposableEffect(lifecycle, webLifecycle) {
+        webLifecycle.setResumed(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        lifecycle.addObserver(webLifecycle)
         onDispose {
+            lifecycle.removeObserver(webLifecycle)
+            webLifecycle.setResumed(false)
+        }
+    }
+    val webClient = remember(context, heightScheduler, document) {
+        BookInfoIntroWebViewClient(context, { loadToken.get() }, isTokenActive) { token ->
+            document.onPageFinished(token)
+            heightScheduler.request(token, longArrayOf(0L, 360L, 1200L))
+        }
+    }
+    DisposableEffect(webContainer, webView, heightScheduler, webLifecycle) {
+        onDispose {
+            webLifecycle.setResumed(false)
+            heightScheduler.cancel()
             loadToken.set(Long.MIN_VALUE)
             BookInfoUseWebHost.clearPopups(webContainer)
             webView.webChromeClient = null
@@ -2309,13 +2337,19 @@ private fun BookInfoWebIntro(
                         )
                     )
                 }
-                webView.setTag(R.id.tag, null)
-                webView.onResume()
-                actions.onSetupWebIntro(webView)
+                webView.webViewClient = webClient
+                webView.setOnTouchListener { _, event ->
+                    if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                        heightScheduler.request(loadToken.get(), longArrayOf(120L, 360L, 720L))
+                    }
+                    false
+                }
+                currentActions.onSetupWebIntro(webView)
                 BookInfoUseWebHost.attachPopupSupport(
                     container = this,
                     webView = webView,
-                    configurePopupWebView = actions.onSetupWebIntro
+                    configurePopupWebView = { currentActions.onSetupWebIntro(it) },
+                    initiallyResumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
                 )
             }
         },
@@ -2330,78 +2364,17 @@ private fun BookInfoWebIntro(
                     )
                 )
             }
-            actions.onSetupWebIntro(webView)
-            BookInfoUseWebHost.attachPopupSupport(
-                container = container,
-                webView = webView,
-                configurePopupWebView = actions.onSetupWebIntro
-            )
-            webView.webViewClient = BookInfoIntroWebViewClient(
-                context = context,
-                currentToken = { loadToken.get() },
-                isTokenActive = { token -> token > 0L && loadToken.get() == token }
-            ) { token, heightPx ->
-                if (loadToken.get() == token && kotlin.math.abs(heightPx - contentHeightPx) > 8) {
-                    contentHeightPx = heightPx
-                }
-            }
-            webView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            webView.setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                    val token = loadToken.get()
-                    scheduleBookInfoWebIntroHeightMeasure(
-                        webView = webView,
-                        token = token,
-                        isTokenActive = { activeToken -> activeToken > 0L && loadToken.get() == activeToken },
-                        delays = longArrayOf(120L, 360L, 720L)
-                    ) { activeToken, heightPx ->
-                        if (loadToken.get() == activeToken && kotlin.math.abs(heightPx - contentHeightPx) > 8) {
-                            contentHeightPx = heightPx
-                        }
-                    }
-                }
-                false
-            }
-            if (webView.getTag(R.id.tag) != loadKey) {
-                val token = loadToken.incrementAndGet()
-                webView.setTag(R.id.tag, loadKey)
-                webView.stopLoading()
-                webView.loadDataWithBaseURL(
-                    baseUrl,
-                    transparentHtml,
-                    "text/html",
-                    "utf-8",
-                    baseUrl
-                )
-                webView.post {
-                    if (token > 0L && loadToken.get() == token) {
-                        webView.requestLayout()
-                        webView.invalidate()
-                    }
-                }
-            }
+            currentActions.onSetupWebIntro(webView)
+            document.update(content, theme)
         }
     )
-    LaunchedEffect(loadKey, webView) {
-        val token = loadToken.get()
-        scheduleBookInfoWebIntroHeightMeasure(
-            webView = webView,
-            token = token,
-            isTokenActive = { activeToken -> activeToken > 0L && loadToken.get() == activeToken },
-            delays = longArrayOf(300L, 900L)
-        ) { activeToken, heightPx ->
-            if (loadToken.get() == activeToken && kotlin.math.abs(heightPx - contentHeightPx) > 8) {
-                contentHeightPx = heightPx
-            }
-        }
-    }
 }
 
 private class BookInfoIntroWebViewClient(
     private val context: Context,
     private val currentToken: () -> Long,
     private val isTokenActive: (Long) -> Boolean,
-    private val onContentHeight: (Long, Int) -> Unit
+    private val onPageReady: (Long) -> Unit
 ) : WebViewClient() {
     private val jsStr = getInjectionString
 
@@ -2440,31 +2413,7 @@ private class BookInfoIntroWebViewClient(
         val token = currentToken()
         if (!isTokenActive(token)) return
         runCatching { view.evaluateJavascript(jsStr, null) }
-        scheduleBookInfoWebIntroHeightMeasure(
-            webView = view,
-            token = token,
-            isTokenActive = isTokenActive,
-            delays = longArrayOf(0L, 120L, 360L, 720L, 1200L),
-            onContentHeight = onContentHeight
-        )
-    }
-}
-
-private fun scheduleBookInfoWebIntroHeightMeasure(
-    webView: WebView,
-    token: Long,
-    isTokenActive: (Long) -> Boolean,
-    delays: LongArray,
-    onContentHeight: (Long, Int) -> Unit
-) {
-    if (!isTokenActive(token)) return
-    delays.forEach { delayMillis ->
-        webView.postDelayed({
-            if (!isTokenActive(token) || webView.handler == null || !webView.isAttachedToWindow) {
-                return@postDelayed
-            }
-            measureBookInfoWebIntroHeight(webView, token, isTokenActive, onContentHeight)
-        }, delayMillis)
+        onPageReady(token)
     }
 }
 
@@ -2583,11 +2532,17 @@ private suspend fun loadCoverThemeColor(context: Context, coverPath: String?): I
     if (coverPath.isNullOrBlank()) return null
     return withContext(Dispatchers.IO) {
         runCatching {
-            val bitmap = ImageLoader.loadBitmap(context, coverPath)
+            val target = ImageLoader.loadBitmap(context, coverPath)
                 .submit(48, 72)
-                .get()
-            bitmap.extractThemeColor()
-        }.getOrNull()
+            try {
+                runInterruptible { target.get() }.extractThemeColor()
+            } finally {
+                Glide.with(context).clear(target)
+            }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            null
+        }
     }
 }
 

@@ -1,0 +1,105 @@
+:root {
+  --reader-text-color: #233c4b;
+  --reader-page-background: #c9eaf6;
+  --reader-accent: #008cca;
+  --reader-font-family: 'Noto Serif CJK SC', 'Source Han Serif SC', 'Songti SC', serif;
+  --reader-font-size: 18px;
+  --reader-line-height: 1.88;
+  --reader-paragraph-indent: 2em;
+  --reader-paragraph-spacing: .95em;
+  --reader-selection-color: #ffe28baa;
+}
+[data-reader-page="scroll"] {
+  --dora-ink: #07547c;
+  --dora-sky: #c9eaf6;
+  --dora-light: #f0fbff;
+  --dora-edge: #7fbfd5;
+  --dora-paper: #fffdf6;
+  padding: 0;
+  background: radial-gradient(ellipse at 85% 6%, var(--dora-light), transparent 65%), var(--dora-sky);
+  color: var(--reader-text-color);
+}
+.dora-world {
+  display: grid;
+  grid-template-rows: clamp(118px, 16vh, 140px) minmax(0, 1fr) clamp(58px, 9vh, 74px);
+  box-sizing: border-box;
+  height: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: var(--reader-safe-top) var(--reader-safe-right) var(--reader-safe-bottom) var(--reader-safe-left);
+  overflow: hidden;
+  font-family: sans-serif;
+}
+.dora-sky { position: relative; min-width: 0; padding: 9px 22px 0; color: var(--dora-ink); user-select: none; }
+.dora-masthead { display: flex; position: relative; z-index: 2; align-items: center; justify-content: space-between; gap: 12px; }
+.dora-edition { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.dora-edition b { font-size: 8px; font-weight: 600; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; opacity: .55; }
+.dora-time { font-size: 11px; font-weight: 700; letter-spacing: .08em; white-space: nowrap; }
+.dora-heading { position: relative; z-index: 2; margin-top: 10px; padding-right: calc(42% + 12px); }
+.dora-heading h1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: clamp(17px, 5vw, 22px); line-height: 1.4; letter-spacing: .03em; margin: 0 0 4px; font-weight: 800; overflow-wrap: anywhere; }
+.dora-book { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; letter-spacing: .06em; opacity: .74; margin: 0; }
+.dora-adventure { position: absolute; right: 20px; bottom: 10px; width: 39%; max-width: 210px; height: calc(100% - 38px); pointer-events: none; }
+.dora-friends { position: absolute; width: 100%; height: 100%; object-fit: contain; object-position: center bottom; bottom: 0; }
+.dora-star { position: absolute; color: #e3aa26; line-height: 1; }
+.dora-star-one { left: -3px; top: 8px; font-size: 20px; transform: rotate(-10deg); }
+.dora-star-two { right: -5px; top: 0; font-size: 25px; }
+.dora-cloud { position: absolute; width: 95px; height: 27px; background: #fff; border-radius: 50px; opacity: .4; right: 32px; bottom: 32px; pointer-events: none; }
+.dora-cloud::before, .dora-cloud::after { content: ''; position: absolute; background: inherit; border-radius: 50%; }
+.dora-cloud::before { width: 43px; height: 43px; left: 15px; top: -20px; }
+.dora-cloud::after { width: 34px; height: 34px; right: 12px; top: -14px; }
+.dora-orbit { position: absolute; width: 155px; height: 155px; right: -38px; top: -74px; border: 1px solid #fff9; border-radius: 50%; box-shadow: 0 0 0 20px #ffffff19; pointer-events: none; }
+.dora-door { position: absolute; left: -8px; bottom: 0; width: 19px; height: 32px; transform: rotate(-8deg); background: #f9a7b7; border: 2px solid #d85784; border-radius: 2px; box-shadow: 2px 2px 0 #0a719d19; }
+.dora-door i { position: absolute; inset: 3px; border: 1px solid #cf6384; background: #ffd0d9; }
+.dora-door b { position: absolute; right: 4px; top: 17px; width: 3px; height: 3px; border-radius: 50%; background: #edbe46; }
+.dora-collar { position: absolute; height: 5px; bottom: 0; left: 12px; right: 12px; background: #e65b61; border-top: 1px solid #fa8b87; border-bottom: 2px solid #c74a54; border-radius: 4px 4px 0 0; }
+.dora-bell { display: inline-block; position: relative; flex-shrink: 0; width: 18px; height: 18px; border: 1.5px solid #a97923; background: #ffda59; border-radius: 50%; box-sizing: border-box; }
+.dora-bell::before { content: ''; position: absolute; left: -1px; right: -1px; height: 3px; top: 4px; border-top: 1px solid #aa7c23; border-bottom: 1px solid #aa7c23; background: #ffe994; }
+.dora-bell::after { content: ''; position: absolute; width: 4px; height: 4px; border-radius: 50%; background: #90671e; left: 5.5px; top: 9px; box-shadow: 0 3px 0 -1px #90671e; }
+.dora-bell-large { position: absolute; left: calc(50% - 12px); top: -12px; width: 24px; height: 24px; z-index: 3; box-shadow: 0 2px 0 #bf904a21; }
+.dora-bell-large::before { top: 6px; height: 4px; }
+.dora-bell-large::after { width: 5px; height: 5px; left: 8px; top: 13px; }
+.dora-paper { position: relative; display: grid; grid-template-rows: 29px minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0 12px; background: var(--dora-paper); border: 1px solid var(--dora-edge); border-top: 0; border-radius: 0 0 10px 10px; box-shadow: 0 3px 0 #057cad18; }
+.dora-paper::before, .dora-paper::after { content: ''; position: absolute; top: 40px; bottom: 24px; width: 1px; background: repeating-linear-gradient(to bottom, #83c0d4 0 3px, transparent 3px 9px); pointer-events: none; }
+.dora-paper::before { left: 4px; }
+.dora-paper::after { right: 4px; }
+.dora-paper-top { display: flex; align-items: center; gap: 30px; justify-content: space-between; padding: 0 16px; color: #76949d; font-size: 7px; letter-spacing: .12em; font-weight: 600; user-select: none; }
+.dora-reading-window { min-height: 0; min-width: 0; margin: 0 9px 10px; border: 1px solid #d9e5df; border-radius: 3px; scrollbar-width: none; }
+.dora-reading-window::-webkit-scrollbar { display: none; }
+.dora-body { height: auto; min-height: 0; box-sizing: border-box; padding: 12px 14px 20px 20px; font-family: var(--reader-font-family); font-size: var(--reader-font-size); line-height: var(--reader-line-height); overflow-wrap: break-word; word-break: normal; line-break: strict; }
+.dora-body .reader-paragraph { position: relative; margin: 0 0 var(--reader-paragraph-spacing); text-indent: var(--reader-paragraph-indent); }
+.dora-body .reader-paragraph:nth-of-type(7n + 1)::before { content: ''; position: absolute; left: -13px; top: .82em; width: 4px; height: 4px; border: 1px solid #c89935; border-radius: 50%; background: #ffdf76; }
+.dora-body .reader-chapter-title { display: none; }
+.dora-body a { color: #047cab; }
+.dora-body img.legado-text-bubble { vertical-align: baseline; }
+.dora-finish { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 23px 4px; color: var(--dora-ink); user-select: none; }
+.dora-portrait { flex: 0 0 auto; width: 34px; height: 34px; border: 2px solid #fff; border-radius: 50%; outline: 1px solid var(--dora-edge); object-fit: cover; }
+.dora-footer-copy { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.dora-footer-copy strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; letter-spacing: .04em; }
+.dora-footer-copy > span { font-size: 6px; letter-spacing: .12em; opacity: .65; white-space: nowrap; }
+.dora-pocket { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 57px; height: 29px; border: 1.5px solid var(--dora-edge); border-radius: 0 0 34px 34px; box-shadow: inset 0 3px 0 #eaf4f7; background: #f7fcfd; color: #387f98; font-size: 10px; font-weight: 700; }
+[data-dora-period="evening"] { --dora-sky: #ded7f0; --dora-light: #fff3db; --dora-ink: #675380; --dora-edge: #b5a4cf; }
+[data-dora-period="night"] { --dora-sky: #244b70; --dora-light: #426b88; --dora-ink: #e5f5ff; --dora-edge: #568ea7; }
+[data-dora-period="night"] .dora-cloud { opacity: .12; }
+@media (max-width: 340px) {
+  .dora-sky { padding-left: 16px; padding-right: 16px; }
+  .dora-paper { margin-left: 8px; margin-right: 8px; }
+  .dora-collar { left: 8px; right: 8px; }
+  .dora-body { padding-left: 17px; padding-right: 10px; }
+  .dora-finish { padding-left: 16px; padding-right: 16px; gap: 7px; }
+  .dora-footer-copy > span { font-size: 5px; }
+}
+@media (max-height: 480px) {
+  .dora-world { grid-template-rows: 66px minmax(0, 1fr) 43px; }
+  .dora-sky { padding-top: 3px; }
+  .dora-masthead { height: 16px; }
+  .dora-heading { margin-top: 5px; padding-right: 180px; }
+  .dora-heading h1 { display: block; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; margin: 0; }
+  .dora-book { display: none; }
+  .dora-adventure { right: 86px; bottom: 7px; width: 110px; height: 55px; }
+  .dora-paper { grid-template-rows: 21px minmax(0, 1fr); }
+  .dora-reading-window { margin-bottom: 6px; }
+  .dora-finish { padding-top: 4px; padding-bottom: 1px; }
+  .dora-portrait { width: 25px; height: 25px; }
+  .dora-footer-copy { display: flex; align-items: baseline; gap: 12px; }
+  .dora-pocket { width: 54px; height: 23px; }
+}

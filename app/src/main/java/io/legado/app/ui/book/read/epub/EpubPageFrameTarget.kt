@@ -32,6 +32,13 @@ internal data class EpubPageFrameTarget(
         append(readerChromeContentRevision)
     }
 
+    val documentKey: String = buildString {
+        // The owning pipeline clears this identity on a session change. Page and
+        // chrome revisions must not bypass a failed document's retry backoff.
+        append(chapterIndex).append('|').append(chapterHref).append('|')
+        append(chapterRevision).append('|').append(layoutSignature)
+    }
+
     fun accepts(frame: EpubRenderedPageFrame): Boolean {
         if (frame.chapterIndex != chapterIndex || frame.chapterHref != chapterHref ||
             frame.layoutSignature != layoutSignature ||
@@ -45,6 +52,9 @@ internal data class EpubPageFrameTarget(
     }
 
     companion object {
+
+        internal fun chapterContentRevision(chapter: EpubDirectChapter): Int =
+            31 * chapter.html.hashCode() + (chapter.templateSourceHtml?.hashCode() ?: 0)
 
         fun create(
             sessionGeneration: Long,
@@ -60,7 +70,7 @@ internal data class EpubPageFrameTarget(
                 sessionGeneration = sessionGeneration,
                 chapterIndex = chapter.chapterIndex,
                 chapterHref = chapter.href,
-                chapterRevision = chapter.html.hashCode(),
+                chapterRevision = chapterContentRevision(chapter),
                 requestedPageIndex = request.pageIndex,
                 openAtEnd = request.openAtEnd,
                 layoutSignature = layoutSignature(config, viewportWidth, viewportHeight),

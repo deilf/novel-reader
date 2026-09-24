@@ -576,6 +576,7 @@
   var activationBoundaryTarget='';
   var activationTargetRevision=-1;
   var lastLayoutRefreshAt=0;
+  var lastLayoutResizeGeometry='';
   var layoutRefreshBaseInterval=__LEGADO_REFRESH_MIN__;
   var layoutRefreshMinInterval=layoutRefreshBaseInterval;
   var layoutRefreshImmediateInterval=__LEGADO_REFRESH_IMMEDIATE__;
@@ -756,7 +757,16 @@
   function displayedPageIndex(){
     if(fixed)return 0;
     if(vertical){
-      return Math.round(window.scrollY/Math.max(1,window.innerHeight))-windowStartPage;
+      var extent=Math.max(1,window.innerHeight);
+      var scrolling=document.scrollingElement||document.documentElement;
+      var height=Math.max(scrolling.scrollHeight,root?root.scrollHeight:0,extent);
+      var bottom=Math.max(0,height-extent);
+      // The last partial screen cannot scroll to pageIndex * extent. Reporting
+      // the rounded offset there makes a verified last-page handoff retry forever.
+      if(bottom>0&&window.scrollY>=bottom-.5){
+        return Math.max(0,Math.ceil((height-.5)/extent)-1)-windowStartPage;
+      }
+      return Math.round(window.scrollY/extent)-windowStartPage;
     }
     return horizontalViewportPage()-windowStartPage;
   }
@@ -935,6 +945,7 @@
       ? targetInterval
       : Math.max(layoutRefreshBaseInterval,layoutRefreshMinInterval*.85);
     }finally{
+      lastLayoutResizeGeometry=layoutResizeGeometry();
       if(readerLayoutMutationObserver)readerLayoutMutationObserver.observe(root,readerLayoutMutationOptions);
       layoutRefreshInProgress=false;
       scheduleRenderStateReport();
@@ -960,6 +971,10 @@
 
   function scheduleLayoutRefresh(immediate){
     if(!runtimeActive)return;
+    // Styles, fonts and image decoding already converge at publishInitialStable.
+    // Rebuilding all highlighted lines before that barrier blocks those resource
+    // callbacks and repeats the same expensive chapter layout several times.
+    if(!resourcesReady){beginLayoutRefresh();return;}
     immediate=immediate===true;
     rememberViewportAnchor();
     beginLayoutRefresh();
@@ -987,9 +1002,10 @@
 
   function flushLayoutRefresh(callback){
     if(!runtimeActive)return;
-    rememberViewportAnchor();
     beginLayoutRefresh();
     appendDeferredLayoutFlushCallback(callback);
+    if(!resourcesReady)return;
+    rememberViewportAnchor();
     if(selectionPageLock){layoutRefreshDeferredBySelection=true;return;}
     if(layoutRefreshTimer){clearTimeout(layoutRefreshTimer);layoutRefreshTimer=0;}
     if(layoutRefreshFrame){cancelAnimationFrame(layoutRefreshFrame);layoutRefreshFrame=0;}
@@ -2375,9 +2391,11 @@
   function selection(){
     clearTimeout(window.__legadoSelectionTimer);
     window.__legadoSelectionTimer=setTimeout(function(){
+      if(!runtimeActive)return;
       var s=window.getSelection();var text=s?String(s.toString()):'';var rects=[];
-      if(s&&s.rangeCount){Array.prototype.forEach.call(s.getRangeAt(0).getClientRects(),function(r){
-        if(r.width>0&&r.height>0)rects.push({left:r.left,top:r.top,right:r.right,bottom:r.bottom});
+      if(!text&&!selectionPageLock)return;
+      if(text&&s&&s.rangeCount){Array.prototype.forEach.call(s.getRangeAt(0).getClientRects(),function(r){
+        if(rects.length<512&&r.width>0&&r.height>0)rects.push({left:r.left,top:r.top,right:r.right,bottom:r.bottom});
       });if(!rects.length){var fallback=s.getRangeAt(0).getBoundingClientRect();
         if(fallback.width>0&&fallback.height>0)rects.push({left:fallback.left,top:fallback.top,right:fallback.right,bottom:fallback.bottom});
       }}
@@ -2395,11 +2413,18 @@
   }
 
   function clearSelection(){
-    selectionPageLock=false;
+    clearTimeout(window.__legadoSelectionTimer);
     var s=window.getSelection&&window.getSelection();
-    if(s)s.removeAllRanges();
+    var hadSelection=selectionPageLock||!!(s&&!s.isCollapsed);
+    selectionPageLock=false;
+    if(s&&s.rangeCount)s.removeAllRanges();
+    if(!hadSelection&&!layoutRefreshDeferredBySelection)return false;
+    if(hadSelection)window.__LEGADO_BRIDGE__.onSelection(activeToken,JSON.stringify({
+      text:'',rects:[],viewportWidth:Math.max(1,window.innerWidth),viewportHeight:Math.max(1,window.innerHeight)
+    }));
     if(layoutRefreshDeferredBySelection)scheduleLayoutRefresh(true);
     report();
+    return hadSelection;
   }
 
   var lastFragmentPage=-1;
@@ -2827,8 +2852,20 @@
   // fighting it every frame makes the WebView appear locked. Root normalization
   // is performed only at layout/page positioning boundaries above.
   window.addEventListener('scroll',function(){updateReaderChromeForDisplayedPage();report();},{passive:true});
+  function layoutResizeGeometry(){
+    var htmlRect=document.documentElement.getBoundingClientRect();
+    var rootRect=root===document.documentElement?htmlRect:root.getBoundingClientRect();
+    return [htmlRect.width,htmlRect.height,rootRect.width,rootRect.height].join('|');
+  }
   if(window.ResizeObserver){
-    var resizeObserver=new ResizeObserver(scheduleLayoutRefresh);
+    var resizeObserver=new ResizeObserver(function(){
+      var geometry=layoutResizeGeometry();
+      // Column fitting changes the reader's own box. Its final size was already
+      // measured by that refresh; only a later size change needs another pass.
+      if(geometry===lastLayoutResizeGeometry)return;
+      lastLayoutResizeGeometry=geometry;
+      scheduleLayoutRefresh();
+    });
     resizeObserver.observe(document.documentElement);
     if(root&&root!==document.documentElement)resizeObserver.observe(root);
   }
@@ -3138,16 +3175,19 @@
     if(!runtimeActive)return;
     requestAnimationFrame(function(){
       if(!runtimeActive)return;
-      // Resource/style events can enqueue one final throttled refresh while the first
-      // refresh is running. Drain it before exposing the document so a later setPage()
-      // cannot be overwritten by a stale viewport anchor.
-      flushLayoutRefresh(function(){requestAnimationFrame(function(){
+      // Drain actual late changes without unconditionally rebuilding the entire
+      // chapter again. Keep two frame boundaries so resize/resource observers
+      // can invalidate the result before a native ready signal is published.
+      if(isLayoutPending()){flushLayoutRefresh(notifyStable);return;}
+      var revision=visualRevision;
+      requestAnimationFrame(function(){
         if(!runtimeActive)return;
+        if(isLayoutPending()||revision!==visualRevision){notifyStable();return;}
         stable=true;
         var boundaryPage=activationBoundaryPage(computePageCount());
         if(boundaryPage>=0)setPage(boundaryPage,0,'auto',true);else report();
         settleRuntime('ready','');
-      });});
+      });
     });
   }
   function replayRuntimeTerminal(token){

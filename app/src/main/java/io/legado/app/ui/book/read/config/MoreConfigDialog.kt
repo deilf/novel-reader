@@ -278,6 +278,9 @@ class MoreConfigDialog : BasePrefDialogFragment() {
                         ).filterNot { ReadBookConfig.usingEpubLayout && it.key in setOf(
                             PreferKey.doublePageHorizontal, PreferKey.useZhLayout, PreferKey.textBottomJustify,
                             PreferKey.adaptSpecialStyle, PreferKey.optimizeRender
+                        ) }.filterNot { ReadBook.usesPageTemplate() && it.key in setOf(
+                            PreferKey.textFullJustify, "epubLayout." + PreferKey.textFullJustify,
+                            PreferKey.showReadTitleAddition, PreferKey.paddingDisplayCutouts
                         ) }
                     )
                 )

@@ -26,6 +26,38 @@ class EpubCommittedPageSnapshotCacheTest {
     }
 
     @Test
+    fun `drag source survives cache invalidation and returns intact after rollback`() {
+        val released = mutableListOf<String>()
+        val cache = EpubCommittedPageSnapshotCache<String>(released::add)
+        assertTrue(cache.complete(cache.begin(firstPage), firstPage, "drag-source"))
+        val source = cache.take(firstPage)!!
+        // Activating the target invalidates the cache while the overlay paints
+        // the original bitmap. It must not release the overlay-owned pixels.
+        cache.invalidate()
+        assertTrue(released.isEmpty())
+        assertNull(cache.take(firstPage))
+        assertTrue(cache.complete(cache.begin(firstPage), firstPage, source))
+        assertEquals("drag-source", cache.peek(firstPage))
+        cache.invalidate()
+        assertEquals(listOf("drag-source"), released)
+    }
+
+    @Test
+    fun `an obsolete capture cannot reclaim a source transferred to the drag overlay`() {
+        val released = mutableListOf<String>()
+        val cache = EpubCommittedPageSnapshotCache<String>(released::add)
+        assertTrue(cache.complete(cache.begin(firstPage), firstPage, "drag-source"))
+        val pending = cache.begin(firstPage)
+        assertEquals("drag-source", cache.take(firstPage))
+        cache.cancelPendingCapture()
+        assertFalse(cache.complete(pending, firstPage, "late-source"))
+        assertEquals(listOf("late-source"), released)
+        assertTrue(cache.complete(cache.begin(secondPage), secondPage, "target"))
+        assertEquals("target", cache.take(secondPage))
+        assertEquals(listOf("late-source"), released)
+    }
+
+    @Test
     fun `peek keeps the committed snapshot available for consecutive turns`() {
         val released = mutableListOf<String>()
         val cache = EpubCommittedPageSnapshotCache<String>(released::add)
@@ -120,6 +152,52 @@ class EpubCommittedPageSnapshotCacheTest {
 
         assertFalse(cache.complete(pending, firstPage, "late"))
         assertEquals(listOf("stored", "late"), released)
+    }
+
+    @Test
+    fun `removing animation overlays preserves committed pixels but rejects an in flight capture`() {
+        val released = mutableListOf<String>()
+        val cache = EpubCommittedPageSnapshotCache<String>(released::add)
+        assertTrue(cache.complete(cache.begin(secondPage, 10L), secondPage, 10L, "verified-target"))
+        val pending = cache.begin(secondPage, 10L)
+
+        cache.cancelPendingCapture()
+
+        assertEquals("verified-target", cache.peek(secondPage))
+        assertFalse(cache.isPending(secondPage))
+        assertFalse(cache.complete(pending, secondPage, 11L, "overlay-contaminated"))
+        assertEquals("verified-target", cache.take(secondPage))
+        assertEquals(listOf("overlay-contaminated"), released)
+    }
+
+    @Test
+    fun `releasing temporary layers cannot evict a restored source page`() {
+        val released = mutableListOf<String>()
+        val cache = EpubCommittedPageSnapshotCache<String>(released::add)
+        assertTrue(cache.complete(cache.begin(firstPage), firstPage, "restored-source"))
+        repeat(3) { cache.cancelPendingCapture() }
+        assertEquals("restored-source", cache.peek(firstPage))
+        assertNull(cache.peek(secondPage))
+        assertTrue(released.isEmpty())
+
+        cache.invalidate() // A real layout/image change must still release it.
+        assertNull(cache.peek(firstPage))
+        assertEquals(listOf("restored-source"), released)
+    }
+
+    @Test
+    fun `a callback cancelled by a scene transition cannot replace the next clean capture`() {
+        val released = mutableListOf<String>()
+        val cache = EpubCommittedPageSnapshotCache<String>(released::add)
+        val cancelled = cache.begin(firstPage, 10L)
+        cache.cancelPendingCapture()
+        val clean = cache.begin(firstPage, 11L)
+
+        assertFalse(cache.complete(cancelled, firstPage, 11L, "old-scene"))
+        assertTrue(cache.isPending(firstPage))
+        assertTrue(cache.complete(clean, firstPage, 11L, "clean-page"))
+        assertEquals("clean-page", cache.peek(firstPage))
+        assertEquals(listOf("old-scene"), released)
     }
 
     private fun key(

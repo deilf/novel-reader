@@ -27,6 +27,7 @@ internal class EpubVirtualPageRenderer(
         val requestedPageIndex: Int,
         val openAtEnd: Boolean,
         val readerChromeContentRevision: Long,
+        val capturePersistentPixels: Boolean,
         val deadline: Long,
         val callback: (Result<EpubRenderedPageFrame>) -> Unit,
         var expectedPageIndex: Int? = null,
@@ -59,21 +60,34 @@ internal class EpubVirtualPageRenderer(
             frameHost.close()
             throw throwable
         }
-        frameHost.setContent(renderLayer)
-        renderLayer.setListener(object : EpubDirectWebLayer.Listener {
-            override fun onReady(position: EpubDirectPosition) {
-                onPositionReady(position)
-            }
+        try {
+            frameHost.setContent(renderLayer)
+            renderLayer.setListener(object : EpubDirectWebLayer.Listener {
+                override fun onReady(position: EpubDirectPosition) {
+                    onPositionReady(position)
+                }
 
-            override fun onPositionChanged(position: EpubDirectPosition) {
-                onPositionReady(position)
-            }
+                override fun onPositionChanged(position: EpubDirectPosition) {
+                    onPositionReady(position)
+                }
 
-            override fun onError(message: String, throwable: Throwable?) {
-                failActive(IllegalStateException(message, throwable))
-            }
-        })
+                override fun onError(message: String, throwable: Throwable?) {
+                    failActive(IllegalStateException(message, throwable))
+                }
+            })
+        } catch (throwable: Throwable) {
+            runCatching { renderLayer.destroy() }
+            runCatching { frameHost.close() }
+            throw throwable
+        }
     }
+
+    fun hasReusableChapter(
+        session: EpubDirectSession,
+        chapter: EpubDirectChapter,
+        config: EpubCoreLayoutConfig
+    ): Boolean = !closed && boundSession === session &&
+        renderLayer.hasReusableChapterForFrame(chapter, config)
 
     fun render(
         session: EpubDirectSession,
@@ -82,12 +96,13 @@ internal class EpubVirtualPageRenderer(
         pageIndex: Int,
         openAtEnd: Boolean = false,
         readerChromeData: EpubReaderChromeData = EpubReaderChromeData(),
-        timeoutMillis: Long = DEFAULT_RENDER_TIMEOUT_MS,
+        timeoutMillis: Long? = null,
+        capturePersistentPixels: Boolean = false,
         callback: (Result<EpubRenderedPageFrame>) -> Unit
     ) {
         checkMainThread()
         require(pageIndex >= 0)
-        require(timeoutMillis > 0L)
+        require(timeoutMillis == null || timeoutMillis > 0L)
         if (closed) {
             callback(Result.failure(IllegalStateException("EPUB page renderer is closed")))
             return
@@ -97,6 +112,10 @@ internal class EpubVirtualPageRenderer(
             renderLayer.bindBorrowedSession(session)
             boundSession = session
         }
+        val renderTimeout = timeoutMillis ?: EpubRenderTimeoutPolicy.frame(
+            template = chapter.readerTemplate != null,
+            reusable = hasReusableChapter(session, chapter, config)
+        )
         val request = RenderRequest(
             id = requestSequence.incrementAndGet(),
             chapter = chapter,
@@ -108,7 +127,8 @@ internal class EpubVirtualPageRenderer(
                 config,
                 readerChromeData
             ),
-            deadline = SystemClock.uptimeMillis() + timeoutMillis,
+            deadline = SystemClock.uptimeMillis() + renderTimeout,
+            capturePersistentPixels = capturePersistentPixels,
             callback = callback
         )
         activeRequest = request
@@ -119,7 +139,7 @@ internal class EpubVirtualPageRenderer(
             failActive(IllegalStateException("EPUB page render timed out"))
         }
         timeoutRunnable = timeout
-        handler.postDelayed(timeout, timeoutMillis)
+        handler.postDelayed(timeout, renderTimeout)
         runCatching {
             renderLayer.updateReaderChromeData(readerChromeData)
             if (!renderLayer.reuseChapterForFrame(chapter, config, pageIndex, openAtEnd)) {
@@ -144,9 +164,12 @@ internal class EpubVirtualPageRenderer(
         closed = true
         cancelActive("EPUB page renderer was closed")
         renderLayer.setListener(null)
-        renderLayer.destroy()
-        boundSession = null
-        frameHost.close()
+        try {
+            renderLayer.destroy()
+        } finally {
+            boundSession = null
+            frameHost.close()
+        }
     }
 
     private fun onPositionReady(position: EpubDirectPosition) {
@@ -196,12 +219,17 @@ internal class EpubVirtualPageRenderer(
             retryOrFail(request, "EPUB target layout changed before capture")
             return
         }
-        frameHost.capture captureCallback@{ result ->
+        var persistentPixels: EpubSnapshotPixels? = null
+        frameHost.capture(beforeDelivery = if (request.capturePersistentPixels) {
+            { bitmap -> persistentPixels = EpubSnapshotPixels.copy(bitmap) }
+        } else null) captureCallback@{ result ->
             if (!isActive(request)) {
+                persistentPixels?.close()
                 result.getOrNull()?.takeUnless { it.isRecycled }?.recycle()
                 return@captureCallback
             }
             val bitmap = result.getOrElse {
+                persistentPixels?.close()
                 retryOrFail(request, it.message ?: "EPUB target frame capture failed", it)
                 return@captureCallback
             }
@@ -209,15 +237,17 @@ internal class EpubVirtualPageRenderer(
             // its surface. Re-measure that same document before publishing the bitmap.
             renderLayer.probeCurrentPageFrame(request.chapter.chapterIndex, expectedPageIndex) verification@{ ready ->
                 if (!isActive(request)) {
+                    persistentPixels?.close()
                     bitmap.takeUnless { it.isRecycled }?.recycle()
                     return@verification
                 }
                 if (!ready || renderLayer.currentPageFrameStamp() != stamp) {
+                    persistentPixels?.close()
                     bitmap.takeUnless { it.isRecycled }?.recycle()
                     retryOrFail(request, "EPUB target changed during hardware capture")
                     return@verification
                 }
-                finishCapture(request, expectedPageIndex, bitmap, stamp)
+                finishCapture(request, expectedPageIndex, bitmap, stamp, persistentPixels)
             }
         }
     }
@@ -226,7 +256,8 @@ internal class EpubVirtualPageRenderer(
         request: RenderRequest,
         expectedPageIndex: Int,
         bitmap: Bitmap,
-        stamp: EpubPageFrameStamp
+        stamp: EpubPageFrameStamp,
+        persistentPixels: EpubSnapshotPixels?
     ) {
         val position = renderLayer.position?.takeIf {
             it.chapterIndex == request.chapter.chapterIndex && it.pageIndex == expectedPageIndex
@@ -242,6 +273,7 @@ internal class EpubVirtualPageRenderer(
             backgroundColor = request.config.backgroundColor
         )
         if (position == null || !hasPixels) {
+            persistentPixels?.close()
             bitmap.recycle()
             retryOrFail(
                 request,
@@ -258,6 +290,10 @@ internal class EpubVirtualPageRenderer(
         retryRunnable = null
         timeoutRunnable?.let(handler::removeCallbacks)
         timeoutRunnable = null
+        // Prepare the validated cached pixels before a gesture needs them.
+        // Otherwise the first overlay draw also pays the bitmap texture upload.
+        // This is a best-effort rendering hint, not a new copy or readiness gate.
+        runCatching { bitmap.prepareToDraw() }
         request.callback(
             Result.success(
                 EpubRenderedPageFrame(
@@ -272,7 +308,8 @@ internal class EpubVirtualPageRenderer(
                         viewportHeight
                     ),
                     readerChromeContentRevision = request.readerChromeContentRevision,
-                    renderStamp = stamp
+                    renderStamp = stamp,
+                    persistentPixels = persistentPixels
                 )
             )
         )
@@ -344,7 +381,6 @@ internal class EpubVirtualPageRenderer(
     }
 
     private companion object {
-        const val DEFAULT_RENDER_TIMEOUT_MS = 6_000L
         const val FRAME_READY_RETRY_MS = 48L
         const val SNAPSHOT_SAMPLE_GRID = 64
     }

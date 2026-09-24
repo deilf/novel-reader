@@ -55,6 +55,23 @@ class EpubTemplateIntegrationTest {
         assertThrows(IllegalArgumentException::class.java) { EpubTemplateDocument.wrap(original, "<p>文本</p>", template()) }
     }
 
+    @Test fun `same host with changed source or highlights invalidates page frames`() {
+        val original = EpubTemplateDocument.wrap(chapter("<p>原文</p>", "原文"), "<p>原文</p>", template())
+        val changed = original.copy(templateSourceHtml = "<p><strong>原文</strong></p>")
+        assertEquals(original.html, changed.html)
+        assertNotEquals(EpubPageFrameTarget.chapterContentRevision(original), EpubPageFrameTarget.chapterContentRevision(changed))
+    }
+
+    @Test fun `invalid template markup is attributed to that template revision`() {
+        val original = chapter("<p>文本</p>", "文本\n")
+        val invalid = template().copy(firstPageHtml = "")
+        val failure = assertThrows(EpubTemplateException::class.java) {
+            EpubTemplateDocument.wrap(original, "<p>文本</p>", invalid)
+        }
+        assertEquals(invalid.contentHash(), failure.templateHash)
+        assertTrue(failure.message!!.isNotBlank())
+    }
+
     @Test fun `template source revisions invalidate chapter and frame caches`() {
         val content = TextReaderDocument.prepare("章名🌅", "测试正文。")
         val html = content.html(true) { it }
@@ -79,13 +96,51 @@ class EpubTemplateIntegrationTest {
         }
     }
 
-    @Test fun `template typography defaults honor density and remain overridable`() {
-        val css = EpubTemplateDocument.baseCss(config(), "https://epub.local/text/2/chapter.html", 2f)
-        assertTrue(css.contains("--reader-font-size:9.000px"))
-        assertTrue(css.contains("--reader-paragraph-indent:18.000px"))
-        assertTrue(css.contains("--reader-line-height:14.000px"))
+    @Test fun `reader typography background and font cannot change the template defaults`() {
+        val original = config().copy(readerSafeInsetTopPx = 24)
+        val changed = original.copy(
+            textPaint = object : TextPaint() {
+                override fun getColor(): Int = 0xff00ff00.toInt()
+                override fun getTextSize(): Float = 120f
+                override fun getLetterSpacing(): Float = 2f
+            },
+            backgroundColor = 0xff0000ff.toInt(), readerBackgroundImage = true,
+            readerPaddingLeftPx = 100, paragraphIndentPx = 200f, paragraphSpacingPx = 150f,
+            lineHeightPx = 0f, textFontWeight = 900, textFontItalic = true,
+            readerFontUrl = "https://epub.local/old-reader-font", readerFontRevision = "old-font",
+            textFullJustify = true, textBottomJustify = true
+        )
+        val css = EpubTemplateDocument.baseCss(original, 2f)
+        assertEquals(css, EpubTemplateDocument.baseCss(changed, 2f))
+        assertTrue(css.contains("--reader-safe-top:12.000px"))
+        assertFalse(css.contains("old-reader-font"))
         assertFalse(css.contains("!important"))
         assertFalse(css.contains("column-width"))
+    }
+
+    @Test fun `template chapter is built from semantic content and validates before decoration`() {
+        val content = TextReaderDocument.prepare("章名🌅", "前文<img src='badge.png' style='text'>后文。")
+        val html = content.html(true) { "https://epub.local/text-image/2/image-0" }
+        var decorations = 0
+        val decorate: (String) -> String = { source ->
+            decorations++
+            assertEquals(html, source)
+            source.replace("<head>", "<head><style id=\"legado-reeden-highlight-style\">p{color:red}</style>")
+        }
+        fun create(template: EpubReaderTemplate) = EpubTemplateDocument.create(
+            2, "text/2/chapter.html", content.title, html, content.plainText(true),
+            "https://book.test/chapter/2", "epub.local", template, decorate
+        )
+        assertThrows(EpubTemplateException::class.java) { create(template().copy(firstPageHtml = "")) }
+        assertEquals(0, decorations)
+        val chapter = create(template())
+        assertEquals(1, decorations)
+        assertEquals(content.plainText(true), chapter.plainText)
+        assertEquals("https://epub.local/text/2/chapter.html", chapter.baseUrl)
+        assertEquals(template(), chapter.readerTemplate)
+        assertFalse(chapter.html.contains("reader-paragraph"))
+        assertTrue(chapter.templateSourceHtml!!.contains("data-legado-image-id"))
+        assertTrue(chapter.templateSourceHtml!!.contains("reader-paragraph"))
     }
 
     @Test fun `export actual ordinary content and all builtins for browser acceptance`() {
@@ -103,7 +158,9 @@ class EpubTemplateIntegrationTest {
         val directory = File("build/reports/reader-template").apply { mkdirs() }
         val assets = File("src/main/assets/epub/templates")
         val json = GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create()
-        val builtinNames = listOf("night", "vertical")
+        val builtinNames = listOf(
+            "minecraft_live", "asuka_sync", "lord_of_mysteries", "doraemon_scroll", "vertical"
+        )
         assertEquals(builtinNames.map { "builtin.$it" }, EpubReaderTemplateStore.builtinIds)
         builtinNames.forEach { name ->
             val template = EpubReaderTemplate.fromJson(File(assets, "builtin.$name.json").readText())
@@ -111,7 +168,8 @@ class EpubTemplateIntegrationTest {
             File(directory, "$name.init.json").writeText(json.toJson(mapOf(
                 "token" to 101, "template" to template, "sourceHtml" to html,
                 "plainText" to content.plainText(true), "baseUrl" to "https://epub.local/text/2/chapter.html",
-                "baseCss" to EpubTemplateDocument.baseCss(config(template), "https://epub.local/text/2/chapter.html", 1f),
+                "baseCss" to EpubTemplateDocument.baseCss(config(template), 1f),
+                "templateOwnsLayout" to true,
                 "textImageMode" to "0", "fields" to mapOf("bookName" to "模板测试书", "chapterTitle" to content.title,
                     "time" to "12:34", "battery" to "80%", "progress" to "20.0%"),
                 "viewport" to mapOf("width" to 400, "height" to 700)

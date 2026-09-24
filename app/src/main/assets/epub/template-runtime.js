@@ -8,17 +8,23 @@
   var channel = 'legado-reader-template';
   var token = init.token;
   var active = true, initialized = false, failure = null;
-  var generation = 0, layoutRevision = 0, visualRevision = 0;
+  var generation = 0, layoutRevision = 0, visualRevision = 0, contentRevision = 0;
   var layoutBusy = true, visualBusy = false, running = false, requested = false;
   var layoutTimer = 0, sourceImagesPending = 0, resourcesReady = false, resourcesFailed = false;
   var pages = [], pageMap = [], pageIndex = 0, committedRoot = null, candidateRoot = null;
+  var visibilityPages = null, visiblePage = null;
   var activationBoundary = '', activationTargetRevision = -1;
   var fields = Object.assign({}, init.fields || {});
-  var scrollMode = init.scrollMode === true, sourcePreparing = false;
+  var fieldBindingPages = null, fieldBindings = new Map();
+  var continuous = template.type === 'scroll';
+  var scrollMode = continuous || init.scrollMode === true, sourcePreparing = false;
+  var scrollPositions = [], scrollPixels = [], scrollShellRenderable = false;
+  var stageScrollers = new WeakMap();
   var viewport = {width: 1, height: 1};
   var source = document.createDocumentFragment();
   var records = new Map(), imageIds = new Set(), sourceObserver, pageObserver, sizeObserver;
   var hooks = Object.create(null), pendingAuthorWork = [], layoutWaiters = [];
+  var fieldHookNames = new WeakMap();
   var geometry = '', commandChain = Promise.resolve(), textImageMode = String(init.textImageMode);
   var imageSequence = 0, interactionSequence = 0, lastImageTap = null, lastImageAction = 0;
   var touch = null, imagePress = null, suppressImageClickUntil = 0;
@@ -29,9 +35,22 @@
   // see the settled page; only the committed foreground page may animate afterward.
   var motionState = 'settled';
   var lastMotionPage = null, lastMotionState = null, lastMotionReduced = false;
+  var motionPages = null, motionPageIndex = -1, motionEnvironment = '';
   var reducedMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
   var stylesheetWork = new WeakMap(), backgroundWork = new Map(), backgroundPixels = new Set(), headObserver;
   var sourceRequests = new Set(), timers = new Set();
+  var pageMarkupCache = new Map();
+  var highlightStyles = [], highlightsInstalled = false;
+  var renderBudgetMs = Number(init.renderTimeoutMillis);
+  if (!Number.isFinite(renderBudgetMs) || renderBudgetMs <= 0) renderBudgetMs = 180000;
+  var pausedAt = document.hidden ? performance.now() : null, pausedDuration = 0;
+  function activeTime() { return (pausedAt === null ? performance.now() : pausedAt) - pausedDuration; }
+  function updateActiveClock() {
+    var now = performance.now();
+    if (document.hidden) { if (pausedAt === null) pausedAt = now; }
+    else if (pausedAt !== null) { pausedDuration += Math.max(0, now - pausedAt); pausedAt = null; }
+  }
+  var startupStarted = activeTime();
   var CANCELLED = {};
   var failedImage = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='24' viewBox='0 0 32 24'%3E%3Crect x='1' y='1' width='30' height='22' rx='4' fill='%23888888' fill-opacity='.18'/%3E%3Cpath d='m11 7 10 10m0-10L11 17' stroke='%23888888' stroke-width='2'/%3E%3C/svg%3E";
 
@@ -71,10 +90,40 @@
     return nodes;
   }
   function readableText(element) { return textNodes(element).map(function (node) { return node.data; }).join(''); }
+  function pageAt(index) { return pages[continuous ? 0 : index] || null; }
+  function pageCount() { return continuous ? Math.max(1, scrollPositions.length) : pages.length; }
+  function scrollingElement(stage) { return stageScrollers.get(stage) || stage; }
+  function scrollViewport(stage) {
+    var node = scrollingElement(stage), rect = node.getBoundingClientRect();
+    var left = rect.left + node.clientLeft, top = rect.top + node.clientTop;
+    return {left: left, right: left + node.clientWidth, top: top, bottom: top + node.clientHeight,
+      width: node.clientWidth, height: node.clientHeight, origin: top - node.scrollTop};
+  }
+  function configureContinuousScroll(stage, page) {
+    var frames = page.querySelectorAll('[data-reader-scroll-viewport]');
+    if (!frames.length) return;
+    var slots = orderedSlots(page), scroller = frames[0];
+    if (frames.length !== 1 || slots.length !== 1 || scroller === slots[0] || !scroller.contains(slots[0])) {
+      throw new Error('固定画框的滚动模板需要一个 data-reader-scroll-viewport 容器，包住唯一的正文区域');
+    }
+    stageScrollers.set(stage, scroller);
+    stage.setAttribute('data-reader-scroll-layout', 'framed');
+  }
+  function scrollIndex(offset) {
+    var low = 0, high = scrollPositions.length - 1;
+    while (low < high) {
+      var middle = Math.ceil((low + high) / 2);
+      if (scrollPositions[middle] <= offset + 1) low = middle; else high = middle - 1;
+    }
+    return low;
+  }
   function prepareSource() {
     var parsed = new DOMParser().parseFromString(String(init.sourceHtml || ''), 'text/html');
     Array.prototype.forEach.call(parsed.head.querySelectorAll('style,link[rel~="stylesheet"]'), function (node) {
       var imported = document.importNode(node, true);
+      if (node.id === 'legado-reeden-highlight-style') {
+        highlightStyles.push(imported); return;
+      }
       trackStyles(imported);
       document.head.appendChild(imported);
     });
@@ -103,8 +152,15 @@
       if (image.getAttribute('loading') === 'lazy') image.setAttribute('loading', 'eager');
     });
   }
-  async function emitHook(name, value) {
-    var callbacks = (hooks[name] || []).slice();
+  async function installHighlights() {
+    if (highlightsInstalled) return;
+    highlightsInstalled = true;
+    highlightStyles.forEach(function (style) { trackStyles(style); document.head.appendChild(style); });
+    if (headObserver) headObserver.takeRecords();
+    await waitStyles(document.head);
+  }
+  async function emitHook(name, value, selectedCallbacks) {
+    var callbacks = selectedCallbacks || (hooks[name] || []).slice();
     for (var index = 0; index < callbacks.length; index++) {
       await bounded(callbacks[index](value, api), 8000, '模板 ' + name + ' 回调未完成');
     }
@@ -121,8 +177,13 @@
     source: source,
     fields: fields,
     viewport: viewport,
-    on: function (name, callback) {
+    on: function (name, callback, options) {
       if (typeof callback !== 'function') throw new TypeError('readerTemplate.on requires a function');
+      if (name === 'fieldsChange' && options && Array.isArray(options.fields)) {
+        var original = callback;
+        callback = function (event, api) { return original(event, api); };
+        fieldHookNames.set(callback, new Set(options.fields.map(String)));
+      }
       var list = hooks[name] || (hooks[name] = []);
       list.push(callback);
       return function () { var index = list.indexOf(callback); if (index >= 0) list.splice(index, 1); };
@@ -137,24 +198,35 @@
       return work;
     },
     get pageIndex() { return pageIndex; },
-    get pageCount() { return pages.length; },
+    get pageCount() { return pageCount(); },
     get pages() { return pages.slice(); },
-    get currentPage() { return pages[pageIndex] || null; },
-    get motionState() { return pages[pageIndex] ? pages[pageIndex].getAttribute('data-reader-motion') : motionState; }
+    get currentPage() { return pageAt(pageIndex); },
+    get motionState() { return pageAt(pageIndex) ? pageAt(pageIndex).getAttribute('data-reader-motion') : motionState; },
+    get type() { return continuous ? 'scroll' : 'paged'; }
   };
   window.readerTemplate = api;
 
   function syncMotion() {
-    pages.forEach(function (page, index) {
+    function update(page, index) {
+      if (!page) return;
       var next = layoutBusy || (reducedMotion && reducedMotion.matches) ? 'settled' :
-        document.hidden || index !== pageIndex ? 'paused' : motionState;
+        document.hidden || (!continuous && index !== pageIndex) ? 'paused' : motionState;
       var entry = page.getAttribute('data-reader-entry') || 'pending';
       if (next === 'running' && entry === 'pending') entry = 'playing';
       else if (next !== 'running' && entry === 'playing') entry = 'done';
       if (page.getAttribute('data-reader-entry') !== entry) page.setAttribute('data-reader-entry', entry);
       if (page.getAttribute('data-reader-motion') !== next) page.setAttribute('data-reader-motion', next);
-    });
-    var page = pages[pageIndex] || null;
+    }
+    var environment = [layoutBusy, !!(reducedMotion && reducedMotion.matches), document.hidden].join('|');
+    if (motionPages !== pages || motionEnvironment !== environment) {
+      pages.forEach(update);
+      motionPages = pages; motionEnvironment = environment;
+    } else {
+      if (motionPageIndex !== pageIndex) update(pageAt(motionPageIndex), motionPageIndex);
+      update(pageAt(pageIndex), pageIndex);
+    }
+    motionPageIndex = pageIndex;
+    var page = pageAt(pageIndex);
     if (!page || !active || failure) return;
     // New page DOM is announced only after its observers are attached. The old
     // current page still receives settled while pagination stops its animation.
@@ -162,7 +234,7 @@
     var state = page.getAttribute('data-reader-motion');
     var reduce = !!(reducedMotion && reducedMotion.matches);
     if (page === lastMotionPage && state === lastMotionState && reduce === lastMotionReduced) return;
-    var event = {page: page, pageIndex: pageIndex, pageCount: pages.length, state: state,
+    var event = {page: page, pageIndex: pageIndex, pageCount: pageCount(), state: state,
       previousPage: lastMotionPage, previousState: lastMotionState, reducedMotion: reduce};
     // Commit the notification identity before author code can request another layout.
     lastMotionPage = page; lastMotionState = state; lastMotionReduced = reduce;
@@ -218,6 +290,65 @@
       if (node.textContent !== value) node.textContent = value;
     });
   }
+  function indexedFieldBindings() {
+    if (fieldBindingPages === pages) return fieldBindings;
+    fieldBindings = new Map();
+    pages.forEach(function (page) {
+      Array.prototype.forEach.call(page.querySelectorAll('[data-reader-field]'), function (node) {
+        var name = node.getAttribute('data-reader-field');
+        // These values belong to each already-paginated page, not the current
+        // Android page label. They were bound when that page was constructed.
+        if (/^(page|pageIndex|pageCount)$/.test(name)) return;
+        if (!fieldBindings.has(name)) fieldBindings.set(name, []);
+        fieldBindings.get(name).push({page: page, node: node});
+      });
+    });
+    fieldBindingPages = pages;
+    return fieldBindings;
+  }
+  async function updateFields(value) {
+    value = value && typeof value === 'object' ? value : {};
+    var changed = Object.keys(Object.assign({}, fields, value)).filter(function (key) {
+      return key !== 'contentRevision' && fields[key] !== value[key];
+    });
+    Object.keys(fields).forEach(function (key) { delete fields[key]; });
+    Object.assign(fields, value);
+    if (!changed.length) return false;
+    var bindings = indexedFieldBindings(), updates = [], affected = new Set();
+    changed.forEach(function (name) {
+      (bindings.get(name) || []).forEach(function (entry) {
+        var text = fields[name] == null ? '' : String(fields[name]);
+        if (entry.node.textContent === text) return;
+        updates.push({node: entry.node, text: text}); affected.add(entry.page);
+      });
+    });
+    var callbacks = (hooks.fieldsChange || []).filter(function (callback) {
+      var names = fieldHookNames.get(callback);
+      return !names || changed.some(function (name) { return names.has(name); });
+    });
+    var hasHook = callbacks.length > 0;
+    // No DOM change and no author callback: page numbers need no chapter-wide
+    // geometry scan and no extra compositor frames before the actual page turn.
+    if (!updates.length && !hasHook) return false;
+    var measuredPages = hasHook ? pages : Array.from(affected);
+    var before = geometryOf(measuredPages);
+    updates.forEach(function (entry) {
+      // Reuse the Text node so progress/time updates do not replace child lists
+      // throughout every template page. All bindings stay current for scripts.
+      var child = entry.node.firstChild;
+      if (entry.text && child && child.nodeType === Node.TEXT_NODE && !child.nextSibling) child.data = entry.text;
+      else entry.node.textContent = entry.text;
+    });
+    if (hasHook) {
+      await emitHook('fieldsChange', {fields: fields, changedFields: changed}, callbacks);
+      await twoFrames();
+    }
+    // Native text assignments are synchronous. The command's existing visual
+    // barrier waits for drawing and observers after the target page is shown.
+    if (!sameGeometry(geometryOf(measuredPages), before)) requestLayout('field-geometry');
+    else visualRevision++;
+    return true;
+  }
   function orderedSlots(page) {
     return Array.prototype.map.call(page.querySelectorAll('[data-reader-flow]'), function (node, index) {
       if (node.parentElement.closest('[data-reader-flow]')) throw new Error('正文区域不能相互嵌套');
@@ -240,14 +371,40 @@
   }
   function geometryOf(list) {
     return JSON.stringify(list.map(function (page) {
-      var pageRect = page.getBoundingClientRect();
-      return orderedSlots(page).map(function (slot) {
+      var pageRect = page.getBoundingClientRect(), stage = page.parentElement;
+      var scroller = continuous ? scrollingElement(stage) : null;
+      var framed = scroller && scroller !== stage;
+      var slots = orderedSlots(page).map(function (slot) {
         var box = slotBox(slot);
         // Scrolling changes viewport coordinates, not pagination geometry.
         box.left -= pageRect.left; box.top -= pageRect.top;
+        if (framed && scroller.contains(slot)) { box.left += scroller.scrollLeft; box.top += scroller.scrollTop; }
         return box;
       });
+      if (!continuous) return slots;
+      var box = framed ? scrollViewport(stage) : null;
+      return {height: pageRect.height, slots: slots, scrollViewport: box ? {
+        left: box.left - pageRect.left, top: box.top - pageRect.top, width: box.width, height: box.height
+      } : null};
     }));
+  }
+  function sameGeometry(first, second) {
+    if (first === second) return true;
+    if (!continuous || !first || !second) return false;
+    // Scrolling a long document on a fractional display scale introduces small
+    // float errors in viewport-relative DOMRects. They are not layout changes.
+    // Keep typography and structure exact; use the paint check's half-pixel
+    // tolerance only for geometry so clocks and colors do not rebuild the DOM.
+    function equal(a, b) {
+      if (a === b) return true;
+      if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= .5;
+      if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+      var keys = Object.keys(a);
+      return keys.length === Object.keys(b).length && keys.every(function (key) {
+        return Object.prototype.hasOwnProperty.call(b, key) && equal(a[key], b[key]);
+      });
+    }
+    return equal(JSON.parse(first), JSON.parse(second));
   }
   function trackStyles(root) {
     var nodes = root.matches && root.matches('style,link[rel~="stylesheet"]') ? [root] :
@@ -337,6 +494,8 @@
   }
   async function loadFonts(slot) {
     if (!document.fonts) return;
+    // Request fonts used by the composed descendants before observing ready.
+    slot.getBoundingClientRect();
     var style = getComputedStyle(slot);
     try {
       if (document.fonts.load && style.font) await bounded(document.fonts.load(style.font, '正文Aa'), 3500, '模板字体加载超时');
@@ -376,6 +535,13 @@
   function installSourceBreaks(layout, prepared) {
     var sources = new WeakMap(), originalCreate = layout.createBreakToken;
     layout.hooks.onBreakToken.register(function (value) {
+      if (value && !value.offset && prepared.order.has(value.node)) {
+        // A boundary before the first child is also before its untouched
+        // ancestors. Paged otherwise rebuilds a complete paragraph as a split
+        // continuation and removes its first-line indent. This also keeps
+        // transitions from browser columns to compatibility regions consistent.
+        while (value.node.parentNode !== prepared.source && !value.node.previousSibling) value.node = value.node.parentNode;
+      }
       if (value) value.equals = function (other) {
         return !!other && this.node === other.node && (this.offset == null ? 0 : this.offset) === (other.offset == null ? 0 : other.offset);
       };
@@ -463,29 +629,71 @@
     return rect.width > .1 && rect.height > .1 && (rect.bottom > bounds.bottom + .5 ||
       rect.right > bounds.right + .5 || rect.top < bounds.top - .5 || rect.left < bounds.left - .5);
   }
-  function flowContentVisible(node, rendered) {
+  function pageOverflowBounds(rendered, bounds) {
+    var writing = getComputedStyle(rendered).writingMode;
+    // A page break advances along the block axis only. Glyph overhang, kerning
+    // and partial Range selection boxes can cross an inline edge on ANY row;
+    // cutting there moves the rest of a perfectly usable page to the next one.
+    // Inline/ascent fitting and the final four-edge paint check stay separate.
+    return {width: bounds.width, height: bounds.height,
+      left: writing === 'vertical-rl' ? bounds.left : -Infinity,
+      right: writing === 'vertical-lr' ? bounds.right : Infinity,
+      top: -Infinity, bottom: writing.indexOf('vertical') === 0 ? Infinity : bounds.bottom};
+  }
+  function pageContentOverflow(rendered, bounds) {
+    return completeContentOverflow(rendered, pageOverflowBounds(rendered, bounds));
+  }
+  function measuredStyle(element, cache) {
+    if (!cache) return getComputedStyle(element);
+    var style = cache.get(element);
+    if (!style) { style = getComputedStyle(element); cache.set(element, style); }
+    return style;
+  }
+  function flowContentVisible(node, rendered, styles) {
     var element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-    var style = getComputedStyle(element);
+    var style = measuredStyle(element, styles);
     if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
     // Pending pages are deliberately transparent. Only author visibility inside
     // the flow matters here; including the staging parent would skip all checks.
     for (; element; element = element.parentElement) {
-      style = getComputedStyle(element);
+      style = measuredStyle(element, styles);
       if (style.display === 'none' || parseFloat(style.opacity) <= .01) return false;
       if (element === rendered) break;
     }
     return true;
   }
-  function fitFirstLineMetrics(rendered, bounds, trimLeading) {
-    var walker = document.createTreeWalker(rendered, NodeFilter.SHOW_TEXT), node, first = null, shift = 0;
+  function fitFlowMetrics(rendered, bounds, columnStep, columnGap) {
+    var walker = document.createTreeWalker(rendered, NodeFilter.SHOW_TEXT), node, shift = 0;
+    var styles = new WeakMap();
+    var flowStyle = measuredStyle(rendered, styles), horizontal = flowStyle.writingMode === 'horizontal-tb';
+    var left = 0, right = 0;
+    var columnStart = rendered.getBoundingClientRect().left + (parseFloat(flowStyle.paddingLeft) || 0) + (parseFloat(flowStyle.borderLeftWidth) || 0);
+    var range = document.createRange();
     while ((node = walker.nextNode())) {
-      if (!node.data.trim() || node.parentElement.closest('script,style,noscript,[data-reader-text-ignore]') || !flowContentVisible(node, rendered)) continue;
-      var range = document.createRange(); range.selectNodeContents(node);
+      if (!node.data.trim() || node.parentElement.closest('script,style,noscript,[data-reader-text-ignore]') || !flowContentVisible(node, rendered, styles)) continue;
+      range.selectNodeContents(node);
       var rects = range.getClientRects();
       for (var index = 0; index < rects.length; index++) {
         var rect = rects[index];
         if (rect.width <= .1 || rect.height <= .1) continue;
-        if (!first) first = {node: node, rect: rect};
+        if (horizontal) {
+          // A line's glyph/selection box can extend beyond its advance width:
+          // CJK punctuation shaping and trailing letter-spacing both do this.
+          // This is an inline fitting problem, even on the first line of a page,
+          // not a reason to send that character and the rest of the page away.
+          // Put the column boundary in the middle of its gutter. A leading
+          // quote can extend left of its column without belonging to the
+          // previous page; use the fragment centre, not that glyph edge.
+          var columnOffset = columnStep ? Math.max(0,
+            Math.floor(((rect.left + rect.right) / 2 - columnStart + (columnGap || 0) / 2) / columnStep)) * columnStep : 0;
+          var before = bounds.left - (rect.left - columnOffset);
+          var after = rect.right - columnOffset - bounds.right;
+          var em = parseFloat(measuredStyle(node.parentElement, styles).fontSize) || 18;
+          // Only reserve measured glyph clearance. Truly oversized/no-wrap
+          // content still goes through the normal overflow validation below.
+          if (before > .5 && before <= em) left = Math.max(left, before);
+          if (after > .5 && after <= em) right = Math.max(right, after);
+        }
         if (rect.top >= bounds.top - .5) continue;
         var block = node.parentElement;
         while (block !== rendered && /^(inline|contents)$/.test(getComputedStyle(block).display)) block = block.parentElement;
@@ -498,26 +706,14 @@
     // first line its measured ascent clearance instead of rejecting a valid font
     // or subtracting a fixed line-height from every region.
     if (shift > .5) {
-      rendered.style.paddingTop = ((parseFloat(getComputedStyle(rendered).paddingTop) || 0) + shift) + 'px';
-      return true;
+      rendered.style.paddingTop = ((parseFloat(flowStyle.paddingTop) || 0) + shift) + 'px';
     }
-    if (!trimLeading || !first) return false;
-    var paragraph = first.node.parentElement.closest('p.reader-paragraph');
-    if (!paragraph || paragraph.querySelector('svg,video,audio,canvas,iframe,object,embed,table,math,ruby,input,button,textarea,select')) return false;
-    var style = getComputedStyle(paragraph);
-    if (style.writingMode.indexOf('vertical') === 0 || style.direction === 'rtl' ||
-        style.position !== 'static' || style.transform !== 'none') return false;
-    var leading = Math.min(first.rect.top - bounds.top, first.rect.top - paragraph.getBoundingClientRect().top);
-    // Reclaim only the first line's own leading, leaving author margins and
-    // preceding titles in place. Images must still fit before any alignment
-    // translation; their bounds are never exempted from pagination checks.
-    Array.prototype.forEach.call(rendered.querySelectorAll('img,svg,canvas,video,iframe,object,embed,hr'), function (media) {
-      if (flowContentVisible(media, rendered)) leading = Math.min(leading, media.getBoundingClientRect().top - bounds.top);
-    });
-    leading = Math.floor(leading * 64) / 64;
-    if (leading <= .5) return false;
-    rendered.style.marginTop = ((parseFloat(getComputedStyle(rendered).marginTop) || 0) - leading) + 'px';
-    return true;
+    // Reflow inside the existing viewport, keeping punctuation fully visible.
+    // A paint-only overflow exception would instead clip it in themes whose
+    // body slot has overflow:hidden. No source nodes or offsets are changed.
+    if (left > .5) rendered.style.paddingLeft = ((parseFloat(flowStyle.paddingLeft) || 0) + left + .5) + 'px';
+    if (right > .5) rendered.style.paddingRight = ((parseFloat(flowStyle.paddingRight) || 0) + right + .5) + 'px';
+    return shift > .5 || left > .5 || right > .5;
   }
   function inlineImageLineStart(image, rect) {
     if (!image.matches('.legado-text-inline-image,.legado-text-bubble') && !image.closest('.legado-text-image-frame')) return null;
@@ -526,10 +722,11 @@
     var style = getComputedStyle(paragraph);
     if (style.writingMode.indexOf('vertical') === 0 || style.direction === 'rtl') return null;
     var walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT), node;
+    var range = document.createRange();
     while ((node = walker.nextNode())) {
       if (!(node.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
       if (!node.data.trim()) continue;
-      var range = document.createRange(); range.selectNodeContents(node);
+      range.selectNodeContents(node);
       var row = Array.prototype.find.call(range.getClientRects(), function (text) {
         return text.width > .1 && Math.min(text.bottom, rect.bottom) - Math.max(text.top, rect.top) > Math.min(text.height, rect.height) * .5;
       });
@@ -550,15 +747,21 @@
   }
   function completeContentOverflow(rendered, bounds, paintBounds) {
     var walker = document.createTreeWalker(rendered, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT), node;
+    // This search does not mutate the DOM. Reuse ancestor styles within this
+    // measurement, and do not measure wrappers which have no overflow pixels.
+    var styles = new WeakMap();
+    var range = document.createRange();
     while ((node = walker.nextNode())) {
-      if (!flowContentVisible(node, rendered)) continue;
-      var range = document.createRange();
-      if (node.nodeType === Node.TEXT_NODE) {
-        if (!node.data.trim() || node.parentElement.closest('script,style,noscript,[data-reader-text-ignore]')) continue;
+      var text = node.nodeType === Node.TEXT_NODE;
+      if (text ? !node.data.trim() || node.parentElement.closest('script,style,noscript,[data-reader-text-ignore]') :
+          !/^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(String(node.localName).toLowerCase())) continue;
+      if (!flowContentVisible(node, rendered, styles)) continue;
+      if (text) {
         range.selectNodeContents(node);
         if (!Array.prototype.some.call(range.getClientRects(), function (rect) { return rectOutside(rect, bounds); })) continue;
-        // The DOM is never modified during this search. Prefix ranges make the
-        // fit predicate monotonic even with bidi text and variable font sizes.
+        // Pagination passes only the forward block edge here. In particular,
+        // a prefix's shaped inline box must not affect this binary search.
+        // Final validation passes all four edges and never creates a page cut.
         var low = 0, high = node.length;
         while (low < high) {
           var middle = Math.ceil((low + high) / 2);
@@ -569,8 +772,7 @@
         range.setStart(node, graphemeStart(node.data, low));
       } else if (/^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(String(node.localName).toLowerCase())) {
         var inline = node.localName === 'img' && (node.matches('.legado-text-inline-image,.legado-text-bubble') || node.closest('.legado-text-image-frame'));
-        var mediaRect = !paintBounds && node.localName === 'img' && window.LegadoPageAlignment && window.LegadoPageAlignment.imageLayoutRect ?
-          window.LegadoPageAlignment.imageLayoutRect(node) : node.getBoundingClientRect();
+        var mediaRect = node.getBoundingClientRect();
         var mediaBounds = paintBounds && inline ? {top: paintBounds.top, bottom: paintBounds.bottom, left: bounds.left, right: bounds.right} : bounds;
         if (!rectOutside(mediaRect, mediaBounds)) continue;
         var lineStart = node.localName === 'img' && inlineImageLineStart(node, mediaRect);
@@ -581,32 +783,6 @@
       return range;
     }
     return null;
-  }
-  function flowPaintBounds(rendered, page, bounds) {
-    var pageBounds = page.getBoundingClientRect(), limits = {top: pageBounds.top, bottom: pageBounds.bottom};
-    function avoid(rect, share) {
-      if (rect.width <= .1 || rect.height <= .1 || rect.right <= bounds.left || rect.left >= bounds.right) return;
-      // A tight chrome line box can leave a few pixels of its glyphs inside
-      // the flow. Keep the actual ink edge, including that inward extension.
-      var center = (rect.top + rect.bottom) / 2;
-      if ((share === 1 ? center : rect.bottom) <= bounds.top + .1) limits.top = Math.max(limits.top, bounds.top + (rect.bottom - bounds.top) / share);
-      if ((share === 1 ? center : rect.top) >= bounds.bottom - .1) limits.bottom = Math.min(limits.bottom, bounds.bottom + (rect.top - bounds.bottom) / share);
-    }
-    orderedSlots(page).forEach(function (slot) {
-      if (!slot.contains(rendered)) avoid(slot.getBoundingClientRect(), 2);
-    });
-    var walker = document.createTreeWalker(page, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT), node;
-    while ((node = walker.nextNode())) {
-      var element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-      if (element.closest('[data-reader-flow],script,style,noscript') || !flowContentVisible(node, page)) continue;
-      if (node.nodeType === Node.TEXT_NODE && node.data.trim()) {
-        var range = document.createRange(); range.selectNodeContents(node);
-        Array.prototype.forEach.call(range.getClientRects(), function (rect) { avoid(rect, 1); });
-      } else if (node.nodeType === Node.ELEMENT_NODE && /^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(node.localName)) {
-        avoid(node.getBoundingClientRect(), 1);
-      }
-    }
-    return limits;
   }
   function revealFlowArtwork(rendered, page) {
     var viewportNode = rendered.parentElement, bounds = viewportNode.getBoundingClientRect();
@@ -660,11 +836,14 @@
       if (!slot.contains(rendered)) avoid(slot.getBoundingClientRect(), 2);
     });
     var walker = document.createTreeWalker(page, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT), node;
+    var styles = new WeakMap(), range = document.createRange();
     while ((node = walker.nextNode())) {
       var element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-      if (element.closest('[data-reader-flow],script,style,noscript') || !flowContentVisible(node, page)) continue;
+      if (node.nodeType === Node.TEXT_NODE ? !node.data.trim() :
+          !/^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(node.localName)) continue;
+      if (element.closest('[data-reader-flow],script,style,noscript') || !flowContentVisible(node, page, styles)) continue;
       if (node.nodeType === Node.TEXT_NODE && node.data.trim()) {
-        var range = document.createRange(); range.selectNodeContents(node);
+        range.selectNodeContents(node);
         Array.prototype.forEach.call(range.getClientRects(), function (rect) { avoid(rect, 1); });
       } else if (node.nodeType === Node.ELEMENT_NODE && /^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(node.localName)) {
         avoid(node.getBoundingClientRect(), 1);
@@ -672,86 +851,123 @@
     }
     // Pagination and the final text/image overflow check have already finished.
     // Expose only the measured decoration allowance, retaining a finite clip.
-    viewportNode.style.overflow = 'visible';
-    viewportNode.style.clipPath = 'inset(' + ['top', 'right', 'bottom', 'left'].map(function (side) { return -outset[side] + 'px'; }).join(' ') + ')';
+    return {viewport: viewportNode, clipPath: 'inset(' + ['top', 'right', 'bottom', 'left'].map(function (side) { return -outset[side] + 'px'; }).join(' ') + ')'};
   }
   function createStage() {
     var stage = document.createElement('div');
     stage.setAttribute('data-reader-runtime-stage', 'pending');
     document.body.appendChild(stage);
-    if (scrollMode) stage.addEventListener('scroll', function () {
-      if (stage !== committedRoot || layoutBusy || scrollFrame) return;
+    if (scrollMode) stage.addEventListener('scroll', function (event) {
+      if (event.target !== scrollingElement(stage) || stage !== committedRoot || layoutBusy || scrollFrame) return;
       scrollFrame = requestAnimationFrame(function () {
         scrollFrame = 0;
         if (!active || stage !== committedRoot || layoutBusy) return;
-        var next = Math.max(0, Math.min(pages.length - 1, Math.floor((stage.scrollTop + 1) / viewport.height)));
+        var next = continuous ? scrollIndex(scrollingElement(stage).scrollTop) : Math.max(0, Math.min(pages.length - 1, Math.floor((stage.scrollTop + 1) / viewport.height)));
         if (next !== pageIndex) {
-          setMotionState('settled');
+          if (!continuous) setMotionState('settled');
+          else activationBoundary = '';
           pageIndex = next; activationTargetRevision = layoutRevision;
-          pages.forEach(function (page, index) { page.setAttribute('data-reader-active', index === pageIndex ? 'true' : 'false'); });
+          updatePageVisibility();
           syncMotion();
-          var serial = ++authorVisualSerial;
-          authorVisualPending = true;
-          emitHook('pageChange', {page: pages[pageIndex], pageIndex: pageIndex, pageCount: pages.length}).then(twoFrames).then(function () {
-            if (!active || serial !== authorVisualSerial) return;
-            authorVisualPending = false; postState();
-          }).catch(fail);
+          if ((hooks.pageChange || []).length) {
+            var serial = ++authorVisualSerial;
+            authorVisualPending = true;
+            emitHook('pageChange', {page: pageAt(pageIndex), pageIndex: pageIndex, pageCount: pageCount()}).then(twoFrames).then(function () {
+              if (!active || serial !== authorVisualSerial) return;
+              authorVisualPending = false; postState();
+            }).catch(fail);
+          }
+          visualRevision++; postState();
         }
-        visualRevision++; postState();
+        // A continuous document has no page snapshots to invalidate on every
+        // pixel of a fling. Its position index is measured once during layout.
+        if (!continuous) { visualRevision++; postState(); }
       });
-    }, {passive: true});
+    }, {passive: true, capture: true});
     return stage;
   }
 
-  async function renderFlow(content, viewportNode, prepared, breakToken, alignBottom, extra) {
-    var layout = new Paged.Layout(viewportNode);
+  async function renderFlow(content, viewportNode, prepared, breakToken) {
+    if (window.ReaderBrowserTemplateFlow) {
+      var browserResult = await window.ReaderBrowserTemplateFlow.render(content, viewportNode, prepared, breakToken, {
+        graphemeStart: graphemeStart, imageReady: imageReady, fontsReady: loadFonts,
+        fitMetrics: fitFlowMetrics, overflow: pageContentOverflow, checkpoint: prepared.checkpoint,
+        yieldTask: function () { return new Promise(function (resolve) { later(resolve, 0); }); }
+      });
+      if (browserResult) return browserResult;
+    }
+    content.setAttribute('data-reader-pagination-engine', 'paged');
+    // A fixed 1500-character batch can lay out many pages of text in a small
+    // region before checking overflow. Estimate two viewports of text instead;
+    // this only schedules overflow checks and never limits the chapter content.
+    var style = getComputedStyle(viewportNode), fontSize = parseFloat(style.fontSize) || 18;
+    var lineHeight = parseFloat(style.lineHeight) || fontSize * 1.55;
+    var maxChars = Math.max(128, Math.min(1500,
+      Math.ceil(viewportNode.clientWidth * viewportNode.clientHeight / fontSize / lineHeight * 2)));
+    var layout = new Paged.Layout(viewportNode, null, {maxChars: maxChars});
     installSourceBreaks(layout, prepared);
+    var findOverflow = layout.findOverflow;
+    layout.findOverflow = function (rendered, bounds, gap) {
+      // The compatibility engine also searches individual letters. Restrict
+      // its search before it produces a token, not just our supplementary
+      // overflow hook, or a fallback can reintroduce the same premature cut.
+      return findOverflow.call(this, rendered, pageOverflowBounds(rendered, bounds || this.bounds), gap);
+    };
     // CSS hyphenation may paint hyphens without changing mapped source text.
     layout.hyphenateAtBreak = function () {};
     layout.hooks.onOverflow.register(function (overflow, rendered, bounds, paginator) {
-      if (fitFirstLineMetrics(rendered, bounds, alignBottom)) overflow = paginator.findOverflow(rendered, bounds);
-      var complete = completeContentOverflow(rendered, bounds);
+      var changed = false;
+      for (var attempt = 0; attempt < 8; attempt++) {
+        if (!fitFlowMetrics(rendered, bounds)) break;
+        changed = true;
+      }
+      // Any upstream range was measured before the inline reflow. Discard it,
+      // then find the real page boundary using the final line geometry.
+      if (changed) overflow = paginator.findOverflow(rendered, bounds);
+      var complete = pageContentOverflow(rendered, bounds);
       return complete && (!overflow || complete.compareBoundaryPoints(Range.START_TO_START, overflow) < 0) ? complete : overflow;
     });
-    layout.waitForImages = function (images) {
-      return Promise.all(Array.prototype.map.call(images, function (image) { return imageReady(image, true); }));
+    layout.waitForImages = async function (images) {
+      await Promise.all(Array.prototype.map.call(images, function (image) { return imageReady(image, true); }));
+      await loadFonts(content);
     };
     var box = viewportNode.getBoundingClientRect();
-    var bounds = {top: box.top, bottom: box.bottom + extra, left: box.left, right: box.right, width: box.width, height: box.height + extra};
-    return layout.renderTo(content, prepared.source, breakToken, bounds);
+    var bounds = {top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height};
+    var result = await layout.renderTo(content, prepared.source, breakToken, bounds);
+    if (result.error) return result;
+    // Removing a suffix changes last-line justification and punctuation shaping.
+    // The pre-extraction metrics are not a guarantee about the displayed page.
+    // Refit that final fragment and, only if it now crosses the block edge,
+    // recut through the same source-identity mapping used by the first pass.
+    for (var pass = 0; pass < 8; pass++) {
+      prepared.checkpoint();
+      for (var attempt = 0; attempt < 8; attempt++) {
+        if (!fitFlowMetrics(content, bounds)) break;
+      }
+      if (!pageContentOverflow(content, bounds)) return result;
+      var corrected = layout.findBreakToken(content, prepared.source, bounds, breakToken);
+      if (!corrected || !progressed(tokenPosition(breakToken, prepared.order) || [0, 0], tokenPosition(corrected, prepared.order))) {
+        throw new Error('正文无法在当前区域内完成分页，请检查正文尺寸或禁止换行的内容');
+      }
+      result.breakToken = corrected;
+    }
+    throw new Error('正文分页后的行尾未能稳定，请检查正文尺寸或分页后的样式修改');
   }
-  function flowContinues(token, content, prepared) {
-    if (!token) return false;
-    var node = token.node.nodeType === Node.ELEMENT_NODE ? token.node : token.node.parentElement;
-    if (!node.closest('p.reader-paragraph')) return false;
-    var paragraphs = content.querySelectorAll('p.reader-paragraph'), last = paragraphs[paragraphs.length - 1];
-    var original = last && prepared.elements.get(last.getAttribute('data-ref'));
-    if (original && original.contains(token.node) && last.textContent.trim()) return true;
-    if (!token.offset && window.LegadoPageAlignment.forcedBreak(node, prepared.source, true)) return false;
-    return !last || !window.LegadoPageAlignment.forcedBreak(last, content, false);
-  }
-  function canFitFlow(content) {
-    if (content.querySelector('figure,picture,table,pre,blockquote,svg,video,canvas,iframe,object,embed,math,ruby')) return false;
-    return Array.prototype.every.call(content.querySelectorAll('img'), function (image) {
-      return image.matches('.legado-text-inline-image,.legado-text-bubble') || image.closest('.legado-text-image-frame');
-    });
-  }
-  async function paginate(stage, expected, countHint, paintInsetsHint) {
-    var prepared = prepareLayoutSource(), breakToken, previousPosition;
-    var list = [], contents = [], started = performance.now(), lastYield = started;
-    var paintInsets = paintInsetsHint || {top: 0, bottom: 0}, needsRefit = false;
-    for (var index = 0; ; index++) {
-      checkRun(expected);
-      if (index >= 2048 || performance.now() - started > 45000) throw new Error('模板分页超过处理上限，请检查正文区域尺寸或改用基础排版');
+  async function createTemplatePage(stage, index, countHint, expected) {
       var page = document.createElement('div');
-      page.className = 'reader-template-page pagedjs_page';
-      page.setAttribute('data-reader-page', index === 0 ? 'first' : 'other');
+      page.className = 'reader-template-page' + (continuous ? '' : ' pagedjs_page');
+      page.setAttribute('data-reader-page', continuous ? 'scroll' : index === 0 ? 'first' : 'other');
       page.setAttribute('data-reader-page-index', String(index));
       page.setAttribute('data-reader-motion', 'settled');
       page.setAttribute('data-reader-entry', 'pending');
-      // A template may contain a complete HTML document or a fragment. Keep its
-      // body structure and head resources; scripts are explicitly activated below.
-      var parsed = new DOMParser().parseFromString(String(index === 0 ? template.firstPageHtml : template.otherPageHtml), 'text/html');
+      // Keep complete author documents and fragments alike, including resources.
+      var markup = String(continuous ? template.scrollHtml : index === 0 ? template.firstPageHtml : template.otherPageHtml);
+      var parsed = pageMarkupCache.get(markup);
+      if (!parsed) {
+        parsed = new DOMParser().parseFromString(markup, 'text/html');
+        if (pageMarkupCache.size >= 2) pageMarkupCache.delete(pageMarkupCache.keys().next().value);
+        pageMarkupCache.set(markup, parsed);
+      }
       Array.prototype.forEach.call(parsed.head.childNodes, function (node) {
         if (node.nodeType !== Node.ELEMENT_NODE || !/^(TITLE|META|BASE)$/.test(node.tagName)) page.appendChild(document.importNode(node, true));
       });
@@ -762,12 +978,156 @@
         else page.style.cssText += attribute.value;
       });
       trackStyles(page);
-      stage.appendChild(page); list.push(page);
+      stage.appendChild(page);
+      if (continuous) configureContinuousScroll(stage, page);
       bindFields(page, index, countHint);
       await waitStyles(page);
       await runScripts(page);
-      await emitHook('beforePage', {page: page, pageIndex: index, first: index === 0});
+      await emitHook('beforePage', {page: page, pageIndex: index, first: !continuous && index === 0, type: continuous ? 'scroll' : 'paged'});
+      await installHighlights();
       checkRun(expected);
+      return page;
+  }
+  function fitContinuousBlockExtent(content) {
+    var range = document.createRange();
+    range.selectNodeContents(content);
+    var painted = range.getBoundingClientRect(), box = content.getBoundingClientRect();
+    if (painted.width <= .1 || painted.height <= .1) return false;
+    var before = Math.max(0, box.top - painted.top), after = Math.max(0, painted.bottom - box.bottom);
+    var style = getComputedStyle(content);
+    // Fonts and inline bubbles can paint beyond their line boxes. In a natural
+    // document this expands the scrollable content, rather than failing a page
+    // boundary check or putting the chapter footer over the last visible glyph.
+    if (before > .5) content.style.paddingTop = ((parseFloat(style.paddingTop) || 0) + before) + 'px';
+    if (after > .5) content.style.paddingBottom = ((parseFloat(style.paddingBottom) || 0) + after) + 'px';
+    return before > .5 || after > .5;
+  }
+  async function renderContinuous(stage, expected) {
+    var page = await createTemplatePage(stage, 0, 1, expected), slots = orderedSlots(page);
+    if (slots.length !== 1) throw new Error('滚动模板需要且只能包含一个 data-reader-flow 正文区域');
+    var slot = slots[0], viewportNode = document.createElement('div'), content = document.createElement('div');
+    viewportNode.className = 'reader-template-flow-viewport';
+    content.className = 'reader-template-flow-content';
+    content.setAttribute('data-reader-pagination-engine', 'continuous');
+    // A single, intact source tree. No page extraction or CSS columns run here.
+    content.appendChild(source.cloneNode(true));
+    viewportNode.appendChild(content); slot.replaceChildren(viewportNode);
+    if (slotBox(slot).width < 2) throw new Error('滚动模板的正文区域没有可用宽度');
+    await Promise.all(Array.prototype.map.call(page.querySelectorAll('img'), function (image) { return imageReady(image, true); }));
+    await loadFonts(content);
+    await emitHook('afterPage', {page: page, pageIndex: 0, first: false, type: 'scroll'});
+    await Promise.all(Array.prototype.map.call(page.querySelectorAll('img'), function (image) { return imageReady(image, true); }));
+    await waitBackgrounds(page);
+    for (var attempt = 0; attempt < 3; attempt++) {
+      var inlineChanged = fitFlowMetrics(content, viewportNode.getBoundingClientRect());
+      var blockChanged = fitContinuousBlockExtent(content);
+      if (!inlineChanged && !blockChanged) break;
+    }
+    var scrollBox = scrollViewport(stage);
+    if (scrollBox.width < 2 || scrollBox.height < 2) throw new Error('滚动模板的阅读框没有可用尺寸，请为滚动容器设置高度');
+    checkRun(expected);
+    return {pages: [page], contents: [{pageIndex: 0, node: content}]};
+  }
+  async function indexContinuous(result, stage, expected, deadline) {
+    var content = result.contents[0].node, page = result.pages[0];
+    var scroller = scrollingElement(stage), box = scrollViewport(stage);
+    var max = Math.max(0, scroller.scrollHeight - box.height), positions = [0];
+    // Positions serve native progress/navigation only; they never split the DOM.
+    var step = Math.max(box.height, max / 2047);
+    for (var y = step; y < max - 1; y += step) positions.push(y);
+    if (max > 0) positions.push(max);
+    var points = [{node: content, offset: 0}], target = 1, styles = new WeakMap();
+    var range = document.createRange(), origin = box.origin;
+    var walker = document.createTreeWalker(content, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT), node;
+    var visits = 0, lastYield = performance.now();
+    while ((node = walker.nextNode()) && target < positions.length) {
+      if (++visits % 64 === 0) {
+        checkRun(expected);
+        if (activeTime() >= deadline) throw new Error('滚动模板布局耗时过长，请减少复杂样式');
+        if (performance.now() - lastYield > 12) {
+          await new Promise(function (resolve) { later(resolve, 0); }); lastYield = performance.now();
+        }
+      }
+      if (!flowContentVisible(node, page, styles)) continue;
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!node.data.trim() || node.parentElement.closest('script,style,noscript,[data-reader-text-ignore],[data-legado-image-action]')) continue;
+        range.selectNodeContents(node);
+        var rects = range.getClientRects(), lastTop = -Infinity;
+        for (var r = 0; r < rects.length; r++) {
+          if (rects[r].width > .1 && rects[r].height > .1) lastTop = Math.max(lastTop, rects[r].top - origin);
+        }
+        while (target < positions.length && lastTop >= positions[target]) {
+          var low = 1, high = node.length, at = positions[target];
+          while (low < high) {
+            var middle = Math.floor((low + high) / 2); range.setStart(node, 0); range.setEnd(node, middle);
+            var reaches = Array.prototype.some.call(range.getClientRects(), function (rect) {
+              return rect.width > .1 && rect.height > .1 && rect.top - origin >= at;
+            });
+            if (reaches) high = middle; else low = middle + 1;
+          }
+          points.push({node: node, offset: graphemeStart(node.data, low - 1)}); target++;
+        }
+      } else if (/^(img|svg|canvas|video|iframe|object|embed|hr)$/.test(node.localName)) {
+        var top = node.getBoundingClientRect().top - origin;
+        while (target < positions.length && top >= positions[target]) {
+          points.push({node: node.parentNode, offset: Array.prototype.indexOf.call(node.parentNode.childNodes, node)}); target++;
+        }
+      }
+    }
+    while (points.length <= positions.length) points.push({node: content, offset: content.childNodes.length});
+    var contents = positions.map(function (_, index) {
+      range.setStart(points[index].node, points[index].offset);
+      range.setEnd(points[index + 1].node, points[index + 1].offset);
+      var fragment = range.cloneContents(), ancestor = range.commonAncestorContainer;
+      if (ancestor.nodeType === Node.TEXT_NODE) ancestor = ancestor.parentNode;
+      // Detached range copies preserve source identities for the existing
+      // integrity/location mapper; the displayed source tree stays untouched.
+      while (ancestor && ancestor !== content) {
+        var shell = ancestor.cloneNode(false); shell.appendChild(fragment); fragment = shell; ancestor = ancestor.parentNode;
+      }
+      var holder = document.createElement('div'); holder.appendChild(fragment);
+      return {pageIndex: index, node: holder};
+    });
+    var pixels = [], shellRenderable = false;
+    function addRect(rect, inScroll) {
+      // The frame's artwork stays at screen coordinates; only the content's
+      // cached intervals move with scrollTop. Do not treat a fixed footer as
+      // a glyph at the end of the chapter, or vice versa.
+      if (!inScroll) { if (viewportRect(rect)) shellRenderable = true; return; }
+      if (rect.width > .1 && rect.height > .1 && rect.right > box.left && rect.left < box.right) {
+        pixels.push([rect.top - origin, rect.bottom - origin]);
+      }
+    }
+    textNodes(page).forEach(function (text) {
+      if (!text.data.trim() || !flowContentVisible(text, page, styles)) return;
+      var inScroll = scroller.contains(text);
+      range.selectNodeContents(text);
+      Array.prototype.forEach.call(range.getClientRects(), function (rect) { addRect(rect, inScroll); });
+    });
+    Array.prototype.forEach.call(page.querySelectorAll('img,svg,canvas,video,table,hr,iframe,object,button,input'), function (element) {
+      if (flowContentVisible(element, page, styles)) addRect(element.getBoundingClientRect(), scroller.contains(element));
+    });
+    pixels.sort(function (a, b) { return a[0] - b[0]; });
+    var merged = [];
+    pixels.forEach(function (pixel) {
+      var previous = merged[merged.length - 1];
+      if (previous && previous[1] >= pixel[0]) previous[1] = Math.max(previous[1], pixel[1]);
+      else merged.push(pixel);
+    });
+    return {positions: positions, contents: contents, pixels: merged, shellRenderable: shellRenderable};
+  }
+  async function paginate(stage, expected, countHint, deadline) {
+    var prepared = prepareLayoutSource(), breakToken, previousPosition;
+    prepared.checkpoint = function () {
+      checkRun(expected);
+      if (activeTime() >= deadline) throw new Error('模板分页耗时过长，请减少复杂样式或改用基础排版');
+    };
+    var list = [], contents = [], started = performance.now(), lastYield = started;
+    for (var index = 0; ; index++) {
+      checkRun(expected);
+      if (index >= 2048) throw new Error('模板分页超过页数上限，请检查正文区域尺寸或改用基础排版');
+      if (activeTime() >= deadline) throw new Error('模板分页耗时过长，请减少复杂样式或改用基础排版');
+      var page = await createTemplatePage(stage, index, countHint, expected); list.push(page);
       var slots = orderedSlots(page);
       if (!slots.length) throw new Error('模板页面缺少 data-reader-flow 正文区域');
       for (var slotIndex = 0; slotIndex < slots.length; slotIndex++) {
@@ -783,50 +1143,13 @@
         viewportNode.style.setProperty('--reader-flow-height', box.height + 'px');
         content.className = 'reader-template-flow-content';
         viewportNode.appendChild(content); slot.replaceChildren(viewportNode);
-        var alignBottom = !scrollMode && init.bottomJustify !== false && window.LegadoPageAlignment &&
-          slot.getAttribute('data-reader-bottom-align') !== 'false';
-        var result = await renderFlow(content, viewportNode, prepared, breakToken, alignBottom, 0);
+        var result = await renderFlow(content, viewportNode, prepared, breakToken);
         checkRun(expected);
         if (result.error) throw new Error('正文无法放入第 ' + (index + 1) + ' 页的区域：' + result.error.message);
         var nextPosition = tokenPosition(result.breakToken, prepared.order);
         if (!progressed(previousPosition, nextPosition)) throw new Error('模板分页停在同一正文位置，已终止以避免空白页循环');
-        var alignment = null, fitExtra = 0, continues = false;
-        if (alignBottom) {
-          var alignmentBounds = viewportNode.getBoundingClientRect();
-          var paintBounds = flowPaintBounds(content, page, alignmentBounds);
-          continues = flowContinues(result.breakToken, content, prepared);
-          alignment = window.LegadoPageAlignment.align(content, {bounds: alignmentBounds,
-            paintBounds: paintBounds, paintInsets: paintInsets, continues: continues,
-            selector: 'p.reader-paragraph', lastPage: result.breakToken ? 1 : 0});
-          if (continues && !alignment.reason && !alignment.rejectedPages.length && canFitFlow(content) &&
-              alignment.pages.some(function (part) { return part.filledBottom && part.gapAdjustment > Math.max(2, part.lineAdvance * .06); })) {
-            var baselineContent = content, baselineResult = result, baselineAlignment = alignment;
-            for (var trial = 0; trial < 2; trial++) {
-              var extra = Math.floor(box.height * (.04 / Math.pow(2, trial)) * 64) / 64;
-              var candidateContent = document.createElement('div'); candidateContent.className = 'reader-template-flow-content';
-              viewportNode.replaceChildren(candidateContent);
-              var candidateResult = await renderFlow(candidateContent, viewportNode, prepared, breakToken, alignBottom, extra);
-              checkRun(expected);
-              var candidatePosition = tokenPosition(candidateResult.breakToken, prepared.order);
-              if (candidateResult.error || !progressed(nextPosition, candidatePosition) || !canFitFlow(candidateContent)) continue;
-              var candidateContinues = flowContinues(candidateResult.breakToken, candidateContent, prepared);
-              var candidateAlignment = window.LegadoPageAlignment.align(candidateContent, {bounds: alignmentBounds,
-                paintBounds: paintBounds, paintInsets: paintInsets, continues: candidateContinues, boundedFit: true,
-                selector: 'p.reader-paragraph'});
-              if (!candidateAlignment.reason && !candidateAlignment.rejectedPages.length && candidateAlignment.alignedPages &&
-                  !completeContentOverflow(candidateContent, alignmentBounds, paintBounds) &&
-                  candidateAlignment.maxGapAdjustment <= baselineAlignment.maxGapAdjustment + .1 &&
-                  candidateAlignment.spacingCost < baselineAlignment.spacingCost - .0001) {
-                content = candidateContent; result = candidateResult; alignment = candidateAlignment;
-                nextPosition = candidatePosition; continues = candidateContinues; fitExtra = extra; break;
-              }
-            }
-            if (!fitExtra) { content = baselineContent; result = baselineResult; alignment = baselineAlignment; viewportNode.replaceChildren(content); }
-          }
-          if (alignment.paintInsets) paintInsets = alignment.paintInsets;
-        }
         previousPosition = nextPosition; breakToken = result.breakToken;
-        contents.push({pageIndex: index, node: content, paintInsets: alignment && alignment.paintInsets, fitExtra: fitExtra, continues: continues});
+        contents.push({pageIndex: index, node: content});
         if (!breakToken) break;
       }
       await emitHook('afterPage', {page: page, pageIndex: index, first: index === 0});
@@ -838,22 +1161,7 @@
         await new Promise(function (resolve) { later(resolve, 0); }); lastYield = performance.now();
       }
     }
-    // Match Direct's chapter-wide text edges. A decoration appearing on a later
-    // page must not make only that page's first/last text line jump inward.
-    contents.forEach(function (entry) {
-      var used = entry.paintInsets;
-      if (!used || used.top >= paintInsets.top && used.bottom >= paintInsets.bottom) return;
-      var bounds = entry.node.parentElement.getBoundingClientRect();
-      // Do not repair an afterPage hook that changed already paginated content;
-      // the final overflow check must still reject that invalid author layout.
-      var paintBounds = flowPaintBounds(entry.node, list[entry.pageIndex], bounds);
-      if (completeContentOverflow(entry.node, bounds, paintBounds)) return;
-      var aligned = window.LegadoPageAlignment.align(entry.node, {bounds: bounds,
-        paintBounds: paintBounds, paintInsets: paintInsets, continues: entry.continues,
-        boundedFit: entry.fitExtra > 0, selector: 'p.reader-paragraph'});
-      if (aligned.rejectedPages && aligned.rejectedPages.length) needsRefit = true;
-    });
-    return {pages: list, contents: contents, paintInsets: paintInsets, needsRefit: needsRefit};
+    return {pages: list, contents: contents};
   }
   function pageForOffset(offset, map) {
     var nearest = 0, distance = Infinity;
@@ -868,22 +1176,37 @@
     }
     return nearest;
   }
+  function updatePageVisibility() {
+    function visibility(page, selected) {
+      page.setAttribute('data-reader-active', selected ? 'true' : 'false');
+      page.setAttribute('aria-hidden', scrollMode || selected ? 'false' : 'true');
+      page.inert = !scrollMode && !selected;
+    }
+    // A new layout initializes each page once. Turning a page only touches the
+    // outgoing and incoming pages, regardless of the chapter's length.
+    if (visibilityPages !== pages) {
+      pages.forEach(function (page) { visibility(page, false); });
+      visibilityPages = pages; visiblePage = null;
+    }
+    var nextPage = pageAt(pageIndex);
+    if (visiblePage !== nextPage) {
+      if (visiblePage) visibility(visiblePage, false);
+      if (nextPage) visibility(nextPage, true);
+      visiblePage = nextPage;
+    }
+  }
   function showPage(index) {
     setMotionState('settled');
-    pageIndex = Math.max(0, Math.min(pages.length - 1, Math.floor(Number(index) || 0)));
-    pages.forEach(function (page, candidate) {
-      page.setAttribute('data-reader-active', candidate === pageIndex ? 'true' : 'false');
-      page.setAttribute('aria-hidden', scrollMode || candidate === pageIndex ? 'false' : 'true');
-      page.inert = !scrollMode && candidate !== pageIndex;
-    });
+    pageIndex = Math.max(0, Math.min(pageCount() - 1, Math.floor(Number(index) || 0)));
+    updatePageVisibility();
     syncMotion();
-    if (scrollMode && committedRoot) committedRoot.scrollTop = pageIndex * viewport.height;
+    if (scrollMode && committedRoot) scrollingElement(committedRoot).scrollTop = continuous ? scrollPositions[pageIndex] || 0 : pageIndex * viewport.height;
     activationTargetRevision = layoutRevision;
     visualRevision++;
   }
   function restorePage(anchor, fallback) {
     if (activationBoundary === 'start') return 0;
-    if (activationBoundary === 'end') return pages.length - 1;
+    if (activationBoundary === 'end') return pageCount() - 1;
     if (anchor) {
       for (var index = 0; index < pageMap.length; index++) {
         var found = pageMap[index].fragments.some(function (fragment) {
@@ -910,16 +1233,22 @@
     if (window.ResizeObserver) {
       sizeObserver = new ResizeObserver(function () {
         if (!active || layoutBusy || !pages.length) return;
-        if (geometryOf(pages) !== geometry) requestLayout('region-resize');
+        if (!sameGeometry(geometryOf(pages), geometry)) requestLayout('region-resize');
       });
-      pages.forEach(function (page) { orderedSlots(page).forEach(function (slot) { sizeObserver.observe(slot); }); });
+      pages.forEach(function (page) {
+        if (continuous) sizeObserver.observe(page);
+        if (continuous && scrollingElement(committedRoot) !== committedRoot) sizeObserver.observe(scrollingElement(committedRoot));
+        orderedSlots(page).forEach(function (slot) { sizeObserver.observe(slot); });
+      });
     }
     if (window.MutationObserver && committedRoot) {
       pageObserver = new MutationObserver(function (mutations) {
         var relevant = false, flowChanged = false;
         mutations.forEach(function (mutation) {
           var element = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
-          if (!element || element.closest('[data-reader-field]')) return;
+          if (!element) return;
+          if (element.closest('[data-reader-field]') && mutation.attributeName !== 'data-reader-field') return;
+          if (mutation.type === 'childList' || mutation.attributeName === 'data-reader-field') fieldBindingPages = null;
           if (element.classList.contains('reader-template-page') && /^(data-reader-active|data-reader-motion|data-reader-entry|aria-hidden|inert)$/.test(mutation.attributeName || '')) return;
           relevant = true;
           if (element.closest('.reader-template-flow-content,style,link[rel~="stylesheet"]')) flowChanged = true;
@@ -929,15 +1258,15 @@
         // A button counter, clock, or author animation in the page shell need
         // not rerun the entire chapter when every flow region keeps its shape.
         var serial = ++authorVisualSerial;
-        authorVisualPending = true; visualRevision++; postState();
+        authorVisualPending = true; visualRevision++; contentRevision++; postState();
         clearLater(mutationTimer);
         mutationTimer = later(async function () {
           try {
-            await Promise.all(Array.prototype.map.call(pages[pageIndex].querySelectorAll('img'), function (image) { return imageReady(image, true); }));
+            await Promise.all(Array.prototype.map.call(pageAt(pageIndex).querySelectorAll('img'), function (image) { return imageReady(image, true); }));
             await twoFrames();
             if (serial !== authorVisualSerial || !active) return;
             authorVisualPending = false;
-            if (geometryOf(pages) !== geometry) requestLayout('template-shell-geometry'); else postState();
+            if (!sameGeometry(geometryOf(pages), geometry)) requestLayout('template-shell-geometry'); else postState();
           } catch (error) { fail(error); }
         }, 0);
       });
@@ -960,7 +1289,7 @@
     // would discard the selection and its native action-mode ownership.
     if (committedRoot && selectionVisible() && reason !== 'viewport') { selectionDeferredLayout = true; return; }
     if (reason === 'viewport' && selectionVisible()) clearSelection();
-    generation++; requested = true; layoutBusy = true;
+    generation++; contentRevision++; requested = true; layoutBusy = true;
     setMotionState('settled');
     postState();
     if (!initialized || running || layoutTimer) return;
@@ -969,12 +1298,16 @@
   async function layoutLoop() {
     if (running || !active || failure) return;
     running = true;
-    var loopStarted = performance.now();
+    // Native startup already includes resource preparation. Keep that same budget
+    // through every pagination pass/restart instead of imposing an earlier 45s
+    // per-pass failure on a chapter which is still making forward progress.
+    var deadline = (committedRoot ? activeTime() : startupStarted) + renderBudgetMs;
     while (active && requested && !failure) {
-      if (performance.now() - loopStarted > 60000) { fail(new Error('模板持续改变布局，未能在限定时间内稳定')); break; }
+      if (activeTime() >= deadline) { fail(new Error('模板持续改变布局，未能在限定时间内稳定')); break; }
       requested = false;
       var expected = generation;
       var anchor = pageMap[pageIndex] && pageMap[pageIndex].fragments[0], fallback = pageIndex;
+      var withinPosition = continuous && committedRoot ? scrollingElement(committedRoot).scrollTop - (scrollPositions[pageIndex] || 0) : 0;
       var stage = null;
       try {
         sourcePreparing = true;
@@ -984,40 +1317,70 @@
         if (sourceObserver) sourceObserver.takeRecords();
         sourcePreparing = false;
         checkRun(expected);
-        var countHint = pages.length || 0, result, map, converged = false, paintInsetsHint;
+        var countHint = pages.length || 0, result, map, continuousIndex, converged = false;
         for (var pass = 0; pass < 4; pass++) {
           if (stage) stage.remove();
           stage = createStage(); candidateRoot = stage;
-          result = await paginate(stage, expected, countHint, paintInsetsHint);
-          paintInsetsHint = result.paintInsets;
-          if (result.needsRefit) { countHint = result.pages.length; continue; }
+          result = continuous ? await renderContinuous(stage, expected) : await paginate(stage, expected, countHint, deadline);
           var before = geometryOf(result.pages);
           result.pages.forEach(function (page, index) { bindFields(page, index, result.pages.length); });
           await emitHook('afterLayout', {pages: result.pages, pageCount: result.pages.length, generation: expected});
           await twoFrames();
           checkRun(expected);
           var after = geometryOf(result.pages);
-          if (before === after) { converged = true; break; }
+          if (sameGeometry(before, after)) { converged = true; break; }
           countHint = result.pages.length;
         }
-        if (!converged) throw new Error('页眉或页数持续改变正文区域尺寸，模板分页无法稳定');
+        if (!converged) throw new Error(continuous ? '滚动模板的正文尺寸持续改变，无法完成布局' : '页眉或页数持续改变正文区域尺寸，模板分页无法稳定');
+        var artwork = [];
         result.contents.forEach(function (entry) {
           var bounds = entry.node.parentElement.getBoundingClientRect();
-          if (completeContentOverflow(entry.node, bounds, entry.paintInsets && flowPaintBounds(entry.node, result.pages[entry.pageIndex], bounds))) {
-            throw new Error('模板在分页后改变了正文尺寸，部分文字或图片超出区域；请在 beforePage 中设置正文样式');
+          var screen = continuous ? scrollViewport(stage) : null;
+          // A scrolling document has no bottom page edge. Its flow is visible
+          // through the template's margins, up to its actual scroll viewport.
+          // Keep the bounded region check for paged templates.
+          var visibleBounds = continuous ? {
+            left: screen.left, right: screen.right, top: -Infinity, bottom: Infinity
+          } : bounds;
+          var overflow = completeContentOverflow(entry.node, visibleBounds);
+          if (overflow) {
+            var rect = overflow.getBoundingClientRect();
+            if (continuous) throw new Error('滚动模板正文横向超出可视区域（宽度 ' + screen.width.toFixed(1) +
+              'px）；请检查正文中固定宽度或禁止换行的内容');
+            throw new Error('第 ' + (entry.pageIndex + 1) + ' 页正文超出模板区域；区域 ' +
+              bounds.width.toFixed(1) + '×' + bounds.height.toFixed(1) +
+              '，越界内容起点 ' + (rect.left - bounds.left).toFixed(1) + ',' + (rect.top - bounds.top).toFixed(1) +
+              '；请检查模板正文尺寸或分页后的样式修改');
           }
-          revealFlowArtwork(entry.node, result.pages[entry.pageIndex]);
+          var clip = !continuous && revealFlowArtwork(entry.node, result.pages[entry.pageIndex]);
+          if (clip) artwork.push(clip);
         });
-        map = sourceSnapshot.collect(result.contents, result.pages.length);
+        // Clip allowances do not change the flow-root's geometry. Finish every
+        // page's measurements before applying these paint-only style changes.
+        artwork.forEach(function (clip) {
+          clip.viewport.style.overflow = 'visible';
+          clip.viewport.style.clipPath = clip.clipPath;
+        });
+        if (continuous) {
+          continuousIndex = await indexContinuous(result, stage, expected, deadline);
+          map = sourceSnapshot.collect(continuousIndex.contents, continuousIndex.positions.length);
+        } else map = sourceSnapshot.collect(result.contents, result.pages.length);
         checkRun(expected);
         if (pageObserver) pageObserver.disconnect();
         if (sizeObserver) sizeObserver.disconnect();
         var previous = committedRoot;
         pages = result.pages; pageMap = map; committedRoot = stage; candidateRoot = null;
+        scrollPositions = continuousIndex ? continuousIndex.positions : [];
+        scrollPixels = continuousIndex ? continuousIndex.pixels : [];
+        scrollShellRenderable = continuousIndex ? continuousIndex.shellRenderable : false;
         committedRoot.setAttribute('data-reader-runtime-stage', 'committed');
-        if (scrollMode) pages.forEach(function (page, index) { page.style.top = (index * viewport.height) + 'px'; page.style.bottom = 'auto'; page.style.height = viewport.height + 'px'; });
+        if (scrollMode && !continuous) pages.forEach(function (page, index) { page.style.top = (index * viewport.height) + 'px'; page.style.bottom = 'auto'; page.style.height = viewport.height + 'px'; });
         layoutRevision++; visualRevision++;
         showPage(restorePage(anchor, fallback));
+        if (continuous && previous && !activationBoundary && withinPosition > 0) {
+          scrollingElement(committedRoot).scrollTop += withinPosition;
+          pageIndex = scrollIndex(scrollingElement(committedRoot).scrollTop);
+        }
         if (previous) previous.remove();
         stage = null;
         await twoFrames();
@@ -1048,8 +1411,19 @@
   }
   function viewportRect(rect) { return rect.width > .5 && rect.height > .5 && rect.right > 0 && rect.bottom > 0 && rect.left < viewport.width && rect.top < viewport.height; }
   function viewportRenderable() {
-    var page = pages[pageIndex];
+    var page = pageAt(pageIndex);
     if (!page || layoutBusy || visualBusy || authorVisualPending) return false;
+    if (continuous) {
+      // Cached, merged paint intervals make readiness independent of chapter
+      // length while scrolling. All Range measurements happened during layout.
+      if (scrollShellRenderable) return true;
+      var scroller = scrollingElement(committedRoot), top = scroller.scrollTop, low = 0, high = scrollPixels.length;
+      while (low < high) {
+        var middle = Math.floor((low + high) / 2);
+        if (scrollPixels[middle][1] <= top) low = middle + 1; else high = middle;
+      }
+      return low < scrollPixels.length && scrollPixels[low][0] < top + scroller.clientHeight;
+    }
     // Full author HTML is renderable too: a chapter with just a custom heading,
     // a canvas, or an image must not be mistaken for an empty body flow.
     var roots = [page];
@@ -1081,13 +1455,14 @@
     return false;
   }
   function metrics() {
-    var target = activationBoundary === 'start' ? 0 : activationBoundary === 'end' ? pages.length - 1 : pageIndex;
+    var target = activationBoundary === 'start' ? 0 : activationBoundary === 'end' ? pageCount() - 1 : pageIndex;
     var pendingResources = sourceImagesPending > 0;
     var ready = initialized && !failure && !layoutBusy && !visualBusy && !authorVisualPending && !pendingResources;
     var renderable = ready && viewportRenderable();
-    return {pageCount: Math.max(1, pages.length), pageIndex: Math.max(0, pageIndex), ready: ready,
+    return {pageCount: Math.max(1, pageCount()), pageIndex: Math.max(0, pageIndex), ready: ready,
       resourcesReady: resourcesReady && !pendingResources, resourcesFailed: resourcesFailed, layoutRevision: layoutRevision,
-      visualRevision: visualRevision, layoutPending: layoutBusy || visualBusy || authorVisualPending || pendingResources, sourceImagesPending: sourceImagesPending,
+      visualRevision: visualRevision, contentRevision: contentRevision,
+      layoutPending: layoutBusy || visualBusy || authorVisualPending || pendingResources, sourceImagesPending: sourceImagesPending,
       activationTargetRevision: activationTargetRevision, activationTargetSatisfied: ready && activationTargetRevision === layoutRevision && pageIndex === target,
       renderable: renderable, viewportRenderable: renderable};
   }
@@ -1116,30 +1491,49 @@
     if (method === 'dismissAnnotation') closeImageOverlay();
     await waitForLayout();
     if (!active || failure) return;
+    // These commands do not change the page. The command chain has already
+    // awaited any earlier visual commit; do not add two more frames to every
+    // position report or empty selection clear.
+    if (method === 'report' || method === 'setTextImageMode') {
+      if (method === 'setTextImageMode') { textImageMode = String(args[0]); lastImageTap = null; }
+      postState(command.requestId);
+      return;
+    }
+    if (method === 'clearSelection') {
+      var selectionChanged = clearSelection();
+      if (selectionChanged) { await waitForLayout(); await twoFrames(); }
+      if (active && !failure) postState(command.requestId);
+      return;
+    }
     if (method === 'setTemplateMotionState') {
       setMotionState(String(args[0]));
-      // A finite compositor barrier for a requested pose, never the completion
-      // of an infinite CSS animation or author-created animation Promise.
-      await twoFrames();
+      // Only snapshot settling needs its own compositor barrier. DOWN pauses
+      // presentation immediately; holding the command queue for two frames here
+      // would delay the page commit queued by the first drag MOVE. That commit
+      // already waits for its complete target frame before acknowledging it.
+      if (String(args[0]) === 'settled') await twoFrames();
       if (active && !failure) postState(command.requestId);
       return;
     }
     visualBusy = true;
     try {
-      if (method === 'setPage' || method === 'setActivationPage') {
-        activationBoundary = method === 'setActivationPage' && /^(start|end)$/.test(String(args[0])) ? args[0] : '';
-        var target = activationBoundary === 'start' ? 0 : activationBoundary === 'end' ? pages.length - 1 :
+      if (method === 'setPage' || method === 'setActivationPage' || method === 'commitPage') {
+        if (method === 'commitPage') {
+          await updateFields(args[1]);
+          await waitForLayout();
+        }
+        var requestedBoundary = method === 'commitPage' ? args[2] : method === 'setActivationPage' ? args[0] : '';
+        activationBoundary = /^(start|end)$/.test(String(requestedBoundary)) ? requestedBoundary : '';
+        var target = activationBoundary === 'start' ? 0 : activationBoundary === 'end' ? pageCount() - 1 :
           method === 'setActivationPage' ? args[1] : args[0];
         showPage(target);
-        await emitHook('pageChange', {page: pages[pageIndex], pageIndex: pageIndex, pageCount: pages.length});
+        await emitHook('pageChange', {page: pageAt(pageIndex), pageIndex: pageIndex, pageCount: pageCount()});
       } else if (method === 'setReaderChromeData') {
-        var before = geometryOf(pages);
-        Object.keys(fields).forEach(function (key) { delete fields[key]; });
-        Object.assign(fields, args[0] || {});
-        pages.forEach(function (page, index) { bindFields(page, index, pages.length); });
-        await emitHook('fieldsChange', {fields: fields});
-        await twoFrames();
-        if (geometryOf(pages) !== before) requestLayout('field-geometry'); else visualRevision++;
+        if (!await updateFields(args[0])) {
+          visualBusy = false;
+          postState(command.requestId);
+          return;
+        }
       } else if (method === 'goToFragment') {
         var id = String(args[0] || '').replace(/^#/, ''), match = /^__legado_text_(\d+)$/.exec(id), found = -1;
         if (match) found = pageForOffset(Number(match[1]), pageMap);
@@ -1148,11 +1542,9 @@
         }
         if (found >= 0) {
           activationBoundary = ''; showPage(found);
-          await emitHook('pageChange', {page: pages[pageIndex], pageIndex: pageIndex, pageCount: pages.length});
+          await emitHook('pageChange', {page: pageAt(pageIndex), pageIndex: pageIndex, pageCount: pageCount()});
         }
-      } else if (method === 'clearSelection') clearSelection();
-      else if (method === 'setTextImageMode') { textImageMode = String(args[0]); lastImageTap = null; }
-      else if (method !== 'report' && method !== 'setToken' && method !== 'dismissAnnotation') throw new Error('未知模板命令：' + method);
+      } else if (method !== 'setToken' && method !== 'dismissAnnotation') throw new Error('未知模板命令：' + method);
       // Commands are serialized, including report. No later report may release
       // an earlier setPage/setToken before its actual DOM and image frame commit.
       for (;;) {
@@ -1167,7 +1559,16 @@
   window.addEventListener('message', function (event) {
     if (!active || event.source !== parent) return;
     var command = event.data;
-    if (!command || command.channel !== channel || command.type !== 'command') return;
+    if (!command || command.channel !== channel) return;
+    if (command.type === 'heartbeat') {
+      // A queued page command can legitimately wait for asynchronous pagination.
+      // Respond outside that queue; this acknowledges liveness, never readiness.
+      if (Number.isSafeInteger(command.token) && Number.isSafeInteger(command.sequence) && command.sequence > 0) {
+        parent.postMessage({channel: channel, type: 'heartbeat', token: command.token, sequence: command.sequence}, '*');
+      }
+      return;
+    }
+    if (command.type !== 'command') return;
     commandChain = commandChain.then(function () { return dispatch(command); }).catch(fail);
   });
 
@@ -1239,19 +1640,33 @@
     postState();
     return Promise.all(workers);
   }
-  function clearSelection() { var selection = getSelection(); if (selection) selection.removeAllRanges(); post('selection', {text: '', rects: [], viewportWidth: viewport.width, viewportHeight: viewport.height}); }
+  var selectionReported = false;
+  function releaseSelectionLayout() {
+    if (selectionDeferredLayout) { selectionDeferredLayout = false; requestLayout('selection-end'); }
+  }
+  function clearSelection() {
+    clearLater(selectionTimer);
+    var selection = getSelection(), hadSelection = selectionReported || !!(selection && !selection.isCollapsed);
+    selectionReported = false;
+    if (selection && selection.rangeCount) selection.removeAllRanges();
+    if (hadSelection) post('selection', {text: '', rects: [], viewportWidth: viewport.width, viewportHeight: viewport.height});
+    releaseSelectionLayout();
+    return hadSelection;
+  }
   var selectionTimer = 0;
   document.addEventListener('selectionchange', function () {
     clearLater(selectionTimer);
     selectionTimer = later(function () {
       var selection = getSelection(), text = selection ? selection.toString() : '', rects = [];
+      if (!text && !selectionReported) { releaseSelectionLayout(); return; }
       if (selection && text) for (var index = 0; index < selection.rangeCount; index++) {
         Array.prototype.forEach.call(selection.getRangeAt(index).getClientRects(), function (rect) {
-          if (viewportRect(rect)) rects.push({left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom});
+          if (rects.length < 512 && viewportRect(rect)) rects.push({left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom});
         });
       }
+      selectionReported = !!text;
       post('selection', {text: text, rects: rects, viewportWidth: viewport.width, viewportHeight: viewport.height});
-      if (!text && selectionDeferredLayout) { selectionDeferredLayout = false; requestLayout('selection-end'); }
+      if (!text) releaseSelectionLayout();
     }, 20);
   });
   function imageTarget(target) {
@@ -1335,6 +1750,9 @@
     if (!sourceImage && element.closest('a[href],[onclick]')) hard = true;
     var scrollers = [], node = element;
     while (node && node !== committedRoot && node !== document.documentElement) {
+      // The template's primary reading frame has the same gesture ownership as
+      // the former outer stage. Only additional embedded widgets claim drags.
+      if (node === scrollingElement(committedRoot)) { node = node.parentElement; continue; }
       var style = getComputedStyle(node), overflowX = Math.max(0, node.scrollWidth - node.clientWidth), overflowY = Math.max(0, node.scrollHeight - node.clientHeight);
       var x = /^(auto|scroll|overlay)$/.test(style.overflowX) && overflowX > 1;
       var y = /^(auto|scroll|overlay)$/.test(style.overflowY) && overflowY > 1;
@@ -1363,10 +1781,11 @@
       touch = {id: ++interactionSequence, x: point.clientX, y: point.clientY, active: false, hard: interactive.hard, scrollers: interactive.scrollers};
       if (interactive.hard) reportInteraction(true);
     }
-    if (scrollMode && committedRoot && !overlayVisible() && !selectionVisible() && !(interactive && interactive.hard)) {
+    var scroller = committedRoot && scrollingElement(committedRoot);
+    if (scrollMode && scroller && scroller.contains(element) && !overlayVisible() && !selectionVisible() && !(interactive && interactive.hard)) {
       activationBoundary = '';
-      scrollTouch = {x: point.clientX, y: point.clientY, top: committedRoot.scrollTop <= 1,
-        bottom: committedRoot.scrollTop >= committedRoot.scrollHeight - committedRoot.clientHeight - 1};
+      scrollTouch = {x: point.clientX, y: point.clientY, scroller: scroller, top: scroller.scrollTop <= 1,
+        bottom: scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1};
     }
     if (image) {
       imagePress = {image: image, x: point.clientX, y: point.clientY, opened: false};
@@ -1390,10 +1809,11 @@
     var opened = imagePress && imagePress.opened;
     var boundaryTouch = scrollTouch, owned = touch && touch.active, point = event.changedTouches[0];
     scrollTouch = null;
-    if (event.isTrusted && boundaryTouch && point && !opened && !owned && !overlayVisible() && !selectionVisible() && !layoutBusy) {
+    if (event.isTrusted && boundaryTouch && boundaryTouch.scroller === scrollingElement(committedRoot) && point && !opened && !owned && !overlayVisible() && !selectionVisible() && !layoutBusy) {
       var dx = point.clientX - boundaryTouch.x, dy = point.clientY - boundaryTouch.y;
       if (Math.abs(dy) > 48 && Math.abs(dy) > Math.abs(dx) * 1.2) {
-        var top = committedRoot.scrollTop <= 1, bottom = committedRoot.scrollTop >= committedRoot.scrollHeight - committedRoot.clientHeight - 1;
+        var scroller = boundaryTouch.scroller;
+        var top = scroller.scrollTop <= 1, bottom = scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1;
         if (dy > 0 && boundaryTouch.top && top) post('boundary', {direction: -1});
         else if (dy < 0 && boundaryTouch.bottom && bottom) post('boundary', {direction: 1});
       }
@@ -1443,7 +1863,7 @@
   });
 
   window.addEventListener('resize', function () { updateViewport(); requestLayout('viewport'); });
-  document.addEventListener('visibilitychange', syncMotion);
+  document.addEventListener('visibilitychange', function () { updateActiveClock(); syncMotion(); });
   if (reducedMotion) {
     if (reducedMotion.addEventListener) reducedMotion.addEventListener('change', syncMotion);
     else if (reducedMotion.addListener) reducedMotion.addListener(syncMotion);
@@ -1457,7 +1877,7 @@
     // Disposal callbacks are cleanup, not pagination prerequisites. Their errors
     // must not keep a detached document or a pending command alive.
     (hooks.dispose || []).splice(0).forEach(function (callback) {
-      try { Promise.resolve(callback({page: pages[pageIndex] || null}, api)).catch(function () {}); } catch (_) {}
+      try { Promise.resolve(callback({page: pageAt(pageIndex)}, api)).catch(function () {}); } catch (_) {}
     });
     lastMotionPage = null;
     if (reducedMotion) {
@@ -1474,20 +1894,31 @@
 
   post('boot');
   (async function () {
-    if (!window.Paged || typeof Paged.Layout !== 'function') throw new Error('模板分页组件未加载');
+    if (!continuous && (!window.Paged || typeof Paged.Layout !== 'function')) throw new Error('模板分页组件未加载');
     if (!window.ReaderTemplateSourceMap) throw new Error('模板正文位置组件未加载');
-    if (!template.firstPageHtml || !template.otherPageHtml) throw new Error('模板缺少首页或续页 HTML');
+    if (continuous ? !template.scrollHtml : !template.firstPageHtml || !template.otherPageHtml) throw new Error(continuous ? '模板缺少滚动 HTML' : '模板缺少首页或续页 HTML');
     updateViewport();
     var base = document.createElement('base'); base.href = init.baseUrl || location.href; document.head.prepend(base);
     document.body.setAttribute('data-legado-text-reader', 'true');
+    document.body.setAttribute('data-reader-theme', 'template');
     document.body.setAttribute('data-reader-scroll', scrollMode ? 'true' : 'false');
+    document.body.setAttribute('data-reader-template-type', continuous ? 'scroll' : 'paged');
     appendStyle('html,body{margin:0;width:100%;height:100%;overflow:hidden;}[data-reader-runtime-stage]{position:fixed;inset:0;overflow:hidden;}[data-reader-runtime-stage="pending"]{opacity:0!important;z-index:-1;pointer-events:none!important;}'+
       'body[data-reader-scroll="true"] [data-reader-runtime-stage="committed"]{overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;}'+
+      'body[data-reader-template-type="scroll"] [data-reader-runtime-stage]{overflow-y:auto;overflow-x:hidden;}'+
       '.reader-template-page{position:absolute;inset:0;width:100%;height:100%;box-sizing:border-box;overflow:hidden;}'+
       'body[data-reader-scroll="false"] [data-reader-runtime-stage="committed"]>.reader-template-page[data-reader-active="false"]{visibility:hidden;pointer-events:none;}'+
       '.reader-template-flow-viewport{display:flow-root;position:relative;overflow:hidden;box-sizing:content-box;min-width:0;min-height:0;}'+
       '.reader-template-flow-content{display:flow-root;box-sizing:border-box;width:100%;min-width:0;}'+
       '.reader-template-flow-content img{max-width:100%;max-height:calc(var(--reader-flow-height) - 1em);object-fit:contain;}'+
+      'body[data-reader-template-type="scroll"] .reader-template-page{position:relative!important;inset:auto!important;height:auto!important;min-height:100%;overflow:visible;}'+
+      'body[data-reader-template-type="scroll"] [data-reader-flow]{height:auto!important;max-height:none!important;overflow:visible;column-count:auto;column-width:auto;}'+
+      'body[data-reader-template-type="scroll"] .reader-template-flow-viewport{width:100%;height:auto!important;max-height:none!important;overflow:visible;column-count:auto;column-width:auto;}'+
+      'body[data-reader-template-type="scroll"] .reader-template-flow-content{height:auto!important;max-height:none!important;column-count:auto!important;column-width:auto!important;}'+
+      'body[data-reader-template-type="scroll"] .reader-template-flow-content img{max-height:none;}'+
+      'body[data-reader-template-type="scroll"] [data-reader-runtime-stage][data-reader-scroll-layout="framed"]{overflow:hidden!important;}'+
+      'body[data-reader-template-type="scroll"] [data-reader-scroll-layout="framed"]>.reader-template-page{height:100%!important;min-height:0;overflow:hidden;}'+
+      'body[data-reader-template-type="scroll"] [data-reader-scroll-viewport]{min-width:0;min-height:0;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain;overflow-anchor:none;scroll-behavior:auto!important;}'+
       '.reader-template-flow-content figure{margin:.4em 0;}'+
       '.reader-template-flow-content [data-split-from]{margin-top:0;text-indent:0;}[data-reader-field]{font-variant-numeric:tabular-nums;}'+
       '#legado-epub-image-overlay{position:fixed!important;inset:0!important;z-index:2147483647!important;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.94);overflow:hidden;touch-action:none;}'+

@@ -27,6 +27,12 @@ object HighlightRules {
             EpubDirectSession.baseUrl("highlight-asset/" + id, host)
         }
 
+    fun decorateTemplate(html: String, bookUrl: String, host: String): String =
+        HighlightDocument.apply(html, store.active(bookUrl, false), HighlightStyle.Palette(
+            text = "var(--reader-text-color,#222)", accent = "var(--reader-accent,#555)",
+            background = "var(--reader-page-background,#fff)"
+        )) { id -> EpubDirectSession.baseUrl("highlight-asset/" + id, host) }
+
     fun resource(path: String, headOnly: Boolean = false): EpubDirectResource? {
         if (!path.startsWith("highlight-asset/")) return null
         val id = path.removePrefix("highlight-asset/")

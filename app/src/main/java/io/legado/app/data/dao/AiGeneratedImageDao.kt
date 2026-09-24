@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import io.legado.app.data.entities.AiGeneratedImage
+import io.legado.app.data.entities.AiImagePreview
 
 @Dao
 interface AiGeneratedImageDao {
@@ -26,6 +27,15 @@ interface AiGeneratedImageDao {
 
     @Query("select * from ai_generated_images where bookKey = :bookKey order by createdAt desc")
     fun byBook(bookKey: String): List<AiGeneratedImage>
+
+    @Query("select count(*) from ai_generated_images where bookKey = :bookKey")
+    fun countByBook(bookKey: String): Int
+
+    @Query("select id, localPath from ai_generated_images where bookKey = :bookKey order by createdAt desc, id desc limit :limit")
+    fun bookPreview(bookKey: String, limit: Int): List<AiImagePreview>
+
+    @Query("delete from ai_generated_images where id = :id and localPath = :localPath")
+    fun deleteMissingPreview(id: String, localPath: String): Int
 
     @Query("select * from ai_generated_images where chapterKey = :chapterKey order by createdAt desc")
     fun byChapter(chapterKey: String): List<AiGeneratedImage>

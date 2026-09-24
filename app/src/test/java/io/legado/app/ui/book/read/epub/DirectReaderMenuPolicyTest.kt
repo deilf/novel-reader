@@ -39,6 +39,21 @@ class DirectReaderMenuPolicyTest {
         assertEquals(ReadMenuButtonConfig.defaultLayout(), original)
     }
 
+    @Test fun `template mode hides native theme actions in both rows without changing saved menu`() {
+        val night = ReadMenuButtonConfig.builtin(ReadMenuButtonConfig.Builtin.NIGHT_THEME)
+        val style = ReadMenuButtonConfig.builtin(ReadMenuButtonConfig.Builtin.READ_STYLE)
+        val custom = ReadMenuButtonConfig.ButtonRef(ReadMenuButtonConfig.TYPE_CUSTOM, "42")
+        val original = ReadMenuButtonConfig.ButtonLayout(
+            firstRow = listOf(night, custom), secondRow = listOf(style, night)
+        )
+        val filtered = ReadMenuButtonConfig.forDirectReader(original, templateOnly = true)
+        assertEquals(listOf(custom), filtered.firstRow)
+        assertEquals(listOf(style), filtered.secondRow)
+        assertFalse(ReadMenuButtonConfig.supportsDirectReader(night, templateOnly = true))
+        assertTrue(ReadMenuButtonConfig.supportsDirectReader(style, templateOnly = true))
+        assertEquals(original, ReadMenuButtonConfig.forDirectReader(original))
+    }
+
     @Test fun `replacement availability does not change saved custom buttons or button order`() {
         val replacement = ReadMenuButtonConfig.builtin(ReadMenuButtonConfig.Builtin.REPLACE_RULE)
         val catalog = ReadMenuButtonConfig.builtin(ReadMenuButtonConfig.Builtin.CATALOG)

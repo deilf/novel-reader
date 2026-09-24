@@ -28,7 +28,7 @@ internal class EpubDirectPageAnimationOverlay(
     private val style: EpubDirectPageAnimationPolicy.Style,
     private val backgroundColor: Int,
     opaqueBackground: Boolean = false,
-    private val targetBitmap: Bitmap? = null,
+    private var targetBitmap: Bitmap? = null,
     private val targetFrameMetadata: EpubAnimationTargetMetadata? = null,
     simulationStartYFraction: Float = 0.9f
 ) : View(context) {
@@ -48,12 +48,17 @@ internal class EpubDirectPageAnimationOverlay(
     private var opaqueBackground = opaqueBackground
     private var sourceTransferred = false
     private var targetTransferred = false
-    private var liveTargetRevealed = false
+    private val visualState = EpubPageTurnVisualState(targetBitmap?.isRecycled == false)
     private var released = false
+
+    val hasPreparedTarget: Boolean get() = visualState.hasPreparedTarget
+    val canAnimate: Boolean get() = visualState.canAnimate
+
+    fun finishAnimation(): Boolean = visualState.finishAnimation()
 
     var progress: Float = 0f
         set(value) {
-            field = value.coerceIn(0f, 1f)
+            field = visualState.visibleProgress(value)
             // Touch and animator callbacks already run on the UI thread. Invalidate
             // now so the fold and the live target translation share this frame.
             invalidate()
@@ -87,14 +92,23 @@ internal class EpubDirectPageAnimationOverlay(
 
     fun targetFrameMetadata(): EpubAnimationTargetMetadata? = targetFrameMetadata
 
-    fun revealLiveTarget() {
-        liveTargetRevealed = true
+    /** Takes ownership only when this still-hidden endpoint accepts the complete frame. */
+    fun supplyPreparedTarget(bitmap: Bitmap): Boolean {
+        if (released || bitmap.isRecycled || !visualState.prepareTarget()) return false
+        targetBitmap = bitmap
+        invalidate()
+        return true
+    }
+
+    fun revealLiveTarget(): Boolean {
+        val releasePending = visualState.commitLiveTarget()
         if (!opaqueBackground) {
             invalidate()
-            return
+            return releasePending
         }
         opaqueBackground = false
         invalidate()
+        return releasePending
     }
 
     fun release() {
@@ -209,18 +223,10 @@ internal class EpubDirectPageAnimationOverlay(
     }
 
     private fun drawableTargetBitmap(): Bitmap? {
-        // A missing target frame is represented by the opaque reader background, never
-        // by drawing the source page a second time. Reusing sourceBitmap as the target
-        // makes an interactive drag expose one stationary and one moving copy of the same
-        // text until Chromium verifies the live page, which is the characteristic ghost.
-        // Once the live target is visible it is authoritative for every style except a
-        // previous simulation turn, where the prefetched target is the sheet being folded.
-        if (liveTargetRevealed &&
-            (style != EpubDirectPageAnimationPolicy.Style.Simulation ||
-                action == EpubDirectPageAnimationPolicy.TurnAction.Next)
-        ) {
-            return null
-        }
+        // Keep the same complete target throughout the animation and its final frame.
+        // A JS acknowledgement must not replace these pixels with a WebView which may
+        // still be committing its new compositor surface. Without a bitmap, progress
+        // remains at the complete source until a late frame or the live viewport is ready.
         return targetBitmap?.takeUnless { it.isRecycled }
     }
 

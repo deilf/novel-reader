@@ -1,0 +1,142 @@
+{
+  "apple": {
+    "width": 16,
+    "height": 16
+  },
+  "book": {
+    "width": 16,
+    "height": 16
+  },
+  "clock": {
+    "width": 16,
+    "height": 16
+  },
+  "cobblestone": {
+    "width": 16,
+    "height": 16
+  },
+  "compass": {
+    "width": 16,
+    "height": 16
+  },
+  "creeper-body": {
+    "width": 8,
+    "height": 12
+  },
+  "creeper-face": {
+    "width": 8,
+    "height": 8
+  },
+  "creeper-foot": {
+    "width": 4,
+    "height": 6
+  },
+  "creeper": {
+    "width": 64,
+    "height": 32
+  },
+  "deepslate": {
+    "width": 16,
+    "height": 16
+  },
+  "diamond-ore": {
+    "width": 16,
+    "height": 16
+  },
+  "diamond-pickaxe": {
+    "width": 16,
+    "height": 16
+  },
+  "diamond": {
+    "width": 16,
+    "height": 16
+  },
+  "dirt": {
+    "width": 16,
+    "height": 16
+  },
+  "emerald": {
+    "width": 16,
+    "height": 16
+  },
+  "enchanted-book": {
+    "width": 16,
+    "height": 16
+  },
+  "ender-pearl": {
+    "width": 16,
+    "height": 16
+  },
+  "fire": {
+    "width": 16,
+    "height": 512
+  },
+  "grass-side": {
+    "width": 16,
+    "height": 16
+  },
+  "grass-top-tinted": {
+    "width": 16,
+    "height": 16
+  },
+  "grass-top": {
+    "width": 16,
+    "height": 16
+  },
+  "heart": {
+    "width": 9,
+    "height": 9
+  },
+  "hotbar-selection": {
+    "width": 24,
+    "height": 23
+  },
+  "hotbar": {
+    "width": 182,
+    "height": 22
+  },
+  "map-background": {
+    "width": 64,
+    "height": 64
+  },
+  "map": {
+    "width": 16,
+    "height": 16
+  },
+  "mossy-cobblestone": {
+    "width": 16,
+    "height": 16
+  },
+  "oak-leaves-tinted": {
+    "width": 16,
+    "height": 16
+  },
+  "oak-leaves": {
+    "width": 16,
+    "height": 16
+  },
+  "oak-log": {
+    "width": 16,
+    "height": 16
+  },
+  "oak-planks": {
+    "width": 16,
+    "height": 16
+  },
+  "stone": {
+    "width": 16,
+    "height": 16
+  },
+  "torch": {
+    "width": 16,
+    "height": 16
+  },
+  "water-frame": {
+    "width": 16,
+    "height": 16
+  },
+  "water": {
+    "width": 16,
+    "height": 512
+  }
+}

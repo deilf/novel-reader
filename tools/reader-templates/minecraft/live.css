@@ -1,0 +1,120 @@
+/* The page paints behind every system inset. Only its content is inset. */
+:root { --mc-sky-top: #569bbd; --mc-sky-bottom: #bee5d6; --mc-star-opacity: 0; --mc-celestial-x: 54%; --mc-celestial-y: 12%; }
+[data-reader-page] { padding: 0; }
+.mc-page { --mc-side: 19px; --mc-header: 142px; --mc-footer: 70px; --mc-bottom: 12px; --mc-top: 0px; grid-template-rows: calc(var(--mc-header) + var(--reader-safe-top, 0px)) minmax(0, 1fr) var(--mc-footer); padding: var(--mc-top) calc(var(--mc-side) + var(--reader-safe-right, 0px)) calc(var(--mc-bottom) + var(--reader-safe-bottom, 0px)) calc(var(--mc-side) + var(--reader-safe-left, 0px)); }
+.mc-cave { --mc-header: 53px; --mc-top: 15px; padding-top: calc(var(--mc-top) + var(--reader-safe-top, 0px)); grid-template-rows: var(--mc-header) minmax(0, 1fr) var(--mc-footer); }
+.mc-page::after { border-width: 3px; }
+.mc-sky { margin-left: calc(0px - var(--mc-side) - var(--reader-safe-left, 0px)); margin-right: calc(0px - var(--mc-side) - var(--reader-safe-right, 0px)); background: linear-gradient(var(--mc-sky-top), var(--mc-sky-bottom)); }
+/* A continuous shaded sky strip keeps white system icons readable at noon. */
+.mc-sky::before { content: ""; position: absolute; z-index: 6; inset: 0 0 auto; height: calc(var(--reader-safe-top, 0px) + 24px); background: linear-gradient(#102532bd, #163b4852 58%, transparent); pointer-events: none; }
+.mc-world-edge { top: calc(129px + var(--reader-safe-top, 0px)); }
+.mc-world-name { top: calc(15px + var(--reader-safe-top, 0px)); left: calc(20px + var(--reader-safe-left, 0px)); }
+.mc-edition { color: #eef7e5; text-shadow: 1px 1px #244c4d; font-size: 5px; letter-spacing: .8px; }
+.mc-world-name strong { color: #e6e1cb; text-shadow: -2px -2px #273936, 2px -2px #273936, -2px 2px #273936, 2px 2px #273936, 0 3px #718779, 0 6px #253c37, 2px 7px #172a3073; }
+.mc-world-caption { color: #f0f4d7; font-size: 9px; letter-spacing: 3px; text-shadow: 1px 1px #214d49; }
+.mc-book-sign { bottom: 15px; left: calc(19px + var(--reader-safe-left, 0px)); width: 48%; background: linear-gradient(#294c40ec, #213c35f7); border-color: #c6cc8b99; box-shadow: inset 1px 1px #e8e0ac33, 0 2px #1b3125, 2px 3px #172b256b; }
+.mc-book-sign::before, .mc-book-sign::after { content: ""; position: absolute; width: 2px; height: 2px; background: #cdbd7e; top: 2px; }
+.mc-book-sign::before { left: 2px; } .mc-book-sign::after { right: 2px; }
+.mc-landscape { right: -15px; bottom: -8px; width: 233px; height: 140px; }
+.mc-celestial-track { position: absolute; top: calc(5px + var(--reader-safe-top, 0px)); bottom: 10px; left: 8px; right: 8px; pointer-events: none; }
+.mc-sun, .mc-moon { position: absolute; left: var(--mc-celestial-x); top: var(--mc-celestial-y); width: 40px; height: 40px; transform: translate(-50%, -50%); right: auto; background: url("{{asset:sun-disc}}") center/100% 100% no-repeat; box-shadow: none; image-rendering: pixelated; }
+.mc-sun::after { content: ""; position: absolute; inset: 9px; box-shadow: 0 0 0 6px #fff2bf24, 0 0 0 12px #ffe49c12; }
+.mc-moon { display: none; width: 29px; height: 29px; background-image: url("{{asset:moon-disc}}"); filter: drop-shadow(0 0 5px #c8deff60); }
+[data-mc-celestial="moon"] .mc-sun { display: none; }
+[data-mc-celestial="moon"] .mc-moon { display: block; }
+.mc-mountains { position: absolute; bottom: 0; left: 0; right: 0; height: 75px; background: #326d7399; clip-path: polygon(0 76%, 8% 76%, 8% 55%, 16% 55%, 16% 37%, 22% 37%, 22% 63%, 32% 63%, 32% 48%, 39% 48%, 39% 25%, 47% 25%, 47% 45%, 54% 45%, 54% 16%, 61% 16%, 61% 0, 67% 0, 67% 21%, 72% 21%, 72% 43%, 81% 43%, 81% 65%, 88% 65%, 88% 34%, 95% 34%, 95% 66%, 100% 66%, 100% 100%, 0 100%); pointer-events: none; }
+.mc-mountains-near { height: 49px; opacity: .6; background: #285949; transform: scaleX(-1); }
+.mc-cloud-one { top: calc(34px + var(--reader-safe-top, 0px)); right: 70px; opacity: .6; }
+.mc-cloud-two { top: calc(68px + var(--reader-safe-top, 0px)); opacity: .4; }
+[data-mc-phase="night"] .mc-cloud { opacity: .13; }
+[data-mc-phase="night"] .mc-landscape { filter: brightness(.74) saturate(.8); }
+[data-mc-phase="dusk"] .mc-landscape { filter: sepia(.18) brightness(.89); }
+.mc-stars { position: absolute; inset: var(--reader-safe-top, 0px) 0 18px; opacity: var(--mc-star-opacity); pointer-events: none; }
+.mc-stars i { position: absolute; width: 2px; height: 2px; background: #e5e9d3; box-shadow: 0 0 0 2px #d9e9f013; }
+.mc-stars i:nth-child(1) { left: 9%; top: 14%; } .mc-stars i:nth-child(2) { left: 28%; top: 8%; } .mc-stars i:nth-child(3) { left: 49%; top: 24%; } .mc-stars i:nth-child(4) { left: 65%; top: 15%; } .mc-stars i:nth-child(5) { left: 82%; top: 31%; } .mc-stars i:nth-child(6) { left: 95%; top: 9%; } .mc-stars i:nth-child(7) { left: 74%; top: 56%; } .mc-stars i:nth-child(8) { left: 35%; top: 64%; }
+.mc-biome { display: flex; gap: 4px; align-items: center; right: 12px; bottom: 4px; font-size: 4px; color: #eef1d4; }
+.mc-day-symbol { display: inline-block; flex: none; width: 14px; height: 14px; background: url("{{asset:sun-disc}}") center/22px 22px no-repeat; image-rendering: pixelated; }
+[data-mc-celestial="moon"] .mc-day-symbol { background-image: url("{{asset:moon-disc}}"); background-size: 13px 13px; }
+.mc-biome .mc-day-symbol { width: 7px; height: 7px; background-size: 12px 12px; }
+.mc-day-label::before { content: "DAY"; }
+[data-mc-phase="dawn"] .mc-day-label::before { content: "DAWN"; }
+[data-mc-phase="dusk"] .mc-day-label::before { content: "DUSK"; }
+[data-mc-phase="night"] .mc-day-label::before { content: "NIGHT"; }
+.mc-meadow { position: absolute; z-index: 2; bottom: 12px; right: 18px; width: 94px; height: 20px; pointer-events: none; }
+.mc-meadow i { position: absolute; bottom: 0; left: 8px; width: 18px; height: 22px; background: url("{{asset:poppy}}") center/contain no-repeat; }
+.mc-meadow i:nth-child(2) { left: 28px; width: 14px; height: 14px; background-image: url("{{asset:red-mushroom}}"); }
+.mc-meadow i:nth-child(3) { left: 70px; width: 21px; height: 21px; background-image: url("{{asset:short-grass}}"); filter: sepia(.3) saturate(2) hue-rotate(40deg); }
+.mc-hero-walkway { position: absolute; right: 41px; bottom: 26px; width: 80px; height: 53px; z-index: 3; pointer-events: none; }
+.mc-walker { position: absolute; left: 22px; bottom: 0; width: 30px; height: 49px; }
+.mc-mob { position: relative; width: 30px; height: 49px; image-rendering: pixelated; }
+.mc-mob-rig { position: absolute; inset: 0; }
+.mc-mob-shadow { position: absolute; bottom: -1px; left: -1px; width: 33px; height: 5px; background: #07160d4a; clip-path: polygon(12% 0, 82% 0, 100% 45%, 80% 100%, 13% 100%, 0 50%); }
+.mc-mob-head { position: absolute; top: 1px; left: 5px; width: 18px; height: 18px; background: url("{{asset:creeper-head-front}}") center/100% 100%; }
+.mc-mob-head::before { content: ""; position: absolute; width: 18px; height: 5px; left: 0; top: -5px; transform: skewX(-36deg); transform-origin: bottom; background: url("{{asset:creeper-head-top}}") center/100% 100%; }
+.mc-mob-head::after { content: ""; position: absolute; right: -4px; top: 0; width: 4px; height: 18px; transform: skewY(-54deg); transform-origin: left; background: linear-gradient(#071c284f, #071c284f), url("{{asset:creeper-head-side}}") center/100% 100%; }
+.mc-mob-torso { position: absolute; top: 18px; left: 7px; width: 15px; height: 22px; background: url("{{asset:creeper-torso}}") center/100% 100%; box-shadow: 3px -1px #28472a; }
+.mc-mob-leg { position: absolute; top: 36px; left: 5px; width: 8px; height: 12px; background: url("{{asset:creeper-leg}}") center/100% 100%; transform-origin: center 2px; box-shadow: 2px 0 #28452b; }
+.mc-mob-leg.mc-limb-front { left: 17px; }
+.mc-mob-arm { display: none; }
+.mc-limb-back { filter: brightness(.72); }
+.mc-mob-skeleton .mc-mob-head { left: 8px; width: 13px; background-image: url("{{asset:skeleton-head-side}}"); }
+.mc-mob-skeleton .mc-mob-head::before { width: 13px; background-image: url("{{asset:skeleton-head-top}}"); }
+.mc-mob-skeleton .mc-mob-head::after { right: -7px; width: 7px; background-image: linear-gradient(#18283824, #18283824), url("{{asset:skeleton-head-front}}"); }
+.mc-mob-skeleton .mc-mob-torso { width: 10px; height: 17px; top: 19px; left: 11px; box-shadow: 2px 0 #7b8380; background-image: url("{{asset:skeleton-torso}}"); }
+.mc-mob-skeleton .mc-mob-leg { top: 33px; left: 9px; width: 4px; height: 18px; box-shadow: 1px 0 #697774; background-image: url("{{asset:skeleton-leg}}"); }
+.mc-mob-skeleton .mc-mob-leg.mc-limb-front { left: 18px; }
+.mc-mob-skeleton .mc-mob-arm { display: block; position: absolute; top: 19px; left: 9px; width: 4px; height: 18px; background: url("{{asset:skeleton-arm}}") center/100% 100%; transform-origin: center 2px; transform: rotate(-68deg); box-shadow: 1px 0 #697774; }
+.mc-mob-skeleton .mc-mob-arm.mc-limb-front { left: 18px; transform: rotate(-76deg); }
+.mc-bow { position: absolute; left: 26px; top: 15px; width: 25px; height: 25px; }
+.mc-bow i { position: absolute; inset: 0; background: url("{{asset:bow}}") center/100% 100% no-repeat; transform: rotate(135deg); image-rendering: pixelated; }
+.mc-bow .mc-bow-draw-0 { opacity: 0; background-image: url("{{asset:bow-pulling-0}}"); }
+.mc-bow .mc-bow-draw-1 { opacity: 0; background-image: url("{{asset:bow-pulling-1}}"); }
+.mc-bow .mc-bow-draw-2 { opacity: 0; background-image: url("{{asset:bow-pulling-2}}"); }
+.mc-motes, .mc-cave-sparks { position: absolute; z-index: 4; pointer-events: none; bottom: 18px; right: 12px; width: 138px; height: 45px; }
+.mc-motes i, .mc-cave-sparks i { position: absolute; width: 2px; height: 2px; background: #edec9f; box-shadow: 0 0 4px #f4e88080; opacity: .4; }
+.mc-motes i:nth-child(1), .mc-cave-sparks i:nth-child(1) { left: 15px; bottom: 4px; }
+.mc-motes i:nth-child(2), .mc-cave-sparks i:nth-child(2) { left: 72px; bottom: 12px; }
+.mc-motes i:nth-child(3), .mc-cave-sparks i:nth-child(3) { right: 7px; bottom: 3px; }
+.mc-cave-sparks { right: 0; bottom: 88px; width: 15px; height: 80px; }
+.mc-cave-sparks i { background: #89ecdc; box-shadow: 0 0 4px #58f7d960; }
+.mc-cave-sparks i:nth-child(1) { left: 1px; } .mc-cave-sparks i:nth-child(2) { left: 7px; bottom: 48px; }
+.mc-cave-heading { padding-right: 97px; }
+.mc-cave-diorama { position: absolute; width: 92px; height: 59px; right: -2px; bottom: -2px; pointer-events: none; background: radial-gradient(ellipse at 85% 34%, #ffd18927, transparent 64%); }
+.mc-cave-diorama .mc-walker { left: 0; bottom: 8px; }
+.mc-cave-diorama .mc-mob { transform: scale(.8); transform-origin: bottom; }
+.mc-cave-ground { position: absolute; bottom: 0; height: 9px; width: 100%; background: linear-gradient(#7a9c8b77 0 2px, #121e25ad 2px), url("{{asset:deepslate}}") 0 0/32px 32px; border-bottom: 2px solid #0b1e22; }
+.mc-cave-crystal { position: absolute; bottom: 8px; left: 39px; width: 16px; height: 19px; background: url("{{asset:amethyst}}") center/contain no-repeat; }
+.mc-target { position: absolute; right: 3px; bottom: 9px; width: 16px; height: 16px; background: url("{{asset:target}}") center/100% 100% no-repeat; image-rendering: pixelated; box-shadow: 2px 1px #634838, 0 1px #d9c49b; }
+.mc-target::after { content: ""; position: absolute; top: 16px; left: 7px; width: 3px; height: 7px; background: #6f6345; }
+.mc-target-flash { position: absolute; inset: -2px; border: 1px solid #ffe2a6; opacity: 0; box-shadow: 0 0 4px #ffcf7766; }
+.mc-arrow-range { position: absolute; inset: 0; overflow: hidden; contain: paint; pointer-events: none; }
+.mc-arrow { position: absolute; left: 31px; top: 27px; width: 12px; height: 12px; opacity: 0; }
+.mc-arrow i { position: absolute; inset: 0; background: url("{{asset:arrow}}") center/100% 100% no-repeat; transform: rotate(45deg); image-rendering: pixelated; }
+.mc-cave-lantern { position: absolute; right: 4px; top: -1px; width: 15px; height: 27px; transform-origin: top center; background: linear-gradient(90deg, transparent 6px, #6f8e84 6px 8px, transparent 8px) top/100% 10px no-repeat; }
+.mc-cave-lantern::before { content: ""; position: absolute; width: 8px; height: 11px; bottom: 0; left: 4px; background: linear-gradient(#ffe6a3 0 2px, #dfa556 2px 8px, #e9bb68 8px); border: 2px solid #6b7a73; box-shadow: 0 0 7px #ffc26268; }
+.mc-cave-lantern::after { content: ""; position: absolute; width: 3px; height: 7px; bottom: 3px; left: 8px; background: #fff0b0; }
+.mc-paper { background-image: linear-gradient(90deg, #e2d9bd2e, transparent 22% 80%, #cbbc9f27); }
+.mc-cave .mc-paper { background-image: linear-gradient(110deg, #fff6d737, transparent 60%); }
+.mc-footer { padding: 3px 4px 0; box-sizing: border-box; }
+.mc-footer::before { content: ""; position: absolute; inset: -3px -7px -4px; z-index: -1; background: linear-gradient(#1a332ed9, #152d2beb); border: 1px solid #96b18a6b; box-shadow: inset 0 1px #e6eaca17, 0 2px #0d261c80; pointer-events: none; }
+.mc-cave .mc-footer::before { background: linear-gradient(#152e32e6, #10242aee); border-color: #68a39b6b; }
+.mc-status { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; height: 17px; font-size: 8px; }
+.mc-time { gap: 4px; }
+.mc-folio { gap: 4px; }
+.mc-folio > .mc-page-total { color: #b9c9a8; font-size: 6px; }
+.mc-completion { justify-self: end; font-size: 6px; }
+.mc-xp { margin: 4px 0 6px; height: 4px; border-color: #061c13; }
+.mc-hotbar { --mc-unit: 1.3px; width: calc(182 * var(--mc-unit)); height: calc(22 * var(--mc-unit)); padding: 0 var(--mc-unit); }
+.mc-hotbar .mc-item { width: calc(16 * var(--mc-unit)); height: calc(16 * var(--mc-unit)); }
+.mc-hotbar-active, .mc-cave .mc-hotbar-active { left: calc(-1 * var(--mc-unit)); top: calc(-1 * var(--mc-unit)); width: calc(24 * var(--mc-unit)); height: calc(24 * var(--mc-unit)); transform: translateX(calc(var(--mc-slot, 0) * 20 * var(--mc-unit))); }
+.mc-inventory { height: 30px; gap: 12px; }
+.mc-hearts { flex-direction: row; flex-wrap: wrap; width: 19px; gap: 1px; }
+.mc-hearts i:last-child { margin-left: 5px; }
+.mc-inventory-mark { width: 19px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.mc-inventory-mark .mc-item { width: 13px; height: 13px; }
+@media (min-width: 600px) { .mc-page { --mc-side: 35px; } .mc-world-name { left: calc(36px + var(--reader-safe-left, 0px)); } .mc-book-sign { left: calc(35px + var(--reader-safe-left, 0px)); } .mc-landscape { right: 30px; width: 260px; height: 148px; } .mc-hero-walkway { right: 97px; } .mc-meadow { right: 56px; } .mc-biome { right: 33px; } }
+@media (max-width: 370px) { .mc-inventory { gap: 8px; } .mc-hotbar { --mc-unit: 1.15px; } .mc-cave-heading { padding-right: 72px; } .mc-cave-diorama { width: 72px; } .mc-cave-crystal { left: 32px; width: 13px; height: 15px; } .mc-depth { font-size: 5px; } .mc-world-name strong { font-size: 18px; } }
+@media (max-width: 340px) { .mc-page { --mc-side: 13px; } .mc-world-name { left: calc(14px + var(--reader-safe-left, 0px)); } .mc-book-sign { left: calc(13px + var(--reader-safe-left, 0px)); width: 48%; } .mc-landscape { right: -23px; width: 193px; height: 120px; } .mc-hero-walkway { right: 22px; bottom: 24px; } .mc-mob { transform: scale(.86); transform-origin: bottom; } .mc-folio > .mc-page-total { font-size: 5px; } .mc-world-caption { letter-spacing: 1px; } }
+@media (max-height: 560px) { .mc-page { --mc-header: 71px; --mc-footer: 30px; --mc-bottom: 8px; } .mc-cave { --mc-header: 35px; --mc-top: 9px; } .mc-world-name { top: calc(8px + var(--reader-safe-top, 0px)); } .mc-world-edge { top: calc(62px + var(--reader-safe-top, 0px)); } .mc-world-name strong { font-size: 17px; } .mc-book-sign { left: auto; right: calc(13px + var(--reader-safe-right, 0px)); bottom: 7px; width: 41%; } .mc-landscape { width: 160px; height: 94px; right: 0; bottom: -7px; } .mc-hero-walkway, .mc-meadow, .mc-biome, .mc-motes, .mc-cave-diorama, .mc-stars, .mc-cave-sparks { display: none; } .mc-cave-heading { padding-right: 0; } .mc-footer { padding-top: 0; } .mc-status { height: 14px; font-size: 7px; } .mc-xp { margin-top: 3px; margin-bottom: 0; } .mc-mountains { height: 38px; } .mc-mountains-near { height: 24px; } .mc-sun { width: 27px; height: 27px; } .mc-moon { width: 19px; height: 19px; } }
+@media (max-height: 320px) { .mc-page { --mc-header: 40px; --mc-footer: 22px; --mc-bottom: 5px; } .mc-cave { --mc-header: 24px; --mc-top: 6px; } .mc-world-name { top: calc(11px + var(--reader-safe-top, 0px)); } .mc-world-name strong { font-size: 13px; } .mc-world-edge { top: calc(30px + var(--reader-safe-top, 0px)); } .mc-celestial-track, .mc-mountains { display: none; } .mc-status { height: 12px; font-size: 6px; } .mc-xp { margin-top: 2px; height: 3px; } .mc-day-symbol { width: 12px; height: 12px; } }
+@media (prefers-reduced-motion: reduce) { .mc-mob-rig, .mc-walker, .mc-mob-leg, .mc-mob-arm, .mc-motes i, .mc-cave-sparks i { animation: none !important; } }

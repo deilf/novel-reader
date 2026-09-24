@@ -8,6 +8,21 @@
 	(global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Paged = {}));
 })(this, (function (exports) { 'use strict';
 
+	// Legado: these helpers return geometry, never the measuring Range. Keep one
+	// per document instead of leaving a live Range behind for every text node.
+	// Chromium updates live ranges on each subsequent overflow extraction/clone.
+	const textMeasureRanges = new WeakMap();
+	function textMeasureRange(element) {
+		const owner = element.ownerDocument || document;
+		let range = textMeasureRanges.get(owner);
+		if (!range) {
+			range = owner.createRange();
+			textMeasureRanges.set(owner, range);
+		}
+		range.selectNode(element);
+		return range;
+	}
+
 	function getBoundingClientRect(element) {
 		if (!element) {
 			return;
@@ -16,8 +31,7 @@
 		if (typeof element.getBoundingClientRect !== "undefined") {
 			rect = element.getBoundingClientRect();
 		} else {
-			let range = document.createRange();
-			range.selectNode(element);
+			let range = textMeasureRange(element);
 			rect = range.getBoundingClientRect();
 		}
 		return rect;
@@ -31,8 +45,7 @@
 		if (typeof element.getClientRects !== "undefined") {
 			rect = element.getClientRects();
 		} else {
-			let range = document.createRange();
-			range.selectNode(element);
+			let range = textMeasureRange(element);
 			rect = range.getClientRects();
 		}
 		return rect;
@@ -514,14 +527,15 @@
 		let currentOffset = 0;
 		let currentLetter;
 
-		let range;
+		let range, reusableRange;
 		const significantWhitespaces = node.parentElement && node.parentElement.nodeName === "PRE";
 
 		while (currentOffset < max) {
 			currentLetter = currentText[currentOffset];
 			if (/^[\S\u202F\u00A0]$/.test(currentLetter) || significantWhitespaces) {
 				if (!range) {
-					range = document.createRange();
+					// textBreak consumes each word before asking for the next one.
+					range = reusableRange || (reusableRange = document.createRange());
 					range.setStart(node, currentOffset);
 				}
 			} else {
@@ -547,11 +561,12 @@
 		let currentOffset = wordRange.startOffset;
 		// let currentLetter;
 
-		let range;
+		// The internal textBreak walker consumes one character at a time. It does
+		// not retain prior ranges; allocating one per UTF-16 unit is unnecessary.
+		let range = document.createRange();
 
 		while(currentOffset < max) {
 			 // currentLetter = currentText[currentOffset];
-			 range = document.createRange();
 			 range.setStart(currentText, currentOffset);
 			 range.setEnd(currentText, currentOffset+1);
 

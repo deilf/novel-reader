@@ -19,8 +19,8 @@ import java.util.Locale
  * image IDs still require the existing current-session/image-action gate afterward.
  */
 object EpubTemplateBridgePolicy {
-    const val MAX_RAW_CHARS = 256 * 1024
-    const val MAX_SELECTION_CHARS = 64 * 1024
+    const val MAX_RAW_CHARS = 6 * 128 * 1024 + 64 * 1024
+    const val MAX_SELECTION_CHARS = 128 * 1024
     const val MAX_SELECTION_RECTS = 512
     const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L
 
@@ -34,6 +34,7 @@ object EpubTemplateBridgePolicy {
         "error" to setOf("message"),
         "metrics" to setOf("pageCount", "pageIndex", "layoutRevision"),
         "renderState" to setOf("visualRevision", "layoutPending"),
+        "contentChanged" to setOf("revision"),
         "textPosition" to setOf("page", "revision", "offset"),
         "selection" to setOf("text", "rects", "viewportWidth", "viewportHeight"),
         "sourceImage" to setOf("page", "revision", "imageId", "sequence"),
@@ -78,6 +79,7 @@ object EpubTemplateBridgePolicy {
                     count != null && index != null && index < count && payload.integer("layoutRevision") != null
                 }
                 "renderState" -> payload.integer("visualRevision") != null && payload.boolean("layoutPending") != null
+                "contentChanged" -> payload.integer("revision") != null
                 "textPosition" -> payload.pageAndRevision() && payload.integer("offset", max = Int.MAX_VALUE.toLong()) != null
                 "selection" -> validSelection(payload)
                 "sourceImage" -> payload.pageAndRevision() && payload.integer("sequence", min = 1) != null &&

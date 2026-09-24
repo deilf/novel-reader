@@ -51,6 +51,7 @@ import io.legado.app.model.localBook.epubcore.direct.EpubDirectSession
 import io.legado.app.model.localBook.epubcore.layout.EpubCoreLayoutConfig
 import io.legado.app.model.localBook.epubcore.layout.EpubReaderChromeData
 import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplate
+import io.legado.app.model.localBook.epubcore.template.EpubTemplateLayoutPolicy
 import io.legado.app.ui.book.read.config.rememberReaderMenuDialogStyle
 import io.legado.app.ui.widget.compose.AppDialogStyle
 import io.legado.app.ui.widget.compose.ComposeDialogFragment
@@ -229,7 +230,10 @@ class ReaderTemplatePreviewDialog : ComposeDialogFragment() {
         val initialPosition = position
         val initialPage = initialPosition?.pageIndex ?: 0
         val initialFragment = initialPosition?.characterPosition?.let { "__legado_text_$it" }
-        val config = current.config.copy(pageWidthPx = width, pageHeightPx = height, readerTemplate = current.template)
+        val config = EpubTemplateLayoutPolicy.isolate(
+            current.config.copy(pageWidthPx = width, pageHeightPx = height, readerTemplate = current.template),
+            resources.displayMetrics.density
+        )
         prepareJob = lifecycleScope.launch {
             try {
                 delay(100) // Coalesce layout changes while the window is appearing or resizing.

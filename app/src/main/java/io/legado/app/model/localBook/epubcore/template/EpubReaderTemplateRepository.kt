@@ -24,6 +24,19 @@ internal class EpubReaderTemplateRepository(
     @Synchronized
     fun resolve(id: String): EpubReaderTemplate? = list().firstOrNull { it.id == id }
 
+    /** A template reader must always have a template, including after deleting its selection. */
+    @Synchronized
+    fun resolveRequired(preferredId: String, defaultId: String): EpubReaderTemplate {
+        val available = list()
+        available.firstOrNull { it.id == preferredId }?.let { return it }
+        available.firstOrNull { it.id == defaultId }?.let { return it }
+        available.firstOrNull()?.let { return it }
+        val fallback = requireNotNull(builtIns.firstOrNull { it.id == defaultId }) { "缺少默认页面模板" }
+        val stored = readStored()
+        writeStored(stored.copy(hiddenBuiltInIds = stored.hiddenBuiltInIds - defaultId))
+        return requireNotNull(resolve(defaultId)) { "无法恢复默认页面模板：" + fallback.name }
+    }
+
     @Synchronized
     fun save(template: EpubReaderTemplate): EpubReaderTemplate {
         EpubReaderTemplateLibrary(listOf(template)).validate()

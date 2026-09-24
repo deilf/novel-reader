@@ -18,7 +18,8 @@ internal object EpubReaderBackgroundPolicy {
             fullPageArtwork = activeChapter.fullPageArtwork,
             implicitSinglePage = activeChapter.implicitSinglePage,
             duokanGallery = activeChapter.duokanGallery,
-            publisherPageBackground = activeChapter.publisherPageBackground
+            publisherPageBackground = activeChapter.publisherPageBackground,
+            readerTemplateActive = activeChapter.readerTemplate != null || config?.readerTemplate != null
         )
     }
 
@@ -28,9 +29,10 @@ internal object EpubReaderBackgroundPolicy {
         fullPageArtwork: Boolean,
         implicitSinglePage: Boolean,
         duokanGallery: Boolean,
-        publisherPageBackground: Boolean
+        publisherPageBackground: Boolean,
+        readerTemplateActive: Boolean = false
     ): Boolean {
-        return readerBackgroundImage &&
+        return !readerTemplateActive && readerBackgroundImage &&
             layoutMode == EpubDirectLayoutMode.REFLOWABLE &&
             !fullPageArtwork &&
             !implicitSinglePage &&

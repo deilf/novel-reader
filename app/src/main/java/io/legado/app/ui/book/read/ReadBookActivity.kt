@@ -150,6 +150,7 @@ import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplate
 import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.model.localBook.epubcore.template.EpubTemplateException
 import io.legado.app.model.localBook.epubcore.template.EpubTemplateActiveClock
+import io.legado.app.model.localBook.epubcore.template.EpubTemplateLayoutPolicy
 import io.legado.app.model.localBook.MobiFile
 import io.legado.app.receiver.NetworkChangedListener
 import io.legado.app.receiver.TimeBatteryReceiver
@@ -187,9 +188,11 @@ import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.ui.book.read.page.provider.LayoutProgressListener
 import io.legado.app.ui.book.read.epub.EpubChapterNavigationPolicy
+import io.legado.app.ui.book.read.epub.EpubTemplateSafeAreaPolicy
 import io.legado.app.ui.book.read.epub.EpubDirectAutoPager
 import io.legado.app.ui.book.read.epub.EpubDirectFailureDiagnostics
 import io.legado.app.ui.book.read.epub.EpubReadView
+import io.legado.app.ui.book.read.epub.EpubLoadingWindowOverlay
 import io.legado.app.ui.book.read.epub.ReaderTemplatePreviewDialog
 import io.legado.app.ui.book.read.epub.EpubDirectInitialFragmentPolicy
 import io.legado.app.ui.book.read.epub.EpubDirectNavigationTargetPolicy
@@ -303,7 +306,6 @@ class ReadBookActivity : BaseReadBookActivity(),
     private var pendingReadAloudPlayerOpen = false
     private var pendingReadAloudPanelIntentOpen = false
     private val shelfExitRequestGate = ShelfExitRequestGate()
-    private val failedReaderTemplateHashes = HashSet<String>()
     private var requestedReaderTemplate: EpubReaderTemplate? = null
 
     private val tocActivity =
@@ -531,6 +533,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     private var libraryCloudSession: LibraryCloudSession? = null
     private var libraryCloudState: LibraryCloudState = LibraryCloudState.DISABLED
     private var lastReaderNightMode = AppConfig.isNightTheme
+    private var epubLoadingWindow: EpubLoadingWindowOverlay? = null
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onActivityCreated(savedInstanceState: Bundle?) {
@@ -548,8 +551,12 @@ class ReadBookActivity : BaseReadBookActivity(),
             consumeGlobalReadAloudPanelOpen()
         }
         binding.epubReadView.setListener(object : EpubReadView.Listener {
+            override fun onLoadingPresentationChanged() {
+                upSystemUiVisibility()
+            }
+
             override fun onCenterTap(x: Float, y: Float) {
-                showActionMenu()
+                if (binding.epubReadView.hasDirectContent) showActionMenu() else showMenuBar()
             }
 
             override fun onTapAction(action: Int, x: Float, y: Float) {
@@ -642,7 +649,6 @@ class ReadBookActivity : BaseReadBookActivity(),
 
             override fun onDirectRenderError(message: String, throwable: Throwable?) {
                 epubDirectAutoPager.stop()
-                if (throwable is EpubTemplateException && recoverReaderTemplate(throwable)) return
                 finishDirectEpubFailure(
                     message = message,
                     throwable = throwable,
@@ -1390,67 +1396,41 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * view触摸,文字选择
      */
+    private var activeSelectionCursor: View? = null
+    private var selectionPointerOffsetX = 0f
+    private var selectionPointerOffsetY = 0f
+    private val selectionScreenLocation = IntArray(2)
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouch(v: View, event: MotionEvent): Boolean = binding.run {
-        if (!binding.readView.isTextSelected && !(epubCoreActive && binding.epubReadView.isTextSelected)) {
-            return false
-        }
-        when (event.action) {
+        // EPUB uses WebView's own selection handles. These cursors belong to the native reader.
+        if (epubCoreActive || !binding.readView.isTextSelected) return false
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                activeSelectionCursor = v
+                v.getLocationOnScreen(selectionScreenLocation)
+                selectionPointerOffsetX = selectionScreenLocation[0] + (if (v.id == R.id.cursor_left) v.width else 0) - event.rawX
+                selectionPointerOffsetY = selectionScreenLocation[1] - event.rawY - 1f
                 textActionMenu.dismiss()
-                if (epubCoreActive) {
-                    binding.epubReadView.beginSelectionHandleDrag()
-                }
+                readView.beginSelectionHandleDrag(v.id == R.id.cursor_left)
             }
             MotionEvent.ACTION_MOVE -> {
-                when (v.id) {
-                    R.id.cursor_left -> {
-                        if (epubCoreActive) {
-                            binding.epubReadView.selectStartMoveOnScreen(event.rawX, event.rawY - cursorLeft.height / 2f)
-                        } else if (!readView.curPage.getReverseStartCursor()) {
-                            readView.curPage.selectStartMove(
-                                event.rawX + cursorLeft.width,
-                                event.rawY - cursorLeft.height
-                            )
-                        } else {
-                            readView.curPage.selectEndMove(
-                                event.rawX - cursorRight.width,
-                                event.rawY - cursorRight.height
-                            )
-                        }
-                    }
-
-                    R.id.cursor_right -> {
-                        if (epubCoreActive) {
-                            binding.epubReadView.selectEndMoveOnScreen(event.rawX, event.rawY - cursorRight.height / 2f)
-                        } else if (readView.curPage.getReverseEndCursor()) {
-                            readView.curPage.selectStartMove(
-                                event.rawX + cursorLeft.width,
-                                event.rawY - cursorLeft.height
-                            )
-                        } else {
-                            readView.curPage.selectEndMove(
-                                event.rawX - cursorRight.width,
-                                event.rawY - cursorRight.height
-                            )
-                        }
-                    }
-                }
+                if (activeSelectionCursor !== v) return@run true
+                val x = event.rawX + selectionPointerOffsetX
+                val y = event.rawY + selectionPointerOffsetY
+                readView.getLocationOnScreen(selectionScreenLocation)
+                readView.moveSelectionHandle(x - selectionScreenLocation[0], y - selectionScreenLocation[1])
             }
 
             MotionEvent.ACTION_UP -> {
-                readView.curPage.resetReverseCursor()
-                if (epubCoreActive) {
-                    binding.epubReadView.endSelectionHandleDrag()
-                } else {
-                    showTextActionMenu()
-                }
+                activeSelectionCursor = null
+                readView.endSelectionHandleDrag()
+                showTextActionMenu()
             }
 
-            MotionEvent.ACTION_CANCEL -> {
-                if (epubCoreActive) {
-                    binding.epubReadView.cancelSelectionHandleDrag()
-                }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> {
+                activeSelectionCursor = null
+                readView.endSelectionHandleDrag()
             }
         }
         return true
@@ -1460,6 +1440,12 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 更新文字选择开始位置
      */
     override fun upSelectedStart(x: Float, y: Float, top: Float) = binding.run {
+        if (!x.isFinite() || !y.isFinite() || !top.isFinite()) {
+            cursorLeft.alpha = 0f
+            if (activeSelectionCursor !== cursorLeft) cursorLeft.invisible()
+            return@run
+        }
+        cursorLeft.alpha = 1f
         cursorLeft.x = x - cursorLeft.width
         cursorLeft.y = y
         cursorLeft.visible(true)
@@ -1471,6 +1457,12 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 更新文字选择结束位置
      */
     override fun upSelectedEnd(x: Float, y: Float) = binding.run {
+        if (!x.isFinite() || !y.isFinite()) {
+            cursorRight.alpha = 0f
+            if (activeSelectionCursor !== cursorRight) cursorRight.invisible()
+            return@run
+        }
+        cursorRight.alpha = 1f
         cursorRight.x = x
         cursorRight.y = y
         cursorRight.visible(true)
@@ -1480,9 +1472,12 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 取消文字选择
      */
     override fun onCancelSelect() = binding.run {
+        activeSelectionCursor = null
         if (epubCoreActive) {
             clearEpubSelectionUi()
         } else {
+            readView.isTextSelected = false
+            readView.endSelectionHandleDrag()
             cursorLeft.invisible()
             cursorRight.invisible()
             textActionMenu.dismiss()
@@ -1977,7 +1972,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         val textChapter = ReadBook.curTextChapter ?: return null
         val selectStartPos = binding.readView.curPage.selectStartPos
         if (!selectStartPos.isSelected()) return null
-        val page = binding.readView.curPage.relativePage(selectStartPos.relativePagePos)
+        val page = binding.readView.curPage.selectedStartPage() ?: return null
         val line = page.getLine(selectStartPos.lineIndex)
         if (line.paragraphNum <= 0 || line.isTitle) return null
         val paragraphs = textChapter.getParagraphs(pageSplit = false)
@@ -2419,6 +2414,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         if (active) {
             readView.cancelSelect(true)
         }
+        if (epubReadView.hasLoadingPresentation || epubLoadingWindow?.isShowing == true) {
+            upSystemUiVisibility()
+        }
     }
 
     private fun deactivateEpubCore() {
@@ -2581,7 +2579,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         val requestedTextPosition = explicitTextPosition ?: ReadBook.durChapterPos
         val requestedTextRevision = ReadBook.directTextRevision
         val requestedTextSource = ReadBook.bookSource
-        val fontSource = ReadBookConfig.textFont
+        val fontSource = ReadBookConfig.textFont.takeIf { selectedReaderTemplate() == null }.orEmpty()
         val hadVisibleDocument = binding.epubReadView.hasDirectContent
         val reusableBoundaryConfig = binding.epubReadView.layoutConfig?.takeIf {
             effectiveBoundaryTransition && hadVisibleDocument &&
@@ -2753,9 +2751,6 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             return
         }
-        requestedReaderTemplate?.let { template ->
-            if (recoverReaderTemplate(EpubTemplateException(template.contentHash(), diagnosticMessage))) return
-        }
         cancelEpubCoreLoadTimeout()
         epubDirectAutoPager.onTurnFailed()
         binding.epubReadView.cancelPendingBoundaryTurn()
@@ -2792,32 +2787,11 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     private fun selectedReaderTemplate(): EpubReaderTemplate? {
         if (ReadBook.book?.isEpub != false) return null
-        return runCatching { EpubReaderTemplateStore.resolve(ReadBookConfig.config.readerTemplateId) }
-            .onFailure { AppLog.putDebug("读取页面模板失败", it) }.getOrNull()
-            ?.takeUnless { it.contentHash() in failedReaderTemplateHashes }
-    }
-
-    private fun recoverReaderTemplate(error: EpubTemplateException): Boolean {
-        val selected = selectedReaderTemplate() ?: return false
-        if (selected.contentHash() != error.templateHash || !failedReaderTemplateHashes.add(error.templateHash)) return false
-        val target = epubCoreLoadingChapterIndex ?: binding.epubReadView.currentPage()?.chapterIndex
-            ?: ReadBook.durChapterIndex
-        val fragment = epubCoreForegroundTarget?.targetFragmentId ?: "__legado_text_" +
-            (if (target == ReadBook.durChapterIndex) ReadBook.durChapterPos.coerceAtLeast(0) else 0)
-        val onFinish = epubDirectOnFinish
-        cancelEpubCoreLoadTimeout()
-        cancelEpubCorePrefetch()
-        epubCoreLoadJob?.cancel()
-        epubCoreLoadJob = null
-        epubCoreLoading = false
-        epubCoreLoadingChapterIndex = null
-        epubCoreForegroundTarget = null
-        requestedReaderTemplate = null
-        toastOnUi("模板渲染失败，本次阅读已恢复默认排版；模板源码已保留")
-        AppLog.putDebug("阅读模板已回退：${selected.name}", error)
-        loadDirectEpubContent(0, target, resetPageOffset = false, boundaryTransition = false,
-            onFinish = onFinish, targetFragmentId = fragment)
-        return true
+        return runCatching { EpubReaderTemplateStore.ensureReaderSelection() }.getOrElse {
+            // A damaged library must not re-enable native typography or overwrite user code.
+            AppLog.putDebug("读取页面模板失败，使用内置花间书页", it)
+            EpubReaderTemplateStore.defaultTemplate
+        }
     }
 
     override fun previewReaderTemplate(template: EpubReaderTemplate) {
@@ -2969,7 +2943,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     private fun applyEpubRendererStyleOnly() {
         val backgroundColor = prepareEpubReaderBackground()
         upEpubRendererStyle(backgroundColor)
-        val fontSource = ReadBookConfig.textFont
+        val fontSource = ReadBookConfig.textFont.takeIf { selectedReaderTemplate() == null }.orEmpty()
         val preparedFont = if (fontSource.isBlank()) {
             null
         } else {
@@ -3240,6 +3214,33 @@ class ReadBookActivity : BaseReadBookActivity(),
         val view = binding.epubReadView
         val template = selectedReaderTemplate()
         val scrollMode = ReadBook.pageAnim() == PageAnim.scrollPageAnim
+        val displayCutout = if (template != null || AppConfig.paddingDisplayCutouts) {
+            ViewCompat.getRootWindowInsets(view)
+                ?.getInsets(WindowInsetsCompat.Type.displayCutout())
+        } else {
+            null
+        }
+        if (template != null) {
+            val insets = ViewCompat.getRootWindowInsets(view)?.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val origin = IntArray(2)
+            view.getLocationInWindow(origin)
+            val safe = EpubTemplateSafeAreaPolicy.resolve(
+                window.decorView.width.coerceAtLeast(origin[0] + view.width),
+                window.decorView.height.coerceAtLeast(origin[1] + view.height),
+                origin[0], origin[1], view.width, view.height,
+                EpubTemplateSafeAreaPolicy.Insets(
+                    insets?.left ?: 0, insets?.top ?: 0, insets?.right ?: 0, insets?.bottom ?: 0
+                )
+            )
+            return EpubTemplateLayoutPolicy.isolate(EpubCoreLayoutConfig(
+                pageWidthPx = view.width, pageHeightPx = view.height, textPaint = TextPaint(),
+                readerSafeInsetLeftPx = safe.left, readerSafeInsetTopPx = safe.top,
+                readerSafeInsetRightPx = safe.right, readerSafeInsetBottomPx = safe.bottom,
+                scrollMode = scrollMode, readerTemplate = template
+            ), resources.displayMetrics.density)
+        }
         val textPaint = TextPaint().apply {
             isAntiAlias = true
             color = ReadBookConfig.textColor
@@ -3248,12 +3249,6 @@ class ReadBookActivity : BaseReadBookActivity(),
             typeface = ChapterProvider.contentPaint.typeface
         }
         val readerFontName = epubCoreReaderFontName()
-        val displayCutout = if (AppConfig.paddingDisplayCutouts) {
-            ViewCompat.getRootWindowInsets(view)
-                ?.getInsets(WindowInsetsCompat.Type.displayCutout())
-        } else {
-            null
-        }
         val textHeightPx = textPaint.textHeight
         val paragraphIndentPx = ReadBookConfig.paragraphIndent.takeIf { it.isNotEmpty() }?.let {
             var width = StaticLayout.getDesiredWidth(it, textPaint)
@@ -3290,8 +3285,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             backgroundColor = backgroundColor,
             selectionColor = ContextCompat.getColor(this, R.color.btn_bg_press_2),
             readerBackgroundImage = epubReaderUsesImageBackground(),
-            readerChrome = if (template == null) buildEpubReaderChromeConfig() else EpubReaderChromeConfig.DISABLED,
-            readerTemplate = template
+            readerChrome = buildEpubReaderChromeConfig()
         )
     }
 
@@ -3413,8 +3407,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         // EpubDirectWebLayer after checking the active chapter's background policy.
         binding.epubReadView.background = null
         binding.epubReadView.setBackgroundColor(backgroundColor)
-        binding.epubReadView.overlayTextColor = ReadBookConfig.textColor
-        binding.epubReadView.overlayTextSizePx = ReadBookConfig.textSize.toFloat().spToPx()
+        binding.epubReadView.loadingNightMode = AppConfig.isNightTheme
         binding.epubReadView.invalidate()
     }
 
@@ -3431,6 +3424,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun prepareEpubReaderBackground(): Int {
+        if (selectedReaderTemplate() != null) return android.graphics.Color.WHITE
         val metrics = resources.displayMetrics
         val width = binding.epubReadView.width.takeIf { it > 0 } ?: metrics.widthPixels
         val height = binding.epubReadView.height.takeIf { it > 0 } ?: metrics.heightPixels
@@ -3439,10 +3433,12 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun epubReaderUsesImageBackground(): Boolean {
+        if (selectedReaderTemplate() != null) return false
         return ReadBookConfig.durConfig.curBgType() != 0
     }
 
     private fun epubReaderBackgroundColor(): Int {
+        if (selectedReaderTemplate() != null) return android.graphics.Color.WHITE
         val config = ReadBookConfig.durConfig
         return runCatching {
             if (config.curBgType() == 0) {
@@ -3652,6 +3648,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         fontSource: String,
         font: EpubPreparedReaderFont?
     ): EpubCoreLayoutConfig {
+        if (readerTemplate != null) return this
         if (fontSource.isNotBlank()) {
             check(font != null) { "Custom EPUB reader font is not prepared" }
         }
@@ -4176,7 +4173,8 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 显示阅读样式配置
      */
     override fun showReadStyle() {
-        showDialogFragment<ReadStyleDialog>()
+        if (ReadBook.usesPageTemplate()) showDialogFragment<io.legado.app.ui.book.read.config.ReaderTemplateDialog>()
+        else showDialogFragment<ReadStyleDialog>()
     }
 
     /**
@@ -4814,6 +4812,7 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 更新状态栏,导航栏
      */
     override fun upSystemUiVisibility() {
+        epubLoadingWindow?.restoreSystemBars()
         if (binding.readAloudPlayerPanel.isFullPanelActive()) {
             applyReadAloudPlayerSystemBars()
         } else {
@@ -4821,6 +4820,16 @@ class ReadBookActivity : BaseReadBookActivity(),
             upSystemUiVisibility(isInMultiWindow, !menuLayoutIsVisible, bottomDialog > 0)
             upNavigationBarColor()
         }
+        syncEpubLoadingWindow()
+    }
+
+    private fun syncEpubLoadingWindow() {
+        val show = epubCoreActive && binding.epubReadView.hasLoadingPresentation &&
+            !menuLayoutIsVisible && !binding.readAloudPlayerPanel.isFullPanelActive()
+        val overlay = epubLoadingWindow ?: if (show) {
+            EpubLoadingWindowOverlay(window, binding.epubReadView).also { epubLoadingWindow = it }
+        } else return
+        overlay.update(show)
     }
 
     @Suppress("DEPRECATION")
@@ -5571,6 +5580,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onMenuShow() {
+        epubLoadingWindow?.dismiss()
         epubHostOverlaySettleRunnable?.let(binding.root::removeCallbacks)
         epubHostOverlaySettleRunnable = null
         binding.readAloudPlayerPanel.setReadMenuVisible(true)
@@ -6029,6 +6039,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onDestroy() {
+        binding.epubReadView.setListener(null)
+        epubLoadingWindow?.dismiss()
+        epubLoadingWindow = null
         epubHostOverlaySettleRunnable?.let(binding.root::removeCallbacks)
         epubHostOverlaySettleRunnable = null
         if (!isChangingConfigurations) {

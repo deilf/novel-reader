@@ -39,7 +39,7 @@ class EpubReaderTemplateTest {
     fun invalidSchemaFieldTypesAndTrailingJsonAreRejected() {
         val source = exampleTemplate().toJson()
         val invalidValues = listOf(
-            source.replace("\"schemaVersion\": 1", "\"schemaVersion\": 2"),
+            source.replace("\"schemaVersion\": 1", "\"schemaVersion\": 3"),
             source.replace("\"schemaVersion\": 1", "\"schemaVersion\": 1.5"),
             source.replace("\"schemaVersion\": 1", "\"schemaVersion\": \"1\""),
             source.replace("\"name\": \"Example\"", "\"name\": null"),
@@ -70,12 +70,12 @@ class EpubReaderTemplateTest {
     fun bundledTemplatesHaveDistinctFirstPagesAndRetiredMagazineKeepsTwoFlowRegions() {
         val root = sequenceOf(File("src/main/assets/epub/templates"), File("app/src/main/assets/epub/templates"))
             .first { it.isDirectory }
-        val currentIds = listOf("builtin.night", "builtin.vertical")
+        val currentIds = listOf("builtin.minecraft_live", "builtin.asuka_sync", "builtin.lord_of_mysteries", "builtin.doraemon_scroll", "builtin.vertical")
         val packagedIds = currentIds + "builtin.magazine"
         assertEquals(currentIds, EpubReaderTemplateStore.builtinIds)
         assertEquals(packagedIds.toSet(), root.listFiles { _, name -> name.endsWith(".json") }
             .orEmpty().map { it.nameWithoutExtension }.toSet())
-        listOf("builtin.clean", "builtin.garden", "builtin.cat", "builtin.magazine").forEach { id ->
+        listOf("builtin.clean", "builtin.garden", "builtin.cat", "builtin.magazine", "builtin.night", "builtin.flower", "builtin.gilded").forEach { id ->
             assertTrue(EpubReaderTemplateStore.isRetiredBuiltIn(id))
             assertFalse(EpubReaderTemplateStore.isBuiltIn(id))
         }
@@ -85,14 +85,30 @@ class EpubReaderTemplateTest {
         packagedIds.forEach { id ->
             val template = EpubReaderTemplate.fromJson(File(root, id + ".json").readText(Charsets.UTF_8))
             assertEquals(id, template.id)
-            assertNotEquals(template.firstPageHtml, template.otherPageHtml)
+            if (!template.isScrolling) assertNotEquals(template.firstPageHtml, template.otherPageHtml)
             assertTrue(template.css.contains("display: grid"))
             assertTrue(template.css.contains("display: flex"))
             val regions = Regex("data-reader-flow=\"body\"")
             val expectedRegions = if (id == "builtin.magazine") 2 else 1
-            assertEquals(expectedRegions, regions.findAll(template.firstPageHtml).count())
-            assertEquals(expectedRegions, regions.findAll(template.otherPageHtml).count())
+            template.htmlDocuments.forEach { html -> assertEquals(expectedRegions, regions.findAll(html).count()) }
         }
+    }
+
+    @Test
+    fun oldDocumentsDefaultToPagedAndScrollNeedsOneHtmlDocument() {
+        val legacy = EpubReaderTemplate.parseObject(exampleTemplate().toJson()).apply {
+            remove("type"); remove("scrollHtml")
+        }
+        assertEquals(exampleTemplate(), EpubReaderTemplate.fromJson(legacy.toString()))
+        val scroll = EpubReaderTemplate(schemaVersion = 2, id = "user.scroll", name = "Scroll",
+            type = "scroll", scrollHtml = "\r\n<main data-reader-flow=\"body\"></main>  ")
+        assertTrue(scroll.validate().isEmpty())
+        assertEquals(scroll, EpubReaderTemplate.fromJson(scroll.toJson()))
+        assertEquals(listOf(scroll.scrollHtml), scroll.htmlDocuments)
+        assertTrue(scroll.copy(scrollHtml = " ").validate().isNotEmpty())
+        assertTrue(scroll.copy(schemaVersion = 1).validate().isNotEmpty())
+        assertTrue(scroll.copy(type = "unknown").validate().isNotEmpty())
+        assertNotEquals(scroll.contentHash(), scroll.copy(scrollHtml = scroll.scrollHtml + " ").contentHash())
     }
 }
 

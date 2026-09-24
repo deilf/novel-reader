@@ -10,6 +10,24 @@ import org.junit.Test
 class EpubDirectPreloadCacheTest {
 
     @Test
+    fun `sliding a snapshot window releases obsolete keys once and preserves warmed overlap`() {
+        val evicted = mutableListOf<Any>()
+        val old = Any()
+        val near = Any()
+        val futureChapter = Any()
+        val cache = EpubDirectPreloadCache<Any>(3, evicted::add)
+        cache.put("old-page", old)
+        cache.put("near-page", near)
+        cache.put("next-chapter", futureChapter)
+        repeat(2) { cache.retainKeys(setOf("near-page", "next-chapter", "new-page")) }
+        assertEquals(listOf(old), evicted)
+        assertSame(near, cache.take("near-page"))
+        assertSame(futureChapter, cache.take("next-chapter"))
+        cache.clear()
+        assertEquals(listOf(old), evicted)
+    }
+
+    @Test
     fun `directory jumps free all obsolete slots before warming the new next chapter`() {
         val evicted = mutableListOf<Int>()
         val cache = EpubDirectPreloadCache<Int>(2, evicted::add)

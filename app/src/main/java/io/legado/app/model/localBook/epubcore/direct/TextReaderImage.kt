@@ -45,7 +45,8 @@ data class TextReaderImage(
                 parsed.source
             } else parsed.source + "," + GSON.toJson(requestOptions)
             return TextReaderImage(
-                id, original, renderSource, click, style == "text" || TextReaderImageSource.isBubble(parsed.source),
+                id, original, renderSource, click, style == "text" || TextReaderImageSource.isBubble(parsed.source) ||
+                    TextReaderSourceBubblePolicy.isImplicitInlineComment(parsed, style, click),
                 cssDimension(parsed.width ?: attributes["width"]),
                 cssDimension(parsed.option("height") ?: attributes["height"]),
                 style.takeIf { it in setOf("left", "center", "right") },

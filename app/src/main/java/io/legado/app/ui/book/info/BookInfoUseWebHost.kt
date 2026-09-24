@@ -7,7 +7,6 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Message
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -16,7 +15,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import io.legado.app.R
+import io.legado.app.data.entities.BaseSource
+import io.legado.app.help.WebCacheManager
+import io.legado.app.help.webView.WebJsExtensions
 import io.legado.app.help.webView.WebJsExtensions.Companion.getInjectionString
+import io.legado.app.help.webView.WebJsExtensions.Companion.nameCache
+import io.legado.app.help.webView.WebJsExtensions.Companion.nameJava
+import io.legado.app.help.webView.WebJsExtensions.Companion.nameSource
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.utils.openUrl
 
@@ -41,6 +46,25 @@ internal object BookInfoUseWebHost {
         }
     }
 
+    fun bindSource(webView: WebView, source: BaseSource?) {
+        val binding = webView.getTag(R.id.book_info_useweb_source_binding) as? SourceBinding
+        if (binding != null && binding.source === source) return
+        configure(webView)
+        if (binding == null) {
+            webView.addJavascriptInterface(WebCacheManager, nameCache)
+        }
+        if (source != null) {
+            webView.addJavascriptInterface(source, nameSource)
+            webView.addJavascriptInterface(WebJsExtensions(source, null, webView), nameJava)
+        } else {
+            webView.removeJavascriptInterface(nameSource)
+            webView.removeJavascriptInterface(nameJava)
+        }
+        webView.setTag(R.id.book_info_useweb_source_binding, SourceBinding(source))
+    }
+
+    private class SourceBinding(val source: BaseSource?)
+
     fun attachPopupSupport(
         container: ViewGroup,
         webView: WebView,
@@ -48,12 +72,14 @@ internal object BookInfoUseWebHost {
             PopupWebViewClient(container.context)
         },
         configurePopupWebView: (WebView) -> Unit = {},
-        onPopupChanged: (Boolean) -> Unit = {}
+        onPopupChanged: (Boolean) -> Unit = {},
+        initiallyResumed: Boolean = true
     ) {
         configure(webView)
         val existing = container.getTag(R.id.book_info_useweb_popup_host) as? PopupChromeClient
         if (existing != null && existing.rootWebView === webView) {
             existing.update(popupWebViewClientFactory, configurePopupWebView, onPopupChanged)
+            existing.setResumed(initiallyResumed)
             webView.webChromeClient = existing
             return
         }
@@ -67,6 +93,11 @@ internal object BookInfoUseWebHost {
         )
         container.setTag(R.id.book_info_useweb_popup_host, chromeClient)
         webView.webChromeClient = chromeClient
+        chromeClient.setResumed(initiallyResumed)
+    }
+
+    fun setResumed(container: ViewGroup, resumed: Boolean) {
+        (container.getTag(R.id.book_info_useweb_popup_host) as? PopupChromeClient)?.setResumed(resumed)
     }
 
     fun clearPopups(container: ViewGroup) {
@@ -83,6 +114,12 @@ internal object BookInfoUseWebHost {
     ) : WebChromeClient() {
 
         private var popupWebView: WebView? = null
+        private var resumed = true
+
+        fun setResumed(value: Boolean) {
+            resumed = value
+            popupWebView?.let { if (value) it.onResume() else it.onPause() }
+        }
 
         fun update(
             popupWebViewClientFactory: () -> WebViewClient,
@@ -109,7 +146,6 @@ internal object BookInfoUseWebHost {
             val popup = WebView(view?.context ?: container.context).apply {
                 layoutParams = popupLayoutParams()
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 isFocusable = true
                 isFocusableInTouchMode = true
                 configure(this)
@@ -119,6 +155,7 @@ internal object BookInfoUseWebHost {
             popup.webChromeClient = this
             popupWebView = popup
             container.addView(popup, popupLayoutParams())
+            if (resumed) popup.onResume() else popup.onPause()
             popup.requestFocus()
             transport.webView = popup
             resultMsg.sendToTarget()

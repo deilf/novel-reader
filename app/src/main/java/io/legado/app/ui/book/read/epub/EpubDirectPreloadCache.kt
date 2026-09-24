@@ -59,6 +59,12 @@ internal class EpubDirectPreloadCache<T : Any>(
         evicted.forEach { (_, value) -> onEvicted(value) }
     }
 
+    fun retainKeys(keys: Set<String>) {
+        val evicted = entries.entries.filter { it.key !in keys }.map { it.key to it.value }
+        evicted.forEach { (key, _) -> entries.remove(key) }
+        evicted.forEach { (_, value) -> onEvicted(value) }
+    }
+
     fun clear() {
         val values = entries.values.toList()
         entries.clear()

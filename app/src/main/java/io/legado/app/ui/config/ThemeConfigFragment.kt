@@ -12,6 +12,7 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.LauncherIconHelp
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.EpubLoadingTemplateStore
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.ui.config.compose.ComposeSettingFragment
 import io.legado.app.ui.config.compose.SettingActionSpec
@@ -107,6 +108,14 @@ class ThemeConfigFragment : ComposeSettingFragment(), MenuProvider {
                             onClick = { startActivity<BubbleManageActivity>() }
                         ),
                         SettingActionSpec(
+                            key = KEY_EPUB_LOADING_TEMPLATES,
+                            title = getString(R.string.epub_loading_templates),
+                            summary = getString(R.string.epub_loading_selected,
+                                EpubLoadingTemplateStore.selected(requireContext()).name),
+                            searchKeys = listOf("EPUB", "正文加载", "加载模板", "加载画面"),
+                            onClick = { startActivity<EpubLoadingTemplateManageActivity>() }
+                        ),
+                        SettingActionSpec(
                             key = KEY_SHARE_NOTE_TEMPLATE_MANAGE,
                             title = "摘录分享模板",
                             summary = "管理正文长按分享图片使用的 HTML 模板",
@@ -197,5 +206,6 @@ class ThemeConfigFragment : ComposeSettingFragment(), MenuProvider {
         private const val KEY_BOOK_INFO_MANAGE = "book_info_manage"
         private const val KEY_BUBBLE_MANAGE = "bubble_manage"
         private const val KEY_SHARE_NOTE_TEMPLATE_MANAGE = "share_note_template_manage"
+        private const val KEY_EPUB_LOADING_TEMPLATES = "epub_loading_templates"
     }
 }

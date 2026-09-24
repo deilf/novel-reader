@@ -41,6 +41,20 @@ class EpubReaderTemplatePackagesTest {
     }
 
     @Test
+    fun scrollSingleAndMixedBackupKeepTheirTypeAndExactSource() {
+        val scroll = EpubReaderTemplate(schemaVersion = 2, type = "scroll", id = "user.scroll", name = "口袋",
+            scrollHtml = "\r\n<main data-reader-flow=\"body\"></main>\n", javascript = "window.scrollTheme = true;\n")
+        val single = ByteArrayOutputStream()
+        EpubReaderTemplatePackageArchive.writeTemplate(scroll, single)
+        assertEquals(scroll, read(single.toByteArray()).templates.single())
+        val library = EpubReaderTemplateLibrary(listOf(exampleTemplate(), scroll), setOf("builtin.vertical"))
+        assertEquals(2, EpubReaderTemplate.readVersion(EpubReaderTemplate.parseObject(library.toJson())))
+        val backup = ByteArrayOutputStream()
+        EpubReaderTemplatePackageArchive.writeLibrary(library, backup)
+        assertEquals(library, read(backup.toByteArray()))
+    }
+
+    @Test
     fun legacyRawSingleAndLibraryDocumentsRemainReadable() {
         val template = exampleTemplate()
         val library = EpubReaderTemplateLibrary(listOf(template))

@@ -2,13 +2,17 @@ package io.legado.app.ui.book.read.epub
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
+import androidx.core.graphics.Insets
+import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.config.EpubLoadingTemplate
+import io.legado.app.help.config.EpubLoadingTemplateStore
 import io.legado.app.model.localBook.epubcore.direct.EpubDirectChapter
 import io.legado.app.model.localBook.epubcore.direct.EpubDirectPosition
 import io.legado.app.model.localBook.epubcore.direct.EpubDirectSession
@@ -47,6 +51,7 @@ class EpubReadView @JvmOverloads constructor(
         fun onDirectImageClicked(url: String) = Unit
         fun onDirectSourceImageAction(request: TextReaderImageActionRequest) = Unit
         fun onDirectRenderError(message: String, throwable: Throwable?) = Unit
+        fun onLoadingPresentationChanged() = Unit
     }
 
     data class SelectionAnchor(
@@ -71,6 +76,19 @@ class EpubReadView @JvmOverloads constructor(
 
     private var listener: Listener? = null
     private var loadingMessage: String? = null
+    private var loadingFailed = false
+    private var loadingOverlay: EpubLoadingOverlay? = null
+    private var loadingTemplate = EpubLoadingTemplate.default
+    internal var loadingDrawnInWindow = false
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+    internal val hasLoadingPresentation: Boolean
+        get() = loadingMessage != null && !hasDirectContent
+    internal val loadingPalette: EpubLoadingTemplate.Palette
+        get() = loadingTemplate.palette(loadingNightMode)
     private var selectedText: String = ""
     private var selectionAnchor: SelectionAnchor? = null
     private var selectionMenuPending = false
@@ -78,17 +96,12 @@ class EpubReadView @JvmOverloads constructor(
     private var selectionMenuPresented = false
     private val selectionMenuNotifyRunnable = Runnable(::notifySelectionMenuIfReady)
 
-    private val loadingOverlayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x66000000
-        style = Paint.Style.FILL
-    }
-    private val loadingTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt()
-        textAlign = Paint.Align.CENTER
-    }
-    /** Overlay text style, kept in sync with the reader config by the host. */
-    var overlayTextColor: Int = 0xFF666666.toInt()
-    var overlayTextSizePx: Float = 42f
+    var loadingNightMode: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (loadingMessage != null) notifyLoadingPresentationChanged()
+        }
 
     var layoutConfig: EpubCoreLayoutConfig? = null
 
@@ -111,6 +124,15 @@ class EpubReadView @JvmOverloads constructor(
         isFocusable = true
         isClickable = true
         setWillNotDraw(false)
+        setOnClickListener {
+            if (!hasDirectContent) listener?.onCenterTap(width / 2f, height / 2f)
+        }
+    }
+
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+        // An unready WebView cannot deliver template tap events. Keep the native
+        // reading menu reachable while loading and after a render failure.
+        return !hasDirectContent || super.onInterceptTouchEvent(event)
     }
 
     private fun attachDirectLayer(layer: EpubDirectWebLayer) {
@@ -192,19 +214,34 @@ class EpubReadView @JvmOverloads constructor(
     }
 
     fun showLoading(message: String) {
+        loadingTemplate = EpubLoadingTemplateStore.selected(context)
         loadingMessage = message
-        invalidate()
+        loadingFailed = false
+        contentDescription = listOf(readerChromeData.bookName, message).filter { it.isNotBlank() }.joinToString("\n")
+        notifyLoadingPresentationChanged()
     }
 
     fun setError(message: String) {
+        loadingTemplate = EpubLoadingTemplateStore.selected(context)
         loadingMessage = message
-        invalidate()
+        loadingFailed = true
+        contentDescription = listOf(readerChromeData.bookName, message,
+            context.getString(R.string.reader_template_error_menu_hint)).filter { it.isNotBlank() }.joinToString("\n")
+        notifyLoadingPresentationChanged()
     }
 
     fun clearLoading() {
         if (loadingMessage == null) return
         loadingMessage = null
+        loadingFailed = false
+        loadingOverlay = null
+        contentDescription = null
+        notifyLoadingPresentationChanged()
+    }
+
+    private fun notifyLoadingPresentationChanged() {
         invalidate()
+        listener?.onLoadingPresentationChanged()
     }
 
     fun hideLoading() {
@@ -279,16 +316,6 @@ class EpubReadView @JvmOverloads constructor(
 
     fun getSelectedText(): String = selectedText
 
-    fun selectStartMoveOnScreen(rawX: Float, rawY: Float) = Unit
-
-    fun selectEndMoveOnScreen(rawX: Float, rawY: Float) = Unit
-
-    fun beginSelectionHandleDrag() = Unit
-
-    fun endSelectionHandleDrag() = Unit
-
-    fun cancelSelectionHandleDrag() = Unit
-
     fun clearSelection(notify: Boolean = true) {
         removeCallbacks(selectionMenuNotifyRunnable)
         if (directMode) initializedDirectLayer()?.clearSelection()
@@ -344,6 +371,7 @@ class EpubReadView @JvmOverloads constructor(
 
     private fun notifySelectionMenuIfReady() {
         val anchor = selectionAnchor ?: return
+        if (directHostPaused || !isAttachedToWindow || !hasWindowFocus()) return
         if (selectionInteractionActive || selectionMenuPresented || !selectionMenuPending) return
         selectionMenuPending = false
         selectionMenuPresented = true
@@ -459,8 +487,10 @@ class EpubReadView @JvmOverloads constructor(
     }
 
     fun updateDirectReaderChromeData(data: EpubReaderChromeData) {
+        val bookNameChanged = readerChromeData.bookName != data.bookName
         readerChromeData = data
         initializedDirectLayer()?.updateReaderChromeData(data)
+        if (bookNameChanged && loadingMessage != null) notifyLoadingPresentationChanged()
     }
 
     fun refreshDirectReaderBackground(config: EpubCoreLayoutConfig) {
@@ -520,12 +550,37 @@ class EpubReadView @JvmOverloads constructor(
 
     fun onDirectHostPause() {
         directHostPaused = true
+        removeCallbacks(selectionMenuNotifyRunnable)
         initializedDirectLayer()?.onHostPause()
     }
 
     fun onDirectHostResume() {
         directHostPaused = false
         initializedDirectLayer()?.onHostResume()
+        if (loadingMessage != null) {
+            val selected = EpubLoadingTemplateStore.selected(context)
+            if (loadingTemplate != selected) {
+                loadingTemplate = selected
+                notifyLoadingPresentationChanged()
+            }
+        }
+        post(selectionMenuNotifyRunnable)
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) notifySelectionMenuIfReady()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w != oldw || h != oldh) loadingOverlay = null
+        if ((w != oldw || h != oldh) && selectedText.isNotEmpty()) clearSelection()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(selectionMenuNotifyRunnable)
+        super.onDetachedFromWindow()
     }
 
     fun setHostOverlayCaptureBlocked(blocked: Boolean) {
@@ -546,13 +601,19 @@ class EpubReadView @JvmOverloads constructor(
     }
 
     private fun drawLoadingOverlay(canvas: Canvas) {
+        if (loadingDrawnInWindow) return
+        val config = layoutConfig
+        drawLoadingPresentation(canvas, width, height, Insets.of(
+            config?.readerSafeInsetLeftPx ?: 0, config?.readerSafeInsetTopPx ?: 0,
+            config?.readerSafeInsetRightPx ?: 0, config?.readerSafeInsetBottomPx ?: 0))
+    }
+
+    internal fun drawLoadingPresentation(canvas: Canvas, width: Int, height: Int, insets: Insets) {
         val message = loadingMessage ?: return
         if (hasDirectContent) return
-        loadingTextPaint.color = overlayTextColor
-        loadingTextPaint.textSize = overlayTextSizePx
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), loadingOverlayPaint)
-        val centerY = height / 2f - (loadingTextPaint.descent() + loadingTextPaint.ascent()) / 2f
-        canvas.drawText(message, width / 2f, centerY, loadingTextPaint)
+        val overlay = loadingOverlay ?: EpubLoadingOverlay(resources).also { loadingOverlay = it }
+        overlay.draw(canvas, width, height, loadingTemplate, readerChromeData.bookName,
+            message, loadingFailed, loadingNightMode, insets)
     }
 
     private companion object {

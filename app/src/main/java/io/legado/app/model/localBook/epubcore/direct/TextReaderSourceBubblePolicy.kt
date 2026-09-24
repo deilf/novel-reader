@@ -60,6 +60,20 @@ internal object TextReaderSourceBubblePolicy {
             (color?.let { "&displayColor=${encoded(it)}" } ?: "")
     }
 
+    // Recognize paragraph-comment images before TextReaderDocument splits blocks.
+    // Pixel replacement is optional; their inline position is not. No image
+    // decoding or source script execution is needed to read this metadata.
+    fun isImplicitInlineComment(source: ParsedImageSource, style: String?, click: String?): Boolean =
+        (source.style ?: style).isNullOrBlank() && hasCommentSemantics(source, click)
+
+    private fun hasCommentSemantics(source: ParsedImageSource, click: String?): Boolean {
+        val knownType = source.option("type")?.lowercase(Locale.ROOT) in types
+        val actions = listOfNotNull(source.click, source.option("pclick"), click)
+            .joinToString("\n").lowercase(Locale.ROOT)
+        return knownType || actions.contains("showcmt(") ||
+            actions.contains("showcomment(") || actions.contains("paragraph")
+    }
+
     private fun isCandidate(
         source: ParsedImageSource,
         resolved: String,
@@ -70,13 +84,8 @@ internal object TextReaderSourceBubblePolicy {
         val inline = effectiveStyle.equals("TEXT", true)
         // A source's explicit standalone layout always wins over heuristics.
         if (effectiveStyle.isNotEmpty() && !inline) return false
-        val knownType = source.option("type")?.lowercase(Locale.ROOT) in types
-        val actions = listOfNotNull(source.click, source.option("pclick"), click)
-            .joinToString("\n").lowercase(Locale.ROOT)
-        val commentAction = actions.contains("showcmt(") ||
-            actions.contains("showcomment(") || actions.contains("paragraph")
         val inlineSvg = inline && (isDataSvg(source.source) || isDataSvg(resolved))
-        return knownType || commentAction || inlineSvg
+        return hasCommentSemantics(source, click) || inlineSvg
     }
 
     private fun svgText(source: String): String? {

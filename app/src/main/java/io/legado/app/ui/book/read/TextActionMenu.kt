@@ -136,6 +136,11 @@ class TextActionMenu(private val context: Context, private val callBack: CallBac
                             if (!callBack.onMenuItemSelected(action.itemId)) {
                                 onMenuItemSelected(action)
                             }
+                        } catch (error: Exception) {
+                            // Multi-page selections can exceed an external app's Binder or
+                            // clipboard limit. The reader must remain usable if it refuses.
+                            AppLog.putDebug("Reader selection action failed", error)
+                            context.toastOnUi("文字操作失败，请缩小选区后重试")
                         } finally {
                             callBack.onMenuActionFinally()
                         }

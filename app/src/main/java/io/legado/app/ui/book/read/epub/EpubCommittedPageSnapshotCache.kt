@@ -88,9 +88,14 @@ internal class EpubCommittedPageSnapshotCache<T>(
         return matched.value
     }
 
-    fun invalidate() {
+    /** Scene overlays invalidate captures in flight, not already verified page pixels. */
+    fun cancelPendingCapture() {
         sequence++
         pendingRequest = null
+    }
+
+    fun invalidate() {
+        cancelPendingCapture()
         releaseEntry()
     }
 

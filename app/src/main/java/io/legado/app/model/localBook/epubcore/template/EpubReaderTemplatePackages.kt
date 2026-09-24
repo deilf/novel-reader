@@ -120,6 +120,8 @@ internal object EpubReaderTemplatePackageArchive {
 
     private fun readArchive(file: File, destination: File): ArchiveContent {
         val files = SafeZipExtractor.extract(file, destination, limits)
+        // The extractor returns canonical files; Android cache paths may traverse /data/user/0.
+        val extractionRoot = destination.canonicalFile
         val manifests = files.filter { it.name in setOf(SINGLE_FILE, LIBRARY_FILE) }
         require(manifests.size == 1) {
             "请选择模板文件或模板备份"
@@ -133,7 +135,7 @@ internal object EpubReaderTemplatePackageArchive {
         require(files.all { it in allowed } && (incoming != null || files.size == 1)) { "模板包包含未知文件" }
         ZipFile(file).use { zip ->
             files.forEach { extracted ->
-                val entry = requireNotNull(zip.getEntry(extracted.relativeTo(destination).invariantSeparatorsPath)) { "模板文件不完整" }
+                val entry = requireNotNull(zip.getEntry(extracted.relativeTo(extractionRoot).invariantSeparatorsPath)) { "模板文件不完整" }
                 val crc = CRC32()
                 extracted.inputStream().use { input ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -176,7 +178,7 @@ internal object EpubReaderTemplatePackageArchive {
     }
 
     private fun referencedAssets(library: EpubReaderTemplateLibrary): Set<String> = library.templates.flatMap {
-        ReaderAssetReferences.ids(it.firstPageHtml + "\n" + it.otherPageHtml + "\n" + it.css + "\n" + it.javascript)
+        ReaderAssetReferences.ids(it.resourceSource())
     }.toSet()
 
     private fun validateSize(library: EpubReaderTemplateLibrary) {

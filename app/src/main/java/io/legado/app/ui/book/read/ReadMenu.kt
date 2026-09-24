@@ -486,7 +486,11 @@ class ReadMenu @JvmOverloads constructor(
     @Composable
     private fun ReadMenuBottomPanel(style: AppDialogStyle) {
         val layout = if (directReader) {
-            ReadMenuButtonConfig.forDirectReader(buttonLayout, allowReplaceRules = replaceRulesSupported)
+            ReadMenuButtonConfig.forDirectReader(
+                buttonLayout,
+                allowReplaceRules = replaceRulesSupported,
+                templateOnly = ReadBook.usesPageTemplate()
+            )
         } else {
             buttonLayout
         }
@@ -608,7 +612,7 @@ class ReadMenu @JvmOverloads constructor(
 
     @Composable
     private fun rememberReadMenuStyle(): AppDialogStyle {
-        val bgColor = if (immersiveMenu) {
+        val bgColor = if (immersiveMenu && !ReadBook.usesPageTemplate()) {
             runCatching {
                 ReadBookConfig.durConfig.curBgStr().toColorInt()
             }.getOrDefault(context.bottomBackground)
@@ -634,7 +638,8 @@ class ReadMenu @JvmOverloads constructor(
         if (callBack.isEpubCoreBook() &&
             !ReadMenuButtonConfig.supportsDirectReader(
                 ref,
-                allowReplaceRules = callBack.supportsReplaceRules()
+                allowReplaceRules = callBack.supportsReplaceRules(),
+                templateOnly = ReadBook.usesPageTemplate()
             )
         ) return
         when (ref.type) {

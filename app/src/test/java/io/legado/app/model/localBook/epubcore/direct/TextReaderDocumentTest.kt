@@ -1,12 +1,59 @@
 package io.legado.app.model.localBook.epubcore.direct
 
+import com.google.gson.GsonBuilder
+import io.legado.app.help.ImageSourceOptions
+import io.legado.app.help.config.BubblePackageManager
 import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.util.Base64
 
 class TextReaderDocumentTest {
+    @Test fun `qd quote tails keep punctuation and all four inline actions`() {
+        val source = File("src/test/resources/reader/quote-comment.html").readText()
+        val content = TextReaderDocument.prepare("段评分页", source)
+        val paragraphs = listOf("下面的回复五花八门的。", "“我没缠着你啊？”", "“谁把我开户了？”", "“建议搜索城市0元生存指南。”")
+        assertEquals(paragraphs, content.paragraphs(false))
+        assertEquals(4, content.blocks.size)
+        val images = content.images()
+        val counts = listOf("1", "7", "1", "22")
+        assertEquals(4, images.size)
+        content.blocks.forEachIndexed { index, block ->
+            assertEquals(block.text.length, block.inlineImages.single().offset)
+            assertTrue(images[index].inline)
+            val parsed = ImageSourceOptions.parse(images[index].source)!!
+            assertEquals("dp:${counts[index]}", parsed.source)
+            assertEquals("TEXT", parsed.option("style"))
+            assertTrue(TextReaderImageSource.bubbleSource(parsed)!!.contains("displayText=${counts[index]}&"))
+            assertEquals("showQyCmt(\"59898224\",\"30\",\"${83 + index}\",${if (index == 0) 1790090605318 else 1790090605317})",
+                content.imageActions()[images[index].id]!!.click)
+        }
+        // Use the actual built-in bubble artwork and native HTML builder for
+        // the browser regression, including its square intrinsic geometry.
+        val bubble = BubblePackageManager.builtinConfig().svgTemplate
+        val prepared = images.mapIndexed { index, image ->
+            val svg = bubble.replace("${'$'}{color}", "#808080").replace("${'$'}{num}", counts[index])
+                .replace("<svg ", "<svg width=\"64\" height=\"64\" ")
+            image.id to TextReaderPreparedImage("data:image/svg+xml;base64," +
+                Base64.getEncoder().encodeToString(svg.toByteArray(Charsets.UTF_8)))
+        }.toMap()
+        val html = content.htmlWithImages(false, preparedImages = prepared) { error("Prepared bubble must not be fetched") }
+        val dom = Jsoup.parse(html)
+        assertEquals(paragraphs, dom.select("p.reader-paragraph").map { it.wholeText() })
+        assertEquals(4, dom.select("a.legado-text-image-frame > img.legado-text-bubble").size)
+        dom.select("[data-legado-text-offset]").forEach { block ->
+            val offset = block.attr("data-legado-text-offset").toInt()
+            assertEquals(block.wholeText(), content.plainText(false).substring(offset, offset + block.wholeText().length))
+        }
+        val directory = File("build/reports/reader-template").apply { mkdirs() }
+        File(directory, "quote-comment.fixture.json").writeText(GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(
+            mapOf("sourceHtml" to html, "plainText" to content.plainText(false), "actions" to content.imageActions())
+        ))
+    }
+
     @Test(expected = IllegalStateException::class)
     fun `oversized chapters fail explicitly before creating a dom`() {
         TextReaderDocument.prepare("Large", "x".repeat(TextReaderDocument.MAX_SOURCE_CHARS + 1))

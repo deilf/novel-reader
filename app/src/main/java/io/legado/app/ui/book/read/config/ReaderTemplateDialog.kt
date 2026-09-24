@@ -37,6 +37,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.R
 import io.legado.app.constant.EventBus
+import io.legado.app.constant.PageAnim
 import io.legado.app.help.CacheManager
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.config.ReadBookConfig
@@ -49,6 +50,7 @@ import io.legado.app.model.localBook.epubcore.template.EpubReaderTemplateStore
 import io.legado.app.model.localBook.epubcore.template.ReaderTemplateOperationQueue
 import io.legado.app.ui.code.CodeEditActivity
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.ui.book.read.ReadBookActivity
 import io.legado.app.ui.widget.compose.AppDialogStyle
 import io.legado.app.ui.widget.compose.AppListSpacing
 import io.legado.app.ui.widget.compose.AppManagementMenuAction
@@ -56,7 +58,6 @@ import io.legado.app.ui.widget.compose.AppManagementMoreActionButton
 import io.legado.app.ui.widget.compose.AppManagementPalette
 import io.legado.app.ui.widget.compose.AppPackageManageActionButton
 import io.legado.app.ui.widget.compose.AppPackageManageItemCard
-import io.legado.app.ui.widget.compose.AppPackageManageSettingCard
 import io.legado.app.ui.widget.compose.AppRuleTextField
 import io.legado.app.ui.widget.compose.LegadoMiuixActionButton
 import io.legado.app.ui.widget.compose.rememberAppManagementPalette
@@ -174,7 +175,7 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
                 )
                 val draft = model.draft
                 if (draft == null) {
-                    LibraryContent(palette, Modifier.weight(1f, fill = false))
+                    LibraryContent(palette, style, Modifier.weight(1f, fill = false))
                 } else {
                     key(draft.id) {
                         EditorContent(style, draft, Modifier.weight(1f, fill = false))
@@ -189,13 +190,39 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
     }
 
     @Composable
-    private fun LibraryContent(palette: AppManagementPalette, modifier: Modifier) {
+    private fun LibraryContent(palette: AppManagementPalette, style: AppDialogStyle, modifier: Modifier) {
         // Keep a single bounded lazy list in the reader sheet, as in the other package managers.
         LazyColumn(
             modifier = modifier.fillMaxWidth(),
             contentPadding = PaddingValues(bottom = 4.dp),
             verticalArrangement = Arrangement.spacedBy(AppListSpacing.Normal)
         ) {
+            if (model.templates.any { it.id == model.appliedId }) {
+                item(key = "page-animation") {
+                    ReaderSectionCard(style = style, title = stringResource(R.string.reader_template_page_animation)) {
+                        Text(
+                            text = model.templates.first { it.id == model.appliedId }.name,
+                            color = style.secondaryText,
+                            fontSize = 12.sp
+                        )
+                        if (!model.templates.first { it.id == model.appliedId }.isScrolling) ReaderSegmentedOptions(
+                            options = templatePageAnimationOptions(),
+                            selectedValue = (model.pageAnimation ?: -1).toString(),
+                            style = style,
+                            scrollable = true,
+                            pillStyle = true
+                        ) { value ->
+                            if (!model.busy) changePageAnimation(value.toIntOrNull()?.takeIf { it >= 0 })
+                        }
+                        Text(
+                            text = stringResource(if (model.templates.first { it.id == model.appliedId }.isScrolling)
+                                R.string.reader_template_scroll_locked else R.string.reader_template_page_animation_hint),
+                            color = style.secondaryText,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
             item(key = "actions") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppPackageManageActionButton(
@@ -211,15 +238,6 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
                         onClick = { exportPackage(null) }
                     )
                 }
-            }
-            item(key = "original") {
-                AppPackageManageSettingCard(
-                    title = stringResource(R.string.reader_template_original),
-                    info = stringResource(R.string.reader_template_original_description),
-                    valueText = stringResource(if (model.appliedId.isEmpty()) R.string.reader_template_selected else R.string.reader_template_apply),
-                    palette = palette,
-                    onClick = { applyTemplate("") }
-                )
             }
             items(model.templates, key = { "template:" + it.id }) { template ->
                 val builtIn = EpubReaderTemplateStore.isBuiltIn(template.id)
@@ -240,6 +258,29 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
     }
 
     @Composable
+    private fun templatePageAnimationOptions(): List<ReaderOption> = listOf(
+        ReaderOption("-1", stringResource(R.string.reader_template_page_animation_follow)),
+        ReaderOption(PageAnim.coverPageAnim.toString(), stringResource(R.string.page_anim_cover)),
+        ReaderOption(PageAnim.linkedCoverPageAnim.toString(), stringResource(R.string.page_anim_linked_cover)),
+        ReaderOption(PageAnim.slidePageAnim.toString(), stringResource(R.string.page_anim_slide)),
+        ReaderOption(PageAnim.simulationPageAnim.toString(), stringResource(R.string.page_anim_simulation)),
+        ReaderOption(PageAnim.scrollPageAnim.toString(), stringResource(R.string.page_anim_scroll)),
+        ReaderOption(PageAnim.noAnim.toString(), stringResource(R.string.page_anim_none))
+    )
+
+    private fun changePageAnimation(animation: Int?) {
+        val id = model.appliedId
+        model.perform {
+            val previousPageAnim = ReadBook.pageAnim()
+            withContext(Dispatchers.IO) { EpubReaderTemplateStore.savePageAnimation(id, animation) }
+            model.pageAnimation = animation
+            if (ReadBook.usesPageTemplate() && ReadBookConfig.config.readerTemplateId == id) {
+                (activity as? ReadBookActivity)?.applyPageAnimationChange(previousPageAnim)
+            }
+        }
+    }
+
+    @Composable
     private fun EditorContent(style: AppDialogStyle, draft: EpubReaderTemplate, modifier: Modifier) {
         Column(
             modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -247,7 +288,29 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
         ) {
             Field(draft.name, R.string.reader_template_name, style, singleLine = true) { model.draft = draft.copy(name = it) }
             Field(draft.description, R.string.reader_template_description, style) { model.draft = draft.copy(description = it) }
-            TemplateCodeField.entries.forEach { field ->
+            ReaderSectionCard(style = style, title = stringResource(R.string.reader_template_type)) {
+                ReaderSegmentedOptions(
+                    options = listOf(
+                        ReaderOption(EpubReaderTemplate.TYPE_PAGED, stringResource(R.string.reader_template_type_paged)),
+                        ReaderOption(EpubReaderTemplate.TYPE_SCROLL, stringResource(R.string.reader_template_type_scroll))
+                    ),
+                    selectedValue = draft.type,
+                    style = style,
+                    pillStyle = true
+                ) { type -> if (!model.busy) model.changeType(type) }
+                if (draft.isScrolling) Text(
+                    text = stringResource(R.string.reader_template_scroll_locked),
+                    color = style.secondaryText,
+                    fontSize = 12.sp
+                )
+            }
+            TemplateCodeField.entries.filter { field ->
+                when (field) {
+                    TemplateCodeField.FIRST, TemplateCodeField.OTHER -> !draft.isScrolling
+                    TemplateCodeField.SCROLL -> draft.isScrolling
+                    else -> true
+                }
+            }.forEach { field ->
                 Action(field.label, style) { openCodeEditor(field) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -430,6 +493,7 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
                 R.string.reader_template_backup_help,
                 R.string.reader_template_code_note,
                 R.string.reader_template_author_help,
+                R.string.reader_template_scroll_author_help,
                 R.string.reader_template_javascript_help
             ).joinToString("\n\n") { getString(it) } + "\n\n" + getString(R.string.reader_assets_hint) +
                 "\n可在编辑页直接选择字体和背景，或从素材库复制图片地址、字体 CSS 放入页面代码。",
@@ -472,6 +536,9 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
                 model.draft = null
                 model.message = savedMessage
                 if (apply) applyTemplateNow(saved.id, scopeError)
+                else if (saved.id == ReadBookConfig.config.readerTemplateId && ReadBook.usesPageTemplate()) {
+                    postEvent(EventBus.UP_CONFIG, arrayListOf(8, 5))
+                }
             }
         }
     }
@@ -483,6 +550,7 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
 
     private suspend fun applyTemplateNow(id: String, scopeError: String) {
         require(ReadBookConfig.usingEpubLayout && ReadBook.book?.isEpub == false) { scopeError }
+        require(id.isNotEmpty()) { scopeError }
         withContext(NonCancellable) {
             withContext(Dispatchers.IO) { EpubReaderTemplateStore.saveSelection(id) }
             postEvent(EventBus.UP_CONFIG, arrayListOf(8, 5))
@@ -505,6 +573,7 @@ class ReaderTemplateDialog : ReaderBottomSheetComposeDialogFragment() {
 internal enum class TemplateCodeField(val label: Int, val language: String) {
     FIRST(R.string.reader_template_first_html, "text.html.basic"),
     OTHER(R.string.reader_template_other_html, "text.html.basic"),
+    SCROLL(R.string.reader_template_scroll_html, "text.html.basic"),
     // The app bundles no CSS TextMate grammar. This registered lexical mode keeps the editor usable.
     CSS(R.string.reader_template_css, "source.js"),
     JAVASCRIPT(R.string.reader_template_javascript, "source.js");
@@ -512,6 +581,7 @@ internal enum class TemplateCodeField(val label: Int, val language: String) {
     fun read(template: EpubReaderTemplate): String = when (this) {
         FIRST -> template.firstPageHtml
         OTHER -> template.otherPageHtml
+        SCROLL -> template.scrollHtml
         CSS -> template.css
         JAVASCRIPT -> template.javascript
     }
@@ -520,6 +590,7 @@ internal enum class TemplateCodeField(val label: Int, val language: String) {
 internal class ReaderTemplateViewModel : ViewModel() {
     var templates by mutableStateOf<List<EpubReaderTemplate>>(emptyList())
     var appliedId by mutableStateOf(ReadBookConfig.config.readerTemplateId)
+    var pageAnimation by mutableStateOf<Int?>(null)
     var hasHiddenBuiltIns by mutableStateOf(false)
     var draft by mutableStateOf<EpubReaderTemplate?>(null)
     var busy by mutableStateOf(false)
@@ -548,9 +619,11 @@ internal class ReaderTemplateViewModel : ViewModel() {
         withContext(NonCancellable) {
             val previousId = ReadBookConfig.config.readerTemplateId
             val library = withContext(Dispatchers.IO) {
+                if (ReadBook.usesPageTemplate()) EpubReaderTemplateStore.ensureReaderSelection()
                 EpubReaderTemplateStore.list() to EpubReaderTemplateStore.hasHiddenBuiltIns()
             }
             appliedId = ReadBookConfig.config.readerTemplateId
+            pageAnimation = EpubReaderTemplateStore.pageAnimation(appliedId)
             if (previousId != appliedId) postEvent(EventBus.UP_CONFIG, arrayListOf(8, 5))
             templates = library.first
             hasHiddenBuiltIns = library.second
@@ -568,9 +641,22 @@ internal class ReaderTemplateViewModel : ViewModel() {
         draft = when (field) {
             TemplateCodeField.FIRST -> current.copy(firstPageHtml = source)
             TemplateCodeField.OTHER -> current.copy(otherPageHtml = source)
+            TemplateCodeField.SCROLL -> current.copy(scrollHtml = source)
             TemplateCodeField.CSS -> current.copy(css = source)
             TemplateCodeField.JAVASCRIPT -> current.copy(javascript = source)
         }
+    }
+
+    fun changeType(type: String) {
+        val current = draft ?: return
+        if (type == current.type) return
+        draft = current.copy(
+            type = type,
+            schemaVersion = if (type == EpubReaderTemplate.TYPE_SCROLL) EpubReaderTemplate.SCROLL_SCHEMA_VERSION else EpubReaderTemplate.SCHEMA_VERSION,
+            scrollHtml = current.scrollHtml.ifBlank { "<main data-reader-flow=\"body\"></main>" },
+            firstPageHtml = current.firstPageHtml.ifBlank { "<main data-reader-flow=\"body\" style=\"height:100%\"></main>" },
+            otherPageHtml = current.otherPageHtml.ifBlank { "<main data-reader-flow=\"body\" style=\"height:100%\"></main>" }
+        )
     }
 
     fun releaseExportFile() {

@@ -171,6 +171,12 @@ android {
         // Adds exported schema location as test app assets.
         androidTest.assets.srcDirs += files("$projectDir/schemas".toString())
     }
+    testOptions {
+        unitTests.all {
+            maxHeapSize = '1536m'
+            systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+        }
+    }
     lint {
         checkDependencies = true
     }
@@ -190,6 +196,7 @@ dependencies {
     //coreLibraryDesugaring('com.android.tools:desugar_jdk_libs_nio:2.0.4')
     coreLibraryDesugaring(libs.desugar)
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.okhttp.tls)
     androidTestImplementation(libs.bundles.androidTest)

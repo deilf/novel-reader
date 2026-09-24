@@ -16,6 +16,22 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class EpubReaderTemplateRepositoryTest {
+    @Test
+    fun `retired snapshots cannot mask the minecraft upgrade or erase user copies`() {
+        listOf("builtin.flower", "builtin.gilded", "builtin.minecraft").forEach { oldId ->
+            val old = exampleTemplate(oldId).copy(css = "body { color: pink; }")
+            val copy = old.copy(id = "user.my-" + oldId, name = "My earlier template")
+            val minecraft = exampleTemplate("builtin.minecraft_live")
+            val file = target()
+            val store = EpubReaderTemplateRepository(file, setOf(old.id)) { listOf(minecraft) }
+            store.restoreJson(EpubReaderTemplateLibrary(listOf(old, copy)).toJson())
+            assertEquals(minecraft, store.resolveRequired(old.id, minecraft.id))
+            assertNull(store.resolve(old.id))
+            assertEquals(copy, store.resolve(copy.id))
+            assertTrue(file.readText().contains("color: pink"))
+        }
+    }
+
     @get:Rule val temporaryFolder = TemporaryFolder()
 
     @Test
@@ -169,7 +185,7 @@ class EpubReaderTemplateRepositoryTest {
         val file = target()
         val retired = retiredTemplates()
         val retiredIds = retired.map { it.id }.toSet()
-        val active = listOf(exampleTemplate("builtin.night"), exampleTemplate("builtin.vertical"))
+        val active = listOf(exampleTemplate("builtin.flower"), exampleTemplate("builtin.vertical"))
         val copies = retired.map { template ->
             template.copy(id = "user." + template.id.removePrefix("builtin."),
                 javascript = template.javascript + "\r\n// 用户编辑的副本\r\n")
@@ -199,7 +215,7 @@ class EpubReaderTemplateRepositoryTest {
     fun explicitlyImportingRetiredLibrarySourcesCreatesEditableCopies() {
         val retired = retiredTemplates()
         val retiredIds = retired.map { it.id }.toSet()
-        val active = listOf(exampleTemplate("builtin.night"), exampleTemplate("builtin.vertical"))
+        val active = listOf(exampleTemplate("builtin.flower"), exampleTemplate("builtin.vertical"))
         val source = EpubReaderTemplateRepository(target(), retiredIds) { active }
         val imported = source.importLibrary(EpubReaderTemplateLibrary(retired))
         assertEquals(retired.size, imported.size)
@@ -218,7 +234,7 @@ class EpubReaderTemplateRepositoryTest {
         val file = target()
         val retired = retiredTemplates()
         val retiredIds = retired.map { it.id }.toSet()
-        val active = listOf(exampleTemplate("builtin.night"), exampleTemplate("builtin.vertical"))
+        val active = listOf(exampleTemplate("builtin.flower"), exampleTemplate("builtin.vertical"))
         val source = EpubReaderTemplateRepository(file, retiredIds) { active }
         val imported = retired.map { original ->
             source.importForLayout(original.toJson(), original.id).also { copy ->
@@ -318,8 +334,85 @@ class EpubReaderTemplateRepositoryTest {
         assertEquals(committed, file.readText())
     }
 
+    @Test
+    fun requiredSelectionUsesDefaultForEmptyOrRetiredIdWithoutRevivingSavedNight() {
+        val file = target()
+        val flower = exampleTemplate("builtin.flower")
+        val vertical = exampleTemplate("builtin.vertical")
+        val oldNight = retiredTemplates().first { it.id == "builtin.night" }
+        val userCopy = oldNight.copy(id = "user.night", javascript = oldNight.javascript + "// 用户修改\n")
+        val source = EpubReaderTemplateRepository(file, setOf(oldNight.id)) { listOf(vertical, flower) }
+        source.restoreJson(EpubReaderTemplateLibrary(listOf(oldNight, userCopy)).toJson())
+        val committed = file.readBytes().toList()
+        listOf("", oldNight.id, "user.missing").forEach { id ->
+            assertEquals(flower, source.resolveRequired(id, flower.id))
+        }
+        assertEquals(committed, file.readBytes().toList())
+        assertNull(source.resolve(oldNight.id))
+        assertEquals(userCopy, source.resolve(userCopy.id))
+    }
+
+    @Test
+    fun requiredSelectionKeepsTheChosenUserTemplateAndItsSource() {
+        val file = target()
+        val flower = exampleTemplate("builtin.flower")
+        val user = exampleTemplate().copy(css = "/* 用户花页 */\r\nbody { color: #234; }  ")
+        val source = repository(file, listOf(flower)).apply { save(user) }
+        val committed = file.readBytes().toList()
+        assertEquals(user, source.resolveRequired(user.id, flower.id))
+        assertEquals(committed, file.readBytes().toList())
+        assertEquals(user, repository(file, listOf(flower)).resolveRequired(user.id, flower.id))
+    }
+
+    @Test
+    fun deletingSelectedTemplateChoosesAnotherTemplateAndDoesNotRestoreHiddenOnes() {
+        val file = target()
+        val flower = exampleTemplate("builtin.flower")
+        val vertical = exampleTemplate("builtin.vertical")
+        val user = exampleTemplate()
+        val source = repository(file, listOf(flower, vertical)).apply { save(user); delete(flower.id) }
+        assertEquals(user, source.resolveRequired(user.id, flower.id))
+        assertTrue(source.delete(user.id))
+        assertEquals(vertical, source.resolveRequired(user.id, flower.id))
+        val reopened = repository(file, listOf(flower, vertical))
+        assertEquals(listOf(vertical), reopened.list())
+        assertNull(reopened.resolve(user.id))
+        assertNull(reopened.resolve(flower.id))
+    }
+
+    @Test
+    fun requiredSelectionRestoresOnlyDefaultVisibilityWhenEveryTemplateWasDeleted() {
+        val file = target()
+        val flower = exampleTemplate("builtin.flower")
+        val savedFlower = flower.copy(css = "/* 保留备份中的模板代码 */\r\nbody { color: green; }")
+        val vertical = exampleTemplate("builtin.vertical")
+        val retired = retiredTemplates()
+        val hidden = (retired.map { it.id } + flower.id + vertical.id).toSet()
+        val source = EpubReaderTemplateRepository(file, retired.map { it.id }.toSet()) { listOf(flower, vertical) }
+        source.restoreJson(EpubReaderTemplateLibrary(listOf(savedFlower) + retired, hidden).toJson())
+        assertEquals(emptyList<EpubReaderTemplate>(), source.list())
+        assertEquals(savedFlower, source.resolveRequired(vertical.id, flower.id))
+        val persisted = EpubReaderTemplateLibrary.fromJson(file.readText(Charsets.UTF_8))
+        assertEquals(hidden - flower.id, persisted.hiddenBuiltInIds)
+        assertEquals(listOf(savedFlower) + retired, persisted.templates)
+        val reopened = EpubReaderTemplateRepository(file, retired.map { it.id }.toSet()) { listOf(flower, vertical) }
+        assertEquals(listOf(savedFlower), reopened.list())
+        val committed = file.readBytes().toList()
+        assertEquals(savedFlower, reopened.resolveRequired("", flower.id))
+        assertEquals(committed, file.readBytes().toList())
+    }
+
+    @Test
+    fun requiredSelectionNeverReplacesACorruptLibraryWithAnEmptyOne() {
+        val file = target().apply { writeText("{corrupt") }
+        val flower = exampleTemplate("builtin.flower")
+        val source = repository(file, listOf(flower))
+        assertThrows(IllegalArgumentException::class.java) { source.resolveRequired("", flower.id) }
+        assertEquals("{corrupt", file.readText())
+    }
+
     private fun retiredTemplates(): List<EpubReaderTemplate> =
-        listOf("clean", "garden", "cat", "magazine").map { name ->
+        listOf("clean", "garden", "cat", "magazine", "night").map { name ->
             exampleTemplate("builtin.$name").copy(
                 name = "$name 旧模板",
                 firstPageHtml = "\r\n<custom-page onclick=\"show('$name')\"><main data-reader-flow=\"body\"></main></custom-page>  \n",

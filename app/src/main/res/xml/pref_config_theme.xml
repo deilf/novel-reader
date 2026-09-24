@@ -63,6 +63,12 @@
         app:iconSpaceReserved="false" />
 
     <io.legado.app.lib.prefs.Preference
+        android:key="epub_loading_templates"
+        android:summary="@string/epub_loading_templates_summary"
+        android:title="@string/epub_loading_templates"
+        app:iconSpaceReserved="false" />
+
+    <io.legado.app.lib.prefs.Preference
         android:key="coverConfig"
         android:summary="@string/cover_config_summary"
         android:title="@string/cover_config"

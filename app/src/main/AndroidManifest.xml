@@ -329,6 +329,14 @@
             android:name=".ui.config.ShareNoteTemplateManageActivity"
             android:launchMode="standard" />
         <activity
+            android:name=".ui.config.EpubLoadingTemplateManageActivity"
+            android:label="@string/epub_loading_templates"
+            android:exported="false" />
+        <activity
+            android:name=".ui.config.EpubLoadingTemplatePreviewActivity"
+            android:label="@string/epub_loading_preview"
+            android:exported="false" />
+        <activity
             android:name=".ui.config.S3ContainerManageActivity"
             android:launchMode="standard" />
         <activity
@@ -746,6 +754,7 @@
         <receiver
             android:name=".ui.book.cache.AudioCacheActionReceiver"
             android:exported="false" />
+
         <receiver
             android:name=".receiver.ReadGoalWidgetProvider"
             android:exported="true">

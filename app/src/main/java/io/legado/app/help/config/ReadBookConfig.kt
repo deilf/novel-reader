@@ -956,7 +956,7 @@ object ReadBookConfig {
         var titleTopSpacing: Int = 0,
         var titleBottomSpacing: Int = 0,
         var paragraphIndent: String = "　　",//段落缩进
-        var readerTemplateId: String = "",//EPUB 页面模板；空值沿用原排版
+        var readerTemplateId: String = "",//普通正文 EPUB 页面模板；空值在进入阅读时选择默认模板
         var underlineMode: Int = 0, //下划线
         var underlineStrokeWidth: Float = defaultUnderlineStrokeWidth,
         var underlineDashLength: Float = defaultUnderlineDashLength,

@@ -1,8 +1,18 @@
 package io.legado.app.ui.book.read.epub
 
+import io.legado.app.model.localBook.epubcore.template.EpubTemplateException
+import java.util.concurrent.CancellationException
+
 internal object EpubDirectFailureDiagnostics {
 
     private const val MAX_CAUSE_DEPTH = 12
+
+    /** Selecting a template does not make download/font/source failures template failures. */
+    fun templateFailure(throwable: Throwable?): EpubTemplateException? {
+        val chain = causeChain(throwable)
+        if (chain.any { it is CancellationException }) return null
+        return chain.filterIsInstance<EpubTemplateException>().firstOrNull()
+    }
 
     fun userMessage(fallback: String, throwable: Throwable?): String {
         val chain = causeChain(throwable)

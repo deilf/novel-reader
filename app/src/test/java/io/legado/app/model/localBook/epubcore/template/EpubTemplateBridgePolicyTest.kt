@@ -18,11 +18,23 @@ class EpubTemplateBridgePolicyTest {
         """"text":"选中的🌅正文","rects":[{"left":-2.5,"top":4,"right":60,"bottom":32}],"viewportWidth":400,"viewportHeight":700"""
     )).asJsonObject
 
+    @Test fun `ordinary selection rejects removed cross page control fields`() {
+        for (name in listOf("controlled", "changed", "start", "end", "request", "gesture", "pageIndex")) {
+            assertNull(parse(selection().apply { addProperty(name, 1) }.toString()))
+        }
+    }
+
+    @Test fun `large ordinary selections remain available without control metadata`() {
+        val value = selection().apply { addProperty("text", "text".repeat(20000)) }
+        assertNotNull(parse(value.toString()))
+    }
+
     private fun validMessages(): Map<String, String> = linkedMapOf(
         "stable" to wire("stable"),
         "error" to wire("error", """"message":"Template failed""""),
         "metrics" to wire("metrics", """"pageCount":3,"pageIndex":2,"layoutRevision":0"""),
         "renderState" to wire("renderState", """"visualRevision":0,"layoutPending":true"""),
+        "contentChanged" to wire("contentChanged", """"revision":0"""),
         "textPosition" to wire("textPosition", """"page":0,"revision":0,"offset":12"""),
         "selection" to selection().toString(),
         "sourceImage" to wire("sourceImage", """"page":0,"revision":0,"imageId":"image-12","sequence":1"""),
@@ -131,6 +143,13 @@ class EpubTemplateBridgePolicyTest {
         listOf("0", "2", "-2", "-1.5", "\"1\"", "true", "null").forEach { value ->
             assertNull(value, parse(wire("boundary", "\"direction\":$value")))
         }
+    }
+
+    @Test fun `content revisions reject negative fractional and imprecise values`() {
+        for (value in listOf("-1", "0.5", "9007199254740992", "\"1\"", "true")) {
+            assertNull(parse(wire("contentChanged", "\"revision\":$value")))
+        }
+        assertNotNull(parse(wire("contentChanged", "\"revision\":9007199254740991")))
     }
 
     @Test fun `strict JSON rejects duplicate decoded keys comments trailing documents and excessive depth`() {

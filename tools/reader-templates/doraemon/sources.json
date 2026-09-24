@@ -1,0 +1,24 @@
+[
+  {
+    "file": "assets/friends.webp",
+    "url": "https://dora-world.com/assets/images/hd/hd_bg_s01_chara.webp",
+    "sourceSha256": "549a7822b23febea35b00cbd5f36b7b5b7ebb327b2956e981f943d9888c57065",
+    "sha256": "86192cfa24576238bda7218c59b83c27c7d578a60860c6d92942dbe5b26bf7ea",
+    "width": 910,
+    "height": 460,
+    "bytes": 39398,
+    "processing": "RGBA conversion and WebP encoding; original colours and composition preserved.",
+    "copyright": "Fujiko-Pro / Shogakukan and respective rights holders; non-official reader theme."
+  },
+  {
+    "file": "assets/portrait.webp",
+    "url": "https://dora-world.com/assets/images/characters/doraemon/doraemon/ico.png",
+    "sourceSha256": "05c4d99c404d19a2e449c4cd808bec731cb2c054a318fb69675a4b6029abcf96",
+    "sha256": "a1adb0890232b17fa45e9cfc4133e3a6de89bd261177fd1ee5e66c4cee118fda",
+    "width": 200,
+    "height": 200,
+    "bytes": 10774,
+    "processing": "RGBA conversion and WebP encoding; original colours and composition preserved.",
+    "copyright": "Fujiko-Pro / Shogakukan and respective rights holders; non-official reader theme."
+  }
+]

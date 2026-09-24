@@ -9,10 +9,11 @@
     return image.matches('.legado-text-inline-image,.legado-text-bubble') || !!image.closest('.legado-text-image-frame');
   }
 
-  function textRects(element) {
+  function textRects(element, range) {
     var walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT), node, result = [];
+    range = range || document.createRange();
     while ((node = walker.nextNode())) {
-      var range = document.createRange(); range.selectNodeContents(node);
+      range.selectNodeContents(node);
       Array.prototype.forEach.call(range.getClientRects(), function (rect) {
         if (rect.width > .1 && rect.height > .1) result.push(rect);
       });
@@ -21,13 +22,14 @@
   }
   function leading(root, selector) {
     var maximum = 0, visited = 0, styles = new WeakMap();
+    var range = document.createRange();
     var paragraphs = root.querySelectorAll(selector || 'p');
     for (var index = 0; index < paragraphs.length; index++) {
       var paragraph = paragraphs[index], walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT), node;
       while ((node = walker.nextNode())) {
         if (++visited > 20000) return 0;
         if (!node.data.trim()) continue;
-        var range = document.createRange(); range.selectNodeContents(node);
+        range.selectNodeContents(node);
         var rects = range.getClientRects(), rect = null;
         for (var part = 0; part < rects.length; part++) {
           if (rects[part].width > .1 && rects[part].height > .1) { rect = rects[part]; break; }
@@ -50,9 +52,10 @@
     return maximum;
   }
   function textFits(root, bounds, selector) {
+    var range = document.createRange();
     return Array.prototype.every.call(root.querySelectorAll(selector || 'p'), function (paragraph) {
       if (paragraph.closest('[data-legado-reader-chrome]')) return true;
-      return textRects(paragraph).every(function (rect) { return rect.top >= bounds.top - .5 && rect.bottom <= bounds.bottom + .5; });
+      return textRects(paragraph, range).every(function (rect) { return rect.top >= bounds.top - .5 && rect.bottom <= bounds.bottom + .5; });
     });
   }
   function linePaintBounds(line, metrics) {
@@ -187,6 +190,10 @@
   /** Retain native column breaks; move whole rendered lines without scaling glyphs. */
   function align(root, options) {
     clear(root);
+    // Ranges are live: every later DOM insertion updates their boundaries until
+    // they are collected. Thousands of short-lived ranges made cloning each
+    // highlighted line progressively slower. Reuse a bounded set for this pass.
+    var measureRange = document.createRange(), copyRange = document.createRange(), edgeRange = document.createRange();
     var bounds = options.bounds, pageWidth = options.pageWidth || 0;
     var pageFor = function (rect) { return pageWidth ? Math.max(0, Math.floor((rect.left - bounds.left + .5) / pageWidth)) : 0; };
     var sameLine = function (one, two) {
@@ -217,7 +224,7 @@
         }
         var start = 0;
         while (start < node.length) {
-          var range = document.createRange(); range.setStart(node, start); range.setEnd(node, node.length);
+          var range = measureRange; range.setStart(node, start); range.setEnd(node, node.length);
           var rects = rectangles(range);
           if (!rects.length) break;
           var firstRect = rects[0], low = start + 1, high = node.length;
@@ -246,7 +253,7 @@
       if (!groups.length) continue;
       var seenIds = Object.create(null);
       var lines = groups.map(function (group, index) {
-        var range = document.createRange(), first = group.pieces[0];
+        var range = copyRange, first = group.pieces[0];
         var next = groups[index + 1] && groups[index + 1].pieces[0];
         if (index === 0) range.setStart(container, 0);
         else if (first.image) range.setStartBefore(first.node);
@@ -276,7 +283,7 @@
         });
         var spacing = first.node.parentElement.closest('[data-legado-highlight-spacing]');
         if (spacing && !first.image) {
-          var prefix = document.createRange(); prefix.selectNodeContents(spacing); prefix.setEnd(first.node, first.start);
+          var prefix = edgeRange; prefix.selectNodeContents(spacing); prefix.setEnd(first.node, first.start);
           if (prefix.toString().length) {
             var left = span.querySelector('[data-legado-highlight-spacing]');
             if (left) left.style.setProperty('margin-left', '0', 'important');
@@ -285,7 +292,7 @@
         var last = group.pieces[group.pieces.length - 1];
         spacing = last.node.parentElement.closest('[data-legado-highlight-spacing]');
         if (spacing && !last.image) {
-          var suffix = document.createRange(); suffix.selectNodeContents(spacing); suffix.setStart(last.node, last.end);
+          var suffix = edgeRange; suffix.selectNodeContents(spacing); suffix.setStart(last.node, last.end);
           if (suffix.toString().length) {
             var endings = span.querySelectorAll('[data-legado-highlight-spacing]');
             if (endings.length) endings[endings.length - 1].style.setProperty('margin-right', '0', 'important');
@@ -340,7 +347,7 @@
       plan.lines.forEach(function (line) {
         var rs = line.imageOnly ? Array.prototype.map.call(line.span.querySelectorAll('img'), function (image) {
           return image.getBoundingClientRect();
-        }) : textRects(line.span);
+        }) : textRects(line.span, measureRange);
         if (!rs.length) { invalid = true; return; }
         if (rs.some(function (rect) { return !sameLine(rect, line.before); }) ||
           Math.abs(Math.min.apply(null, rs.map(function (rect) { return rect.left; })) - line.before.left) > 1 ||
@@ -372,7 +379,7 @@
     // when the real page/chrome clip would otherwise cut the glyph or decoration.
     var textTop = Math.ceil(Math.max(bounds.top, paintBounds.top + overhangTop) * 64) / 64;
     var textBottom = Math.floor(Math.min(bounds.bottom, paintBounds.bottom - overhangBottom) * 64) / 64;
-    var aligned = [], rejected = [], spacingCost = 0, maxGapAdjustment = 0;
+    var aligned = [], rejected = [], spacingCost = 0, maxGapAdjustment = 0, positionedLines = [];
     Object.keys(pages).forEach(function (key) {
       var rows = pages[key].sort(function (a, b) { return a.top - b.top; });
       if (blockedBottom[key] != null) rows = rows.filter(function (line) { return line.top >= blockedBottom[key] - .5; });
@@ -420,21 +427,27 @@
       // Layout is unchanged: relative positioning shifts painting, selection and
       // hit testing together, while each line retains its original column.
       rows.forEach(function (line, index) {
-        line.span.style.setProperty('top', shifts[index] + 'px', 'important');
+        positionedLines.push({line: line, shift: shifts[index]});
         if (index) {
           var adjustment = shifts[index] - shifts[index - 1];
           spacingCost += Math.pow(adjustment / lastLineHeight, 2);
           maxGapAdjustment = Math.max(maxGapAdjustment, Math.abs(adjustment));
         }
-        Array.prototype.forEach.call(line.span.querySelectorAll('img'), function (image) {
-          imageOffsets.set(image, {span: line.span, shift: shifts[index]});
-        });
       });
       aligned.push({page: Number(key), rows: rows.length,
         imageOnlyRows: rows.filter(function (line) { return line.imageOnly; }).length, top: first.top + topShift,
         bottom: last.bottom + bottomShift, surplus: surplus, topShift: topShift, filledBottom: fillBottom,
         gapAdjustment: rows.length > 1 ? (bottomShift - topShift) / (rows.length - 1) : 0,
         gapLimit: gapLimit, lineAdvance: lastLineHeight});
+    });
+    // Finish every page's measurements before writing positions. Alternating a
+    // page's writes with the next page's style reads flushes the entire chapter
+    // repeatedly, especially when each line carries border-image highlights.
+    positionedLines.forEach(function (entry) {
+      entry.line.span.style.setProperty('top', entry.shift + 'px', 'important');
+      Array.prototype.forEach.call(entry.line.span.querySelectorAll('img'), function (image) {
+        imageOffsets.set(image, {span: entry.line.span, shift: entry.shift});
+      });
     });
     return {alignedPages: aligned.length, pages: aligned, lines: lineCount,
       rejectedPages: rejected, spacingCost: spacingCost, maxGapAdjustment: maxGapAdjustment,

@@ -116,9 +116,16 @@ object TextReaderSessionProvider {
                             deferredImages = true, preparedImages = preparedImages) { image ->
                             checkNotNull(imageUrls[image.id])
                         }
-                        val html = HighlightRules.decorate(sourceHtml, book.bookUrl, false, host, config)
+                        val template = config.readerTemplate
+                        val html = if (template == null) HighlightRules.decorate(sourceHtml, book.bookUrl, false, host, config)
+                            else sourceHtml
                         val href = "text/" + index + "/" + MD5Utils.md5Encode16(chapter.url + html) + ".html"
-                        EpubDirectDocumentBuilder.build(
+                        val prepared = if (template != null) EpubTemplateDocument.create(
+                            chapterIndex = index, href = href, title = content.title, sourceHtml = sourceHtml,
+                            plainText = content.plainText(includeTitle = true), sourceChapterUrl = chapter.url,
+                            resourceHost = host, template = template,
+                            decorate = { HighlightRules.decorateTemplate(it, book.bookUrl, host) }
+                        ) else EpubDirectDocumentBuilder.build(
                             chapterIndex = index,
                             href = href,
                             title = content.title,
@@ -126,7 +133,8 @@ object TextReaderSessionProvider {
                             config = config,
                             density = appCtx.resources.displayMetrics.density,
                             resourceHost = host
-                        ).copy(
+                        )
+                        prepared.copy(
                             plainText = content.plainText(includeTitle = true),
                             sourceChapterUrl = chapter.url,
                             sourceImages = TextReaderSourceImages(
@@ -135,11 +143,7 @@ object TextReaderSessionProvider {
                                 actions = if (sourceActionsEnabled) content.imageActions() else emptyMap(),
                                 resources = registered
                             )
-                        ).let { prepared ->
-                            config.readerTemplate?.let { template ->
-                                EpubTemplateDocument.wrap(prepared, html, template)
-                            } ?: prepared
-                        }.also {
+                        ).also {
                             ensureActive()
                             checkedChapter(index)
                         }

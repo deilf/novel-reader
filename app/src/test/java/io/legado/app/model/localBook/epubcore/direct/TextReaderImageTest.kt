@@ -7,6 +7,47 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TextReaderImageTest {
+    @Test fun commentMetadataWithoutTextStyleKeepsBacktickAndSvgInOneParagraph() {
+        val text = "段尾引号" + '\u0060'
+        for (options in listOf(
+            mapOf("type" to "cmt", "num" to "12", "click" to "showCmt(7)"),
+            mapOf("click" to "showComment(7)"),
+            mapOf("type" to "paragraph", "num" to "12")
+        )) {
+            val raw = svg + "," + GSON.toJson(options)
+            val content = TextReaderDocument.prepare("", "<p>" + text + "<img src=\"" + raw + "\"></p><p>下一段</p>")
+            assertEquals(listOf(text, "下一段"), content.paragraphs(false))
+            assertEquals(2, content.blocks.size)
+            val inline = content.blocks.first().inlineImages.single()
+            assertEquals(text.length, inline.offset)
+            assertTrue(inline.image.inline)
+            val dom = Jsoup.parse(content.html(false) { it })
+            assertEquals(1, dom.select("p.reader-paragraph .legado-text-image-frame img").size)
+            assertTrue(dom.select("figure").isEmpty())
+            assertEquals(text, dom.selectFirst("p")!!.wholeText())
+            options["click"]?.let { assertEquals(it, content.imageActions().values.single().click) }
+        }
+    }
+
+    @Test fun commentActionAttributeAlsoKeepsTheImageInlineWithoutStyle() {
+        val content = TextReaderDocument.prepare("", "<p>“原文”<img src='" + svg + "' click='showCmt(8)'>后文</p>")
+        assertEquals(listOf("“原文”后文"), content.paragraphs(false))
+        assertEquals(4, content.blocks.single().inlineImages.single().offset)
+        assertEquals("showCmt(8)", content.imageActions().values.single().click)
+    }
+
+    @Test fun explicitStandaloneCommentAndOrdinaryClickableImagesKeepTheirLayout() {
+        for (style in listOf("left", "center", "right", "full")) {
+            val raw = svg + "," + GSON.toJson(mapOf("style" to style, "type" to "cmt", "click" to "showCmt(7)"))
+            val content = TextReaderDocument.prepare("", "<p>前<img src=\"" + raw + "\">后</p>")
+            assertEquals(3, content.blocks.size)
+            assertFalse(content.blocks[1].image!!.inline)
+        }
+        val ordinary = TextReaderDocument.prepare("", "<p>前<img src='" + svg + "' click='previewImage()'>后</p>")
+        assertEquals(3, ordinary.blocks.size)
+        assertFalse(ordinary.blocks[1].image!!.inline)
+    }
+
     private val svg = "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2220%22%3E%3Ctext y=%2215%22%3E12%3C/text%3E%3C/svg%3E"
 
     @Test fun `legacy unescaped JSON keeps source actions native and SVG inline`() {

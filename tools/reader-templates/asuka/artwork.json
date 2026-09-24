@@ -1,0 +1,20 @@
+[
+  {
+    "source": "asuka-opening.jpg",
+    "sourceSha256": "0795294406910e0be28e0befe695227c68ffe15ba6bbf4daa4af3f191450694e",
+    "file": "portrait.webp",
+    "width": 1000,
+    "height": 750,
+    "bytes": 77438,
+    "sha256": "0497957219fd459c29c634159413986508de1494cda5a125013159d868a2cf5d"
+  },
+  {
+    "source": "asuka-unit02.png",
+    "sourceSha256": "99eb9a1fc9f12127836e6f19b60dfc78aa533bec95a284ad52805fc7b9de66de",
+    "file": "arrival.webp",
+    "width": 896,
+    "height": 504,
+    "bytes": 40846,
+    "sha256": "02ee10bd3149f5f9e745edb4b98674e3d14a9d3d74c08ab665539365ec4e1acd"
+  }
+]

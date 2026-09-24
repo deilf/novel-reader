@@ -22,9 +22,9 @@ internal data class EpubReaderTemplateLibrary(
     fun toJson(): String {
         validate()
         return EpubReaderTemplate.json.toJson(JsonObject().apply {
-            addProperty("schemaVersion", EpubReaderTemplate.SCHEMA_VERSION)
+            addProperty("schemaVersion", if (templates.any { it.isScrolling }) EpubReaderTemplate.SCROLL_SCHEMA_VERSION else EpubReaderTemplate.SCHEMA_VERSION)
             add("templates", JsonArray().apply {
-                templates.forEach { add(EpubReaderTemplate.json.toJsonTree(it)) }
+                templates.forEach { add(it.toJsonObject()) }
             })
             if (hiddenBuiltInIds.isNotEmpty()) {
                 add("hiddenBuiltInIds", JsonArray().apply { hiddenBuiltInIds.sorted().forEach { add(it) } })
@@ -38,7 +38,7 @@ internal data class EpubReaderTemplateLibrary(
         }
 
         fun fromJsonObject(root: JsonObject): EpubReaderTemplateLibrary {
-            require(EpubReaderTemplate.readVersion(root) == EpubReaderTemplate.SCHEMA_VERSION) {
+            require(EpubReaderTemplate.readVersion(root) in EpubReaderTemplate.SCHEMA_VERSION..EpubReaderTemplate.SCROLL_SCHEMA_VERSION) {
                 "不支持的模板库版本"
             }
             val templates = root.get("templates")

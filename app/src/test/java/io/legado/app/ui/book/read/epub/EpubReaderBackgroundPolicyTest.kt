@@ -7,6 +7,14 @@ import org.junit.Test
 
 class EpubReaderBackgroundPolicyTest {
 
+    @Test fun `a page template excludes the old background even when the old image setting is enabled`() {
+        assertFalse(EpubReaderBackgroundPolicy.shouldUseReaderBackground(
+            readerBackgroundImage = true, layoutMode = EpubDirectLayoutMode.REFLOWABLE,
+            fullPageArtwork = false, implicitSinglePage = false, duokanGallery = false,
+            publisherPageBackground = false, readerTemplateActive = true
+        ))
+    }
+
     @Test
     fun `reader image background is limited to ordinary reflowable body text`() {
         assertTrue(shouldUse(EpubDirectLayoutMode.REFLOWABLE))

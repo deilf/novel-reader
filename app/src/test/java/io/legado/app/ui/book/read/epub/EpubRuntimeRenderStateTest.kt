@@ -94,6 +94,51 @@ class EpubRuntimeRenderStateTest {
         assertTrue(state.canCapture)
     }
 
+    @Test
+    fun `pending bridge notification cannot reopen a revision already measured as settled`() {
+        val state = readyState()
+        assertTrue(state.measured(7L, 2L, false, state.sequence))
+        assertFalse(state.changed(7L, 2L, true))
+        assertTrue(state.canCapture)
+        assertTrue(state.changed(7L, 3L, true))
+        assertFalse(state.canCapture)
+    }
+
+    @Test
+    fun `settled revision fence is local to its document token`() {
+        val state = readyState()
+        state.reset(8L)
+        assertTrue(state.changed(8L, 0L, true))
+        assertFalse(state.canCapture)
+        assertTrue(state.changed(8L, 0L, false))
+        assertTrue(state.measured(8L, 0L, false, state.sequence))
+    }
+
+    @Test
+    fun `settled query completes the current pending revision before its bridge reply`() {
+        val state = readyState()
+        assertTrue(state.changed(7L, 2L, true))
+        assertTrue(state.measured(7L, 2L, false, state.sequence))
+        assertTrue(state.canCapture)
+        assertFalse(state.changed(7L, 2L, false))
+        assertFalse(state.changed(7L, 2L, true))
+    }
+
+    @Test
+    fun `template page presentation preserves content identity while real edits invalidate it`() {
+        val state = readyState()
+        assertFalse(state.contentChanged(7L, 3L))
+        state.changed(7L, 2L, true)
+        assertFalse(state.contentChanged(7L, 3L))
+        assertTrue(state.contentChanged(7L, 4L))
+        assertFalse(state.contentChanged(7L, 3L))
+        assertFalse(state.contentChanged(6L, 5L))
+        assertEquals(4L, state.contentRevision)
+        state.reset(8L)
+        assertFalse(state.contentChanged(8L, 0L))
+        assertTrue(state.contentChanged(8L, 1L))
+    }
+
     private fun readyState() = EpubRuntimeRenderState().apply {
         reset(7L)
         changed(7L, 1L, false)

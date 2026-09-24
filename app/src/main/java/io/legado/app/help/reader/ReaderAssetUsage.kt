@@ -9,7 +9,7 @@ object ReaderAssetUsage {
         rules.filter { it.asset == id || id in ReaderAssetReferences.ids(it.styleCssText) }
             .forEach { add("高亮规则 · ${it.displayName()}") }
         templates.filter {
-            id in ReaderAssetReferences.ids(it.firstPageHtml + "\n" + it.otherPageHtml + "\n" + it.css + "\n" + it.javascript)
+            id in ReaderAssetReferences.ids(it.resourceSource())
         }.forEach { add("EPUB 页面 · ${it.name}") }
     }
 }

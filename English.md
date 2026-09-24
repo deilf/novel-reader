@@ -12,7 +12,7 @@ The app does not include books or book sources. Add your own sources or import l
 - [Gitee Releases](https://gitee.com/zziji/legado/releases)
 - [Gitee update channel](https://gitee.com/zziji/legado/releases/tag/latest-arm64-release)
 
-Version 14, `3.26.09160852-smooth`, is available as an arm64-v8a APK. See the release pages for downloads and full release notes.
+Version 15, `3.26.09242230`, is available as an arm64-v8a APK. See the release pages for downloads and full release notes.
 
 ## Features
 
@@ -20,7 +20,8 @@ Version 14, `3.26.09160852-smooth`, is available as an arm64-v8a APK. See the re
 - Organize books with groups, custom tags, batch management and an immersive details page.
 - Use native rendering or EPUB rendering for ordinary text, with separate layout settings.
 - Import local Reeden `.red` highlight rules, search and edit rules, and select fonts and background images.
-- Customize first and continuation pages with HTML, CSS and JavaScript. Two built-in examples demonstrate horizontal and vertical layouts.
+- Customize first and continuation pages with HTML, CSS and JavaScript. Built-in themes include Minecraft, Asuka, Lord of the Mysteries and Doraemon. Scrolling templates keep the frame fixed while the text scrolls.
+- Customize EPUB loading screens in My → Interface settings. Camellia is the default, with day/night palettes and artwork extending behind the status bar.
 - Share locally imported images and fonts between highlight rules and page templates.
 - Preload nearby chapters and reuse laid-out WebViews to reduce work during page turns. Smooth mode prepares up to four nearby chapters; Extreme mode prepares up to six.
 - Configure themes, backgrounds, advanced headers and footers, comment bubbles and reading controls.
@@ -37,7 +38,7 @@ DoH is off by default and configuration changes require an app restart. Requests
 ## Documentation
 
 - [Full feature guide (Chinese)](docs/features.md)
-- [Version 14 release notes (Chinese)](docs/releases/2026-09-17-v14.md)
+- [Version 15 release notes (Chinese)](docs/releases/2026-09-24-v15.md)
 - [Page templates](docs/reader-templates.md)
 - [Network and DNS](docs/doh-network.md)
 - [Changelog](CHANGELOG.md)

@@ -20,6 +20,7 @@ import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.ContentEditDialog
+import io.legado.app.ui.book.read.SelectionEdgeAutoPager
 import io.legado.app.ui.book.read.page.api.DataSource
 import io.legado.app.ui.book.read.page.delegate.CoverPageDelegate
 import io.legado.app.ui.book.read.page.delegate.DoublePageSimulationPageDelegate
@@ -106,6 +107,63 @@ class ReadView(context: Context, attrs: AttributeSet) :
     var isTextSelected = false
     private var pressOnTextSelected = false
     private val initialTextPos = TextPos(0, 0, 0)
+    private var selectionHandle: Boolean? = null
+    private var selectionTurning = false
+    private val selectionAutoPager = SelectionEdgeAutoPager(this) { direction, x, y, complete ->
+        complete(turnSelectionPage(direction, x, y))
+    }
+
+    fun beginSelectionHandleDrag(start: Boolean) {
+        if (!isTextSelected || curPage.hasNativeSelection()) return
+        selectionHandle = start
+        selectionAutoPager.begin()
+    }
+
+    fun moveSelectionHandle(x: Float, y: Float) {
+        if (!isTextSelected || selectionHandle == null) return
+        updateSelectionAt(x, y)
+        selectionAutoPager.update(x, y, curPage.selectionTop, curPage.selectionBottom)
+    }
+
+    fun endSelectionHandleDrag() {
+        selectionAutoPager.cancel()
+        selectionHandle = null
+        curPage.resetReverseCursor()
+        if (isTextSelected) curPage.refreshSelectionHandles()
+    }
+
+    private fun updateSelectionAt(x: Float, y: Float) {
+        when (selectionHandle) {
+            true -> if (curPage.getReverseStartCursor()) curPage.selectEndMove(x, y) else curPage.selectStartMove(x, y)
+            false -> if (curPage.getReverseEndCursor()) curPage.selectStartMove(x, y) else curPage.selectEndMove(x, y)
+            null -> selectText(x, y)
+        }
+    }
+
+    private fun turnSelectionPage(direction: Int, x: Float, y: Float): Boolean {
+        if (!isTextSelected || curPage.hasNativeSelection() || selectionTurning ||
+            pageDelegate?.isRunning == true || direction !in listOf(-1, 1)
+        ) return false
+        val chapter = currentChapter ?: return false
+        if (curPage.textPage.textChapter !== chapter) return false
+        val before = pageIndex
+        val step = if (ChapterProvider.doublePage && !isScroll) 2 else 1
+        val target = before + direction * step
+        // Never fetch a chapter or await progressive layout while a finger is held.
+        if (chapter.getPage(target) == null) return false
+        selectionTurning = true
+        try {
+            ReadBook.setPageIndex(target)
+            initialTextPos.relativePagePos -= target - before
+            upContent(0, true)
+            updateSelectionAt(x, y)
+            invalidateTextPage()
+            invalidate()
+        } finally {
+            selectionTurning = false
+        }
+        return pageIndex == target && currentChapter === chapter
+    }
 
     private val slopSquare by lazy { ViewConfiguration.get(context).scaledTouchSlop }
     private var pageSlopSquare: Int = slopSquare
@@ -202,6 +260,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        if (constructed && (w != oldw || h != oldh)) cancelSelect()
         setRect9x()
         prevPage.x = -w.toFloat()
         pageDelegate?.setViewSize(w, h)
@@ -251,6 +310,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
 
         //在多点触控时，事件不走ACTION_DOWN分支而产生的特殊事件处理
         if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+            selectionAutoPager.cancel()
             pageDelegate?.onTouch(event)
         }
         when (event.action) {
@@ -284,6 +344,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
                     removeCallbacks(longPressRunnable)
                     if (isTextSelected) {
                         selectText(event.x, event.y)
+                        selectionAutoPager.update(event.x, event.y, curPage.selectionTop, curPage.selectionBottom)
                         showSelectionMagnifier(event.x, event.y)
                     } else {
                         pageDelegate?.onTouch(event)
@@ -292,6 +353,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
             }
 
             MotionEvent.ACTION_UP -> {
+                selectionAutoPager.cancel()
                 dismissSelectionMagnifier()
                 callBack.screenOffTimerStart()
                 removeCallbacks(longPressRunnable)
@@ -318,6 +380,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                selectionAutoPager.cancel()
                 dismissSelectionMagnifier()
                 removeCallbacks(longPressRunnable)
                 if (!pressDown) return true
@@ -336,6 +399,8 @@ class ReadView(context: Context, attrs: AttributeSet) :
     }
 
     fun cancelSelect(clearSearchResult: Boolean = false) {
+        selectionAutoPager.cancel()
+        selectionHandle = null
         if (isTextSelected) {
             dismissSelectionMagnifier()
             curPage.cancelSelect(clearSearchResult)
@@ -454,6 +519,8 @@ class ReadView(context: Context, attrs: AttributeSet) :
                 }
                 curPage.selectStartMoveIndex(startPos)
                 curPage.selectEndMoveIndex(endPos)
+                selectionHandle = null
+                selectionAutoPager.begin()
                 showSelectionMagnifier(startX, startY)
             }
             if (handled && curPage.hasNativeSelection()) {
@@ -584,6 +651,8 @@ class ReadView(context: Context, attrs: AttributeSet) :
      * 销毁事件
      */
     fun onDestroy() {
+        selectionAutoPager.cancel()
+        removeCallbacks(longPressRunnable)
         dismissSelectionMagnifier()
         disposeAdvancedTitleRequests()
         pageDelegate?.onDestroy()
@@ -689,6 +758,9 @@ class ReadView(context: Context, attrs: AttributeSet) :
     fun ensurePageTurnSnapshotsForGesture() = Unit
 
     override fun upContent(relativePosition: Int, resetPageOffset: Boolean) {
+        if (relativePosition == 0 && isTextSelected && !selectionTurning &&
+            curPage.textPage !== pageFactory.curPage
+        ) cancelSelect()
         post {
             curPage.setContentDescription(pageFactory.curPage.text)
         }
@@ -741,6 +813,7 @@ class ReadView(context: Context, attrs: AttributeSet) :
      * 更新样式
      */
     fun upStyle() {
+        if (constructed) cancelSelect()
         ChapterProvider.upStyle()
         curPage.upStyle()
         prevPage.upStyle()
@@ -758,6 +831,17 @@ class ReadView(context: Context, attrs: AttributeSet) :
         curPage.upBg()
         prevPage.upBg()
         nextPage.upBg()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (!hasWindowFocus) selectionAutoPager.cancel()
+    }
+
+    override fun onDetachedFromWindow() {
+        selectionAutoPager.cancel()
+        removeCallbacks(longPressRunnable)
+        super.onDetachedFromWindow()
     }
 
     /**
