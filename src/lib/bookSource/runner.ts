@@ -14,6 +14,25 @@ export interface SourceState {
   error?: string
 }
 
+/** jsLib 缓存（URL → 代码），上限 32 条 */
+const jsLibCache = new Map<string, string>()
+
+/** 加载书源的 jsLib 公共脚本（缓存） */
+export async function loadJsLib(source: BookSource): Promise<string | undefined> {
+  const url = source.jsLib
+  if (!url) return undefined
+  if (jsLibCache.has(url)) return jsLibCache.get(url)
+  if (jsLibCache.size > 32) jsLibCache.clear()
+  try {
+    const resp = await httpFetch({ url, timeout_ms: 15_000 })
+    if (resp.status >= 400) return undefined
+    jsLibCache.set(url, resp.body)
+    return resp.body
+  } catch {
+    return undefined
+  }
+}
+
 /** 请求页面，自动判断 JSON/HTML */
 async function fetchPage(source: BookSource, url: string): Promise<{ html: string; json: any; finalUrl: string }> {
   const resp = await httpFetch({
@@ -96,7 +115,8 @@ export async function searchBySource(source: BookSource, key: string): Promise<B
     return books
   }
 
-  const scope = makeScope(html, null, base, source, vars)
+  const jsLibCode = await loadJsLib(source)
+  const scope = makeScope(html, null, base, source, vars, jsLibCode)
   const items = evalElementList(source.ruleSearch.bookList, scope)
   const books: BookItem[] = []
   for (const el of items) {
@@ -170,7 +190,8 @@ export async function getBookInfoAndToc(source: BookSource, book: BookItem): Pro
   const { html, json, finalUrl } = await fetchPage(source, detailUrl)
   const base = finalUrl || baseUrl
 
-  const scope = makeScope(html, json, base, source, vars)
+  const jsLibCode = await loadJsLib(source)
+  const scope = makeScope(html, json, base, source, vars, jsLibCode)
 
   const bookInfo: BookInfo = {
     bookName: evalRule(source.ruleBookInfo?.name, scope) || book.bookName,
@@ -240,7 +261,8 @@ export async function getChapterContent(
   const { html, json, finalUrl } = await fetchPage(source, url)
   const base = finalUrl || baseUrl
 
-  const scope = makeScope(html, json, base, source, vars)
+  const jsLibCode = await loadJsLib(source)
+  const scope = makeScope(html, json, base, source, vars, jsLibCode)
   let content = evalRule(contentRule.content, scope).trim()
 
   // nextContent 翻页（最多 5 页）

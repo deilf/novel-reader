@@ -25,6 +25,8 @@ export interface RuleScope {
   vars: Record<string, string>
   /** 当前书源 */
   source: BookSource
+  /** jsLib 公共脚本代码（可选） */
+  jsLibCode?: string
 }
 
 /** 全局变量存储（put/get） */
@@ -325,10 +327,25 @@ function xpathFromHtml(html: string, expr: string): string {
   }
 }
 
+/** 把 Legado 风格的裸选择器参数（$.css(.n)）转换为合法 JS 字符串 */
+function normalizeDollarCalls(code: string): string {
+  return code.replace(
+    /(\$\.(?:css|xpath|regex|json))\s*\(\s*([^()]*?)\s*\)/g,
+    (_m, fn: string, argsRaw: string) => {
+      const args = argsRaw.split(',').map((a: string) => a.trim())
+      const out = args.map((a: string) =>
+        /^[.#][A-Za-z_][\w-]*$/.test(a) ? JSON.stringify(a) : a,
+      )
+      return `${fn}(${out.join(', ')})`
+    },
+  )
+}
+
 /** 执行 JS 规则代码（new Function 沙箱，注入 Legado 常用对象） */
 export function runJs(code: string, scope: RuleScope): string {
   const src = scope.source
   const vars = scope.vars
+  code = normalizeDollarCalls(code)
 
   const java: Record<string, unknown> = {
     baseUrl: scope.baseUrl,
@@ -348,6 +365,25 @@ export function runJs(code: string, scope: RuleScope): string {
     ajax: () => { throw new Error('java.ajax 同步请求在 M1 暂不支持') },
     base64Encode: (s: unknown) => btoa(unescape(encodeURIComponent(String(s ?? '')))),
     base64Decode: (s: unknown) => decodeURIComponent(escape(atob(String(s ?? '')))),
+  }
+
+  // $ 对象：Legado 规则 JS 中常见的选择器风格（$.css / $.xpath / $.regex / $.json）
+  // 与 java.* 不同，$ 的方法默认作用于当前页面上下文（scope.html / scope.json）
+  const dollar: Record<string, unknown> = {
+    css: (selector: string, attr?: string) => evalCss(scope, attr ? `${selector}@${attr}` : selector),
+    xpath: (expr: string) => xpathSelect(scope, expr).filter((v) => v).join('\n'),
+    regex: (pattern: string, flags?: string) =>
+      regexMatch(scope.elements[0]?.textContent ?? scope.html, pattern, flags),
+    json: (path: string) => evalJson(scope, path),
+    getBaseUrl: (url: string) => {
+      try { return new URL(url).origin } catch { return '' }
+    },
+    trim: java.trim,
+    nonNull: java.nonNull,
+    urlEncode: java.urlEncode,
+    urlDecode: java.urlDecode,
+    base64Encode: java.base64Encode,
+    base64Decode: java.base64Decode,
   }
 
   const js: Record<string, unknown> = {
@@ -372,13 +408,13 @@ export function runJs(code: string, scope: RuleScope): string {
   try {
     // eslint-disable-next-line no-new-func
     const fn = new Function(
-      'java', 'js', 'source', 'result', 'baseUrl', 'key', 'page',
-      'cookie', 'webView', 'put', 'get',
-      `"use strict";\nreturn (${code});`,
+      'java', 'js', '$', 'source', 'result', 'baseUrl', 'key', 'page',
+      'cookie', 'webView', 'window', 'put', 'get',
+      `"use strict";\n${scope.jsLibCode ? scope.jsLibCode + '\n' : ''}return (${code});`,
     )
     const result = fn(
-      java, js, src, scope.elements[0] ?? null, scope.baseUrl,
-      vars.key ?? '', vars.page ?? '', '', null, put, get,
+      java, js, dollar, src, scope.elements[0] ?? null, scope.baseUrl,
+      vars.key ?? '', vars.page ?? '', '', {}, put, get,
     )
     if (result === null || result === undefined) return ''
     if (Array.isArray(result)) {
@@ -671,7 +707,14 @@ export function evalElementList(rule: string | undefined, scope: RuleScope): Ele
 }
 
 /** 创建初始作用域 */
-export function makeScope(html: string, json: any, baseUrl: string, source: BookSource, vars: Record<string, string>): RuleScope {
+export function makeScope(
+  html: string,
+  json: any,
+  baseUrl: string,
+  source: BookSource,
+  vars: Record<string, string>,
+  jsLibCode?: string,
+): RuleScope {
   return {
     html,
     doc: null,
@@ -680,5 +723,6 @@ export function makeScope(html: string, json: any, baseUrl: string, source: Book
     baseUrl,
     vars,
     source,
+    jsLibCode,
   }
 }

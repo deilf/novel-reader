@@ -1,5 +1,5 @@
 <template>
-  <div class="reader-view">
+  <div class="reader-view" :class="'theme-' + theme">
     <div class="reader-header">
       <button class="back-btn" @click="$emit('back')">← 目录</button>
       <span class="chapter-title">{{ title }}</span>
@@ -9,6 +9,7 @@
           {{ bookmarked ? '🔖' : '➖' }}
         </button>
         <button class="tool-btn" title="简繁转换" @click="cycleLang">{{ langLabel }}</button>
+        <button class="tool-btn" title="切换主题" @click="cycleTheme">{{ themeLabel }}</button>
         <button class="font-btn" @click="fontSize -= 2" :disabled="fontSize <= 12">A-</button>
         <span class="font-size">{{ fontSize }}</span>
         <button class="font-btn" @click="fontSize += 2" :disabled="fontSize >= 28">A+</button>
@@ -39,6 +40,13 @@ import { applyReplaceRules } from '../lib/bookSource/replace'
 import { toTraditional } from '../lib/bookSource/traditional'
 import { saveReadingProgress } from '../lib/bookSource/shelf'
 
+type Theme = 'light' | 'sepia' | 'dark'
+const THEMES: { key: Theme; label: string }[] = [
+  { key: 'light', label: '☀' },
+  { key: 'sepia', label: '🟤' },
+  { key: 'dark', label: '🌙' },
+]
+
 const props = defineProps<{
   sources: BookSource[]
   book: BookItem
@@ -57,8 +65,16 @@ const lineHeight = ref(1.9)
 const rules = ref<ReplaceRule[]>([])
 const bookmarked = ref(false)
 const langMode = ref<'cn' | 'tw'>('cn')
+const theme = ref<Theme>((localStorage.getItem('nr-theme') as Theme) || 'light')
 
 const langLabel = computed(() => (langMode.value === 'cn' ? '繁' : '简'))
+const themeLabel = computed(() => THEMES.find((t) => t.key === theme.value)?.label ?? '☀')
+
+function cycleTheme() {
+  const idx = THEMES.findIndex((t) => t.key === theme.value)
+  theme.value = THEMES[(idx + 1) % THEMES.length].key
+  localStorage.setItem('nr-theme', theme.value)
+}
 
 const idx = computed(() => props.chapters.findIndex((c) => c.chapterUrl === props.chapter.chapterUrl))
 const prevChapter = computed(() => (idx.value > 0 ? props.chapters[idx.value - 1] : null))
@@ -178,14 +194,30 @@ function goTo(ch: Chapter | null) {
   max-width: 760px;
   margin: 0 auto;
   width: 100%;
+  --bg: #fbfaf6;
+  --fg: #333;
+  --bar: #fff;
+  --border: #eee;
+}
+.reader-view.theme-sepia {
+  --bg: #f6efe2;
+  --fg: #4a3f2f;
+  --bar: #efe6d2;
+  --border: #e3d7bd;
+}
+.reader-view.theme-dark {
+  --bg: #1c1c1e;
+  --fg: #c9c9c9;
+  --bar: #262629;
+  --border: #3a3a3d;
 }
 .reader-header {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border-bottom: 1px solid #eee;
-  background: #fff;
+  border-bottom: 1px solid var(--border);
+  background: var(--bar);
   flex-wrap: wrap;
 }
 .back-btn {
@@ -222,8 +254,8 @@ function goTo(ch: Chapter | null) {
   flex: 1;
   overflow-y: auto;
   padding: 18px 20px;
-  background: #fbfaf6;
-  color: #333;
+  background: var(--bg);
+  color: var(--fg);
 }
 .content-text { white-space: pre-wrap; word-break: break-word; }
 .empty-tip { text-align: center; color: #999; padding: 40px 0; }
@@ -231,8 +263,8 @@ function goTo(ch: Chapter | null) {
   display: flex;
   gap: 10px;
   padding: 10px 14px;
-  border-top: 1px solid #eee;
-  background: #fff;
+  border-top: 1px solid var(--border);
+  background: var(--bar);
 }
 .nav-btn {
   flex: 1;
