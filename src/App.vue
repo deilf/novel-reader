@@ -15,7 +15,20 @@
     </nav>
 
     <!-- 书源管理 -->
-    <SourceManager v-if="currentTab === 'sources'" :sources="sources" @refresh="refreshSources" />
+    <SourceManager
+      v-if="currentTab === 'sources' && !editingSource"
+      :sources="sources"
+      @refresh="refreshSources"
+      @edit="editingSource = $event"
+    />
+
+    <!-- 书源规则编辑器 -->
+    <SourceEditorView
+      v-else-if="currentTab === 'sources' && editingSource"
+      :source="editingSource"
+      @back="editingSource = null"
+      @saved="refreshSources"
+    />
 
     <!-- 替换净化 -->
     <ReplaceRulesView v-else-if="currentTab === 'replace'" />
@@ -73,6 +86,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import SourceManager from './components/SourceManager.vue'
+import SourceEditorView from './components/SourceEditorView.vue'
 import ReplaceRulesView from './components/ReplaceRulesView.vue'
 import BookshelfView from './components/BookshelfView.vue'
 import LocalBooksView from './components/LocalBooksView.vue'
@@ -101,6 +115,7 @@ const chapters = ref<Chapter[]>([])
 const activeChapter = ref<Chapter | null>(null)
 const localReading = ref<LocalBook | null>(null)
 const resumeChapterUrl = ref<string | undefined>(undefined)
+const editingSource = ref<BookSource | null>(null)
 
 async function refreshSources() {
   sources.value = await listBookSources()
@@ -115,6 +130,9 @@ async function switchTab(key: string) {
   }
   if (key !== 'local') {
     localReading.value = null
+  }
+  if (key !== 'sources') {
+    editingSource.value = null
   }
 }
 
@@ -155,13 +173,14 @@ onMounted(refreshSources)
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  background: #fff;
 }
 .top-nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 14px;
+  padding: calc(var(--safe-top) + 10px) 14px 10px;
   background: #fff;
   border-bottom: 1px solid #eee;
   flex-wrap: wrap;

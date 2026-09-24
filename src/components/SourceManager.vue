@@ -10,13 +10,15 @@
       <textarea
         v-model="importText"
         placeholder="粘贴 Legado 导出的书源 JSON（数组或单个对象）..."
-        rows="6"
+        rows="4"
       ></textarea>
+      <input v-model="importUrl" placeholder="或粘贴书源分享 URL（https://... 的 JSON）" />
       <div class="import-actions">
-        <button class="btn primary" :disabled="!importText.trim() || importing" @click="handleImport">
+        <button class="btn primary" :disabled="(!importText.trim() && !importUrl.trim()) || importing" @click="handleImport">
           {{ importing ? '导入中...' : '导入书源' }}
         </button>
-        <button class="btn" @click="importText = ''">清空</button>
+        <button class="btn" @click="exportAll">导出全部</button>
+        <button class="btn" @click="importText = ''; importUrl = ''">清空</button>
       </div>
       <div v-if="importMessage" class="import-msg" :class="{ error: importError }">{{ importMessage }}</div>
     </div>
@@ -38,6 +40,7 @@
           <div class="src-meta" v-if="src.bookSourceComment">{{ src.bookSourceComment }}</div>
         </div>
         <div class="src-actions">
+          <button class="btn small" @click="edit(src)">编辑</button>
           <button
             class="btn small"
             :class="src.enabled ? 'on' : ''"
@@ -60,14 +63,26 @@ import type { BookSource } from '../lib/bookSource/types'
 import { clearBookSources, deleteBookSource, importBookSources, toggleBookSource } from '../lib/bookSource/store'
 
 const props = defineProps<{ sources: BookSource[] }>()
-const emit = defineEmits<{ (e: 'refresh'): void }>()
+const emit = defineEmits<{ (e: 'refresh'): void; (e: 'edit', source: BookSource): void }>()
 
 const importText = ref('')
+const importUrl = ref('')
 const importing = ref(false)
 const importMessage = ref('')
 const importError = ref(false)
 
 const enabledCount = computed(() => props.sources.filter((s) => s.enabled).length)
+
+function edit(src: BookSource) {
+  emit('edit', src)
+}
+
+function exportAll() {
+  const json = JSON.stringify(props.sources, null, 2)
+  navigator.clipboard?.writeText(json).catch(() => {})
+  importMessage.value = `已复制 ${props.sources.length} 个书源的 JSON 到剪贴板`
+  importError.value = false
+}
 
 function parseImport(text: string): BookSource[] {
   const data = JSON.parse(text)
@@ -78,6 +93,15 @@ function parseImport(text: string): BookSource[] {
 async function handleImport() {
   try {
     importing.value = true
+    // URL 导入：拉取远程 JSON
+    if (!importText.value.trim() && importUrl.value.trim()) {
+      const { httpFetch } = await import('../lib/bookSource/http')
+      const resp = await httpFetch({ url: importUrl.value.trim() })
+      if (resp.status >= 400) {
+        throw new Error(`HTTP ${resp.status}`)
+      }
+      importText.value = resp.body
+    }
     importError.value = false
     const sources = parseImport(importText.value)
     if (sources.length === 0) {
@@ -130,6 +154,15 @@ async function clearAll() {
 }
 .sm-header h2 { font-size: 20px; }
 .sm-count { font-size: 13px; color: #666; }
+.import-box input {
+  width: 100%;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+  margin-top: 8px;
+}
 .import-box textarea {
   width: 100%;
   border: 1px solid #ddd;
