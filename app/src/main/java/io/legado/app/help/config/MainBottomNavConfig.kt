@@ -66,8 +66,12 @@ object MainBottomNavConfig {
     }
 
     fun visibleItems(): List<ItemState> {
-        return items().filter { item ->
-            item.visible || spec(item.key)?.lockedVisible == true
+        // Metro: 一级导航严格收敛为 4 个底部 Tab（书架/发现/订阅/我的）。
+        // readRecord 从底部栏隐藏，入口保留在「我的」设置列表（ReadRecordActivity）。
+        val metroOrder = listOf(KEY_BOOKSHELF, KEY_DISCOVERY, KEY_RSS, KEY_MY)
+        val all = items()
+        return metroOrder.map { key ->
+            all.firstOrNull { it.key == key } ?: ItemState(key, true)
         }
     }
 

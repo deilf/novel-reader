@@ -133,6 +133,9 @@ import kotlin.coroutines.resume
 import io.legado.app.help.update.AppUpdate
 import io.legado.app.ui.about.UpdateDialog
 import io.legado.app.ui.book.search.SearchActivity
+import io.legado.app.ui.book.cache.CacheManageActivity
+import io.legado.app.ui.config.ConfigActivity
+import io.legado.app.ui.config.ConfigTag
 import io.legado.app.utils.dpToPx
 import kotlin.math.abs
 import kotlin.math.min
@@ -476,6 +479,27 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             ?: 0
     }
 
+    private fun updateMetroHeader(position: Int) = binding.run {
+        when (realPositions.getOrElse(position) { idBookshelf }) {
+            idExplore -> {
+                metroTitle.text = "发现"
+                metroWatermark.text = "EXPLORE"
+            }
+            idRss -> {
+                metroTitle.text = "订阅"
+                metroWatermark.text = "RSS"
+            }
+            idMy -> {
+                metroTitle.text = "我的"
+                metroWatermark.text = "ME"
+            }
+            else -> {
+                metroTitle.text = "书架"
+                metroWatermark.text = "BOOKSHELF"
+            }
+        }
+    }
+
     override fun onNavigationItemReselected(item: MenuItem) {
         when (item.itemId) {
             R.id.menu_bookshelf -> {
@@ -536,6 +560,30 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             }
             true
         }
+        // Metro 三点收起式应用栏
+        metroDockToggle.setOnClickListener {
+            val show = metroDockTools.visibility != View.VISIBLE
+            metroDockTools.visibility = if (show) View.VISIBLE else View.GONE
+        }
+        metroDockSearch.setOnClickListener {
+            metroDockTools.visibility = View.GONE
+            startActivity(Intent(this@MainActivity, SearchActivity::class.java))
+        }
+        metroDockNight.setOnClickListener {
+            AppConfig.isNightTheme = !AppConfig.isNightTheme
+            ThemeConfig.applyDayNight(this@MainActivity)
+        }
+        metroDockDownload.setOnClickListener {
+            metroDockTools.visibility = View.GONE
+            startActivity(Intent(this@MainActivity, CacheManageActivity::class.java))
+        }
+        metroDockSettings.setOnClickListener {
+            metroDockTools.visibility = View.GONE
+            startActivity(Intent(this@MainActivity, ConfigActivity::class.java).apply {
+                putExtra("configTag", ConfigTag.OTHER_CONFIG)
+            })
+        }
+        updateMetroHeader(initialPage)
         syncLiquidGlassSampleBackground()
         scheduleLiquidGlassWarmup()
         contentContainer.doOnPreDraw {
@@ -2432,6 +2480,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             binding.bottomNavigationView.menu.findItem(getBottomNavigationItemId(position))?.isChecked = true
             updateSideNavigationItems()
             updateBottomNavigationIndicator(animate = true)
+            updateMetroHeader(position)
             scheduleLiquidGlassWarmup()
         }
 
