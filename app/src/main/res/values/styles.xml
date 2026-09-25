@@ -35,6 +35,15 @@
         <item name="android:popupMenuStyle">@style/Style.PopupMenu</item>
         <item name="android:statusBarColor">@color/transparent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowAnimationStyle">@style/Metro.ActivityAnim</item>
+    </style>
+
+    <!-- Metro: 页面从右侧滑入、返回右滑出（250ms） -->
+    <style name="Metro.ActivityAnim" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/metro_slide_in_right</item>
+        <item name="android:activityOpenExitAnimation">@anim/metro_slide_out_left</item>
+        <item name="android:activityCloseEnterAnimation">@anim/metro_slide_in_left</item>
+        <item name="android:activityCloseExitAnimation">@anim/metro_slide_out_right</item>
     </style>
 
     <style name="AppTheme.AppBarOverlay.Light" parent="ThemeOverlay.AppCompat.Light">

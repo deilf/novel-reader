@@ -614,11 +614,13 @@
                 android:layout_height="48dp"
                 android:layout_marginStart="6dp"
                 android:layout_weight="1"
+                android:background="@color/primary"
                 android:gravity="center"
                 android:includeFontPadding="false"
                 android:text="@string/reading"
+                android:textColor="#FFFFFF"
                 android:textSize="15sp"
-                app:radius="14dp" />
+                app:radius="0dp" />
 
         </LinearLayout>
 
