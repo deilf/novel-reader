@@ -27,11 +27,12 @@
 
     </FrameLayout>
 
-    <!-- Metro 超大标题 + 英文浅色背景水印（纯视觉层，不拦截触摸） -->
+    <!-- Metro 超大标题 + 英文浅色背景水印（纯视觉层；v0.6 隐藏以消除与书架顶栏重叠压书） -->
     <FrameLayout
         android:id="@+id/metro_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:visibility="gone"
         android:clickable="false"
         android:focusable="false"
         android:importantForAccessibility="no"

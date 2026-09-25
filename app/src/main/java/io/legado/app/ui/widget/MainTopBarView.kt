@@ -418,8 +418,9 @@ class MainTopBarView @JvmOverloads constructor(
         searchEntry.isVisible = searchEntryRequested
         titleSpacer.isVisible = !searchEntryRequested
         titleSelect.background = null
-        searchEntry.background = TopBarSearchStyle.actionBackground(context)
-        searchEntry.setPadding(14.dp, 0, 14.dp, 0)
+        // Metro 无边框搜索：仅底部 1px 线，去掉灰色圆角胶囊
+        searchEntry.background = ContextCompat.getDrawable(context, R.drawable.bg_metro_underline_search)
+        searchEntry.setPadding(4.dp, 0, 4.dp, 6.dp)
         titleSelect.setPadding(12.dp, 0, 8.dp, 0)
         listOf(moreButton, searchButton, filterButton, starButton, refreshButton, loginButton, filterToggleButton).forEach {
             it.background = null
@@ -434,14 +435,14 @@ class MainTopBarView @JvmOverloads constructor(
         titleText.gravity = Gravity.CENTER_VERTICAL
         titleText.setTextColor(context.titleTextColor)
         searchEntryText.setTextColor(context.primaryTextColor)
-        primaryBar.setDisplayMode(RoundedTagBarView.DisplayMode.CHIP)
-        selectsBar.setDisplayMode(RoundedTagBarView.DisplayMode.CHIP)
-        tagsBar.setDisplayMode(RoundedTagBarView.DisplayMode.CHIP)
+        primaryBar.setDisplayMode(RoundedTagBarView.DisplayMode.TEXT)
+        selectsBar.setDisplayMode(RoundedTagBarView.DisplayMode.TEXT)
+        tagsBar.setDisplayMode(RoundedTagBarView.DisplayMode.TEXT)
         primaryBar.setBackgroundOverrideColor(null)
         selectsBar.setBackgroundOverrideColor(null)
         tagsBar.setBackgroundOverrideColor(null)
-        primaryBar.setSelectedBackgroundVisible(true)
-        selectsBar.setSelectedBackgroundVisible(true)
+        primaryBar.setSelectedBackgroundVisible(false)
+        selectsBar.setSelectedBackgroundVisible(false)
         tagsBar.setSelectedBackgroundVisible(mode == Mode.DISCOVERY)
     }
 
