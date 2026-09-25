@@ -105,7 +105,12 @@ class RoundedTagBarView @JvmOverloads constructor(
             if (displayMode == DisplayMode.TEXT) 0 else verticalPadding
         )
         adapter.selectedBackgroundColor = TopBarConfig.withOpacity(selectedColor, config.tagSelectedAlpha)
-        adapter.selectedTextColor = readableTagTextColor(context.accentColor, adapter.selectedBackgroundColor)
+        // Metro 文字 pivot：选中文字墨蓝 #2C5F9A
+        adapter.selectedTextColor = if (displayMode == DisplayMode.TEXT) {
+            0xFF2C5F9A.toInt()
+        } else {
+            readableTagTextColor(context.accentColor, adapter.selectedBackgroundColor)
+        }
         adapter.normalTextColor = context.primaryTextColor
         adapter.notifyDataSetChanged()
     }
@@ -247,17 +252,21 @@ class RoundedTagBarView @JvmOverloads constructor(
 
         override fun onBindViewHolder(holder: TagViewHolder, position: Int) {
             val item = items[position]
-            holder.textView.background = UiCorner.actionSelector(
-                android.graphics.Color.TRANSPARENT,
-                when {
-                    !selectedBackgroundVisible -> android.graphics.Color.TRANSPARENT
-                    displayMode == DisplayMode.TEXT -> android.graphics.Color.TRANSPARENT
-                    else -> selectedBackgroundColor
-                },
-                UiCorner.actionRadius(holder.textView.context)
-            )
-            val verticalPadding = if (displayMode == DisplayMode.TEXT) 0 else resources.getDimensionPixelSize(R.dimen.bookshelf_tag_recycler_padding_vertical)
-            val horizontalPadding = if (displayMode == DisplayMode.TEXT) 8.dp else resources.getDimensionPixelSize(R.dimen.bookshelf_tag_item_padding_horizontal)
+            if (displayMode == DisplayMode.TEXT) {
+                // Metro 文字 pivot：选中项底部 2dp 墨蓝下划线
+                holder.textView.background =
+                    androidx.appcompat.content.res.AppCompatResources.getDrawable(
+                        holder.textView.context, R.drawable.bg_metro_text_tab
+                    )
+            } else {
+                holder.textView.background = UiCorner.actionSelector(
+                    android.graphics.Color.TRANSPARENT,
+                    selectedBackgroundColor,
+                    UiCorner.actionRadius(holder.textView.context)
+                )
+            }
+            val verticalPadding = if (displayMode == DisplayMode.TEXT) 6 else resources.getDimensionPixelSize(R.dimen.bookshelf_tag_recycler_padding_vertical)
+            val horizontalPadding = if (displayMode == DisplayMode.TEXT) 12.dp else resources.getDimensionPixelSize(R.dimen.bookshelf_tag_item_padding_horizontal)
             holder.textView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
             holder.textView.setTextColor(
                 ColorStateList(
