@@ -12,6 +12,7 @@ import com.google.android.material.bottomnavigation.BottomNavigationView
 import io.legado.app.databinding.ViewNavigationBadgeBinding
 import io.legado.app.lib.theme.Selector
 import io.legado.app.lib.theme.accentColor
+import io.legado.app.lib.theme.primaryColor
 import io.legado.app.lib.theme.secondaryTextColor
 import io.legado.app.lib.theme.transparentNavBar
 import io.legado.app.ui.widget.text.BadgeView
@@ -45,7 +46,8 @@ class ThemeBottomNavigationVIew(context: Context, attrs: AttributeSet) :
     }
 
     fun createThemeColorStateList(): ColorStateList {
-        val selectedColor = context.accentColor
+        // Metro：选中图标/文字墨蓝 #2C5F9A，未选用次要灰
+        val selectedColor = context.primaryColor
         val textColor = context.secondaryTextColor
         return Selector.colorBuild()
             .setDefaultColor(textColor)
