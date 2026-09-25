@@ -6,13 +6,50 @@
     android:clipChildren="false"
     android:clipToPadding="false">
 
+    <!-- Metro 超大标题 + 英文浅色背景水印（书架内容流顶部真实布局项，磁贴在其下方不压书） -->
+    <FrameLayout
+        android:id="@+id/metro_title_block"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:paddingTop="30dp"
+        android:paddingBottom="6dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/metro_watermark"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:alpha="0.08"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="-0.02"
+            android:singleLine="true"
+            android:text="BOOKSHELF"
+            android:textColor="#999999"
+            android:textSize="56sp" />
+
+        <TextView
+            android:id="@+id/metro_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:fontFamily="sans-serif-light"
+            android:letterSpacing="0.02"
+            android:text="书架"
+            android:textColor="@color/primary"
+            android:textSize="42sp" />
+    </FrameLayout>
+
     <io.legado.app.ui.widget.MainTopBarView
         android:id="@+id/top_bar"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toBottomOf="@id/metro_title_block" />
 
     <io.legado.app.ui.widget.LockableViewPager
         android:id="@+id/view_pager_bookshelf"
