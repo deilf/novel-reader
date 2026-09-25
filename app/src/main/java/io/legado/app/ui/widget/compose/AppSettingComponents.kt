@@ -636,9 +636,10 @@ fun AppSettingSectionTitle(
     if (title.isNullOrBlank()) return
     Text(
         text = title.toString(),
-        color = palette.accent,
+        // Metro：分组标题墨蓝 #2C5F9A，不再用红/强调色
+        color = Color(0xFF2C5F9A),
         fontSize = 14.sp,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontFamily = palette.titleFontFamily,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
