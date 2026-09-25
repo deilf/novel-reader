@@ -160,7 +160,7 @@ fun BookshelfGridItem(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(4.dp)),
+                .clip(RoundedCornerShape(0.dp)),
             contentAlignment = Alignment.TopEnd
         ) {
             BookshelfCover(
@@ -178,12 +178,13 @@ fun BookshelfGridItem(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.38f))
                         .padding(horizontal = 6.dp, vertical = 6.dp),
                     color = Color.White,
                     fontSize = 12.sp,
                     fontFamily = titleFontFamily,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
