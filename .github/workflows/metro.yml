@@ -30,7 +30,7 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Decode keystore and inject signing props
+      - name: Inject signing + CI memory props
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > app/key.jks
           {
@@ -38,6 +38,9 @@ jobs:
             echo "RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
             echo "RELEASE_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
             echo "RELEASE_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+            echo "org.gradle.jvmargs=-XX:+UseParallelGC -Xmx5g -Xms512m -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+            echo "kotlin.daemon.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+            echo "org.gradle.workers.max=2"
           } >> gradle.properties
 
       - name: Build release APK
