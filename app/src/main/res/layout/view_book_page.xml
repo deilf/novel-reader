@@ -19,7 +19,7 @@
         android:id="@+id/ll_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:elevation="8dp"
+        android:elevation="0dp"
         android:gravity="center_vertical"
         app:layout_constraintTop_toBottomOf="@id/vw_status_bar">
 
@@ -169,7 +169,7 @@
         android:id="@+id/ll_footer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:elevation="8dp"
+        android:elevation="0dp"
         android:gravity="center_vertical"
         app:layout_constraintBottom_toTopOf="@id/vw_navigation_bar">
 

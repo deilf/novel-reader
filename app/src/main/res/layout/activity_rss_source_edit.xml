@@ -114,7 +114,7 @@
         android:layout_width="match_parent"
         android:layout_height="36dp"
         android:background="@color/background"
-        android:elevation="3dp"
+        android:elevation="0dp"
         tools:ignore="SpeakableTextPresentCheck" />
 
     <androidx.recyclerview.widget.RecyclerView

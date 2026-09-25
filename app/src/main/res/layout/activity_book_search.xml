@@ -89,7 +89,7 @@
         android:layout_height="46dp"
         android:background="@android:color/transparent"
         android:clipToPadding="false"
-        android:elevation="8dp"
+        android:elevation="0dp"
         android:overScrollMode="never"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"

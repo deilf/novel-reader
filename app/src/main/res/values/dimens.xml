@@ -42,7 +42,7 @@
     <dimen name="main_bottom_controls_bottom_padding">10dp</dimen>
     <dimen name="main_bottom_bar_height">48dp</dimen>
     <dimen name="main_bottom_bar_gap">10dp</dimen>
-    <dimen name="main_bottom_bar_elevation">12dp</dimen>
+    <dimen name="main_bottom_bar_elevation">0dp</dimen>
     <dimen name="main_bottom_bar_corner_radius">24dp</dimen>
     <dimen name="main_bottom_nav_horizontal_padding">6dp</dimen>
     <dimen name="main_bottom_nav_icon_size">23dp</dimen>
@@ -57,7 +57,7 @@
     <dimen name="main_ai_floating_ball_size">52dp</dimen>
     <dimen name="main_ai_floating_ball_icon_padding">13dp</dimen>
     <dimen name="main_ai_floating_ball_safe_margin">24dp</dimen>
-    <dimen name="main_search_button_elevation">14dp</dimen>
+    <dimen name="main_search_button_elevation">0dp</dimen>
     <dimen name="main_search_button_icon_size">22dp</dimen>
     <dimen name="main_content_bottom_bar_padding">90dp</dimen>
     <dimen name="main_sidebar_panel_padding_horizontal">18dp</dimen>
@@ -114,9 +114,9 @@
     <dimen name="waterfall_card_min_height">260dp</dimen>
     <dimen name="waterfall_cover_min_height">108dp</dimen>
 
-    <!-- Shared modern UI shape tokens -->
-    <dimen name="ui_panel_radius">10dp</dimen>
-    <dimen name="ui_action_radius">9dp</dimen>
+    <!-- Shared modern UI shape tokens (Metro: square corners) -->
+    <dimen name="ui_panel_radius">0dp</dimen>
+    <dimen name="ui_action_radius">0dp</dimen>
 
     <!-- Manga reader floating chapter control -->
     <dimen name="manga_control_outer_margin_horizontal">16dp</dimen>

@@ -211,11 +211,11 @@ object ThemeConfig {
             AppConfig.isEInkMode -> Color.WHITE
             AppConfig.isNightTheme -> context.getPrefInt(
                 PreferKey.cNBackground,
-                context.getCompatColor(R.color.md_grey_900)
+                context.getCompatColor(R.color.background)
             )
             else -> context.getPrefInt(
                 PreferKey.cBackground,
-                context.getCompatColor(R.color.md_grey_100)
+                context.getCompatColor(R.color.background)
             )
         }
     }
@@ -568,13 +568,13 @@ object ThemeConfig {
 
     private fun getDayTheme(context: Context, name: String): Config {
         val primary =
-            context.getPrefInt(PreferKey.cPrimary, context.getCompatColor(R.color.md_brown_500))
+            context.getPrefInt(PreferKey.cPrimary, context.getCompatColor(R.color.primary))
         val accent =
-            context.getPrefInt(PreferKey.cAccent, context.getCompatColor(R.color.md_red_600))
+            context.getPrefInt(PreferKey.cAccent, context.getCompatColor(R.color.accent))
         val background =
-            context.getPrefInt(PreferKey.cBackground, context.getCompatColor(R.color.md_grey_100))
+            context.getPrefInt(PreferKey.cBackground, context.getCompatColor(R.color.background))
         val bBackground =
-            context.getPrefInt(PreferKey.cBBackground, context.getCompatColor(R.color.md_grey_200))
+            context.getPrefInt(PreferKey.cBBackground, context.getCompatColor(R.color.background_card))
         val bgImgPath =
             context.getPrefString(PreferKey.bgImage)
         val bgImgBlur =
@@ -637,17 +637,17 @@ object ThemeConfig {
         val primary =
             context.getPrefInt(
                 PreferKey.cNPrimary,
-                context.getCompatColor(R.color.md_blue_grey_600)
+                context.getCompatColor(R.color.primary)
             )
         val accent =
             context.getPrefInt(
                 PreferKey.cNAccent,
-                context.getCompatColor(R.color.md_deep_orange_800)
+                context.getCompatColor(R.color.accent)
             )
         val background =
-            context.getPrefInt(PreferKey.cNBackground, context.getCompatColor(R.color.md_grey_900))
+            context.getPrefInt(PreferKey.cNBackground, context.getCompatColor(R.color.background))
         val bBackground =
-            context.getPrefInt(PreferKey.cNBBackground, context.getCompatColor(R.color.md_grey_850))
+            context.getPrefInt(PreferKey.cNBBackground, context.getCompatColor(R.color.background_card))
         val bgImgPath =
             context.getPrefString(PreferKey.bgImageN)
         val bgImgBlur =
@@ -1028,13 +1028,13 @@ object ThemeConfig {
 
             isNightTheme -> {
                 val primary =
-                    getPrefInt(PreferKey.cNPrimary, getCompatColor(R.color.md_blue_grey_600))
+                    getPrefInt(PreferKey.cNPrimary, getCompatColor(R.color.primary))
                 val accent =
-                    getPrefInt(PreferKey.cNAccent, getCompatColor(R.color.md_deep_orange_800))
+                    getPrefInt(PreferKey.cNAccent, getCompatColor(R.color.accent))
                 val background =
-                    getPrefInt(PreferKey.cNBackground, getCompatColor(R.color.md_grey_900))
+                    getPrefInt(PreferKey.cNBackground, getCompatColor(R.color.background))
                 val bBackground =
-                    getPrefInt(PreferKey.cNBBackground, getCompatColor(R.color.md_grey_850))
+                    getPrefInt(PreferKey.cNBBackground, getCompatColor(R.color.background_card))
                 ThemeStore.editTheme(this)
                     .primaryColor(ColorUtils.withAlpha(primary, 1f))
                     .accentColor(ColorUtils.withAlpha(accent, 1f))
@@ -1047,13 +1047,13 @@ object ThemeConfig {
 
             else -> {
                 val primary =
-                    getPrefInt(PreferKey.cPrimary, getCompatColor(R.color.md_brown_500))
+                    getPrefInt(PreferKey.cPrimary, getCompatColor(R.color.primary))
                 val accent =
-                    getPrefInt(PreferKey.cAccent, getCompatColor(R.color.md_red_600))
+                    getPrefInt(PreferKey.cAccent, getCompatColor(R.color.accent))
                 val background =
-                    getPrefInt(PreferKey.cBackground, getCompatColor(R.color.md_grey_100))
+                    getPrefInt(PreferKey.cBackground, getCompatColor(R.color.background))
                 val bBackground =
-                    getPrefInt(PreferKey.cBBackground, getCompatColor(R.color.md_grey_200))
+                    getPrefInt(PreferKey.cBBackground, getCompatColor(R.color.background_card))
                 ThemeStore.editTheme(this)
                     .primaryColor(ColorUtils.withAlpha(primary, 1f))
                     .accentColor(ColorUtils.withAlpha(accent, 1f))
