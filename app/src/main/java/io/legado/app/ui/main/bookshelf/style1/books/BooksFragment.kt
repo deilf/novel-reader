@@ -56,6 +56,24 @@ import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.book.info.BookInfoNavigator
 import io.legado.app.ui.main.MainViewModel
 import io.legado.app.ui.main.bookshelf.compose.BookshelfBookItemUi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
+import io.legado.app.ui.main.bookshelf.compose.BookshelfComposeCover
 import io.legado.app.ui.main.bookshelf.compose.BookshelfGridItem
 import io.legado.app.ui.main.bookshelf.compose.BookshelfItemUi
 import io.legado.app.ui.main.bookshelf.compose.BookshelfListItem
@@ -127,6 +145,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
     private val useComposeBookshelf get() = useComposeList || useComposeGrid
     private var composeItems by mutableStateOf<List<BookshelfItemUi>>(emptyList())
     private var shelfDisplays: List<BookShelfDisplay> = emptyList()
+    private var resumeBook by mutableStateOf<BookshelfBookItemUi?>(null)
     private var composeCanScrollBackward by mutableStateOf(false)
     private var composeScrollToTopTick by mutableStateOf(0)
     private var composeImmediateScrollToTopTick by mutableStateOf(0)
@@ -339,6 +358,9 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
                     bottom = marginDp + bottomBarPadding + 12.dp
                 )
             ) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    MetroResumeCard(resumeBook)
+                }
                 items(
                     items = composeItems,
                     key = { it.key },
@@ -585,6 +607,18 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
                     binding.tvEmptyMsg.isGone = itemCount > 0
                     binding.refreshLayout.isEnabled = enableRefresh && itemCount > 0
                     composeItems = items
+                    resumeBook = list.filter { it.totalChapterNum > 0 }
+                        .maxByOrNull { it.durChapterTime }
+                        ?.let { d ->
+                            BookshelfBookItemUi(
+                                display = d,
+                                isUpdating = false,
+                                unreadCount = 0,
+                                hasNewChapter = false,
+                                tags = emptyList(),
+                                lastUpdateText = null
+                            )
+                        }
                     saveComposeSnapshot(snapshotKey, items)
                     delay(100)
                 }
@@ -860,5 +894,87 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
             order = order,
             readConfig = readConfig
         )
+    }
+
+    /** Metro 继续阅读置顶卡：封面 + 书名/作者 + 暖橙细进度条，点击直接继续阅读 */
+    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+    @Composable
+    private fun MetroResumeCard(book: BookshelfBookItemUi?) {
+        if (book == null) {
+            Text(
+                text = "暂无阅读记录",
+                color = Color(0xFF999999),
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 14.dp)
+            )
+            return
+        }
+        val total = book.display.totalChapterNum
+        val progress = if (total > 0) {
+            book.display.durChapterIndex.toFloat() / total
+        } else 0f
+        val clamped = progress.coerceIn(0f, 1f)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .clip(RoundedCornerShape(0.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .combinedClickable(
+                    onClick = {
+                        book.display.toMinimalBook()?.let { open(it) }
+                    }
+                )
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BookshelfComposeCover(
+                item = book,
+                modifier = Modifier
+                    .width(56.dp)
+                    .height(80.dp),
+                fragment = this@BooksFragment,
+                lifecycle = viewLifecycleOwner.lifecycle,
+                fillBounds = true
+            )
+            Column(
+                modifier = Modifier
+                    .padding(start = 12.dp)
+                    .weight(1f)
+            ) {
+                Text(
+                    text = book.display.name,
+                    color = Color(0xFF333333),
+                    fontSize = 18.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = book.display.author,
+                    color = Color(0xFF999999),
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(Color(0xFFE5E5E5))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(clamped)
+                            .height(3.dp)
+                            .background(Color(0xFFE67E22))
+                    )
+                }
+            }
+        }
     }
 }
