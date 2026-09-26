@@ -371,12 +371,12 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
         binding.tvEmptyMsg.isGone = modern || suite
         searchView?.isGone = modern || suite
         // Metro：标题行右侧 搜索/设置 图标
-        view.findViewById<android.view.View>(R.id.metro_search)?.let {
+        view?.findViewById<android.view.View>(R.id.metro_search)?.let {
             it.setOnClickListener {
                 startActivity(android.content.Intent(requireContext(), io.legado.app.ui.book.search.SearchActivity::class.java))
             }
         }
-        view.findViewById<android.view.View>(R.id.metro_settings)?.let {
+        view?.findViewById<android.view.View>(R.id.metro_settings)?.let {
             it.setOnClickListener {
                 startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
             }
