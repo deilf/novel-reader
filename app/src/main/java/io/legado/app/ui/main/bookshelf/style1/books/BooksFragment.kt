@@ -429,9 +429,12 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
         LaunchedEffect(canScrollBackward) {
             composeCanScrollBackward = canScrollBackward
         }
-        LaunchedEffect(Unit) {
-            // Metro：进入列表模式时强制回到第 0 项，避免初始滚动残留导致首本被吞
-            listState.scrollToItem(0)
+        LaunchedEffect(composeItems.size, composeItems.firstOrNull()?.key) {
+            // Metro：数据真正就绪（首项 key 确定）后再归位到第 0 项，
+            // 避免首帧列表为空/旧数据时 scrollToItem(0) 被忽略导致首本不渲染
+            if (composeItems.isNotEmpty()) {
+                listState.scrollToItem(0)
+            }
         }
         LaunchedEffect(composeImmediateScrollToTopTick) {
             if (composeImmediateScrollToTopTick > 0) {
