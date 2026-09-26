@@ -12,6 +12,36 @@
         app:attachToActivity="false"
         app:title="@string/my" />
 
+    <!-- Metro 大标题 + 浅灰英文水印（与书架同款） -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:alpha="0.08"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="-0.02"
+            android:singleLine="true"
+            android:text="MY"
+            android:textColor="#999999"
+            android:textSize="56sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:fontFamily="sans-serif-light"
+            android:letterSpacing="0.02"
+            android:text="@string/my"
+            android:textColor="@color/primary"
+            android:textSize="42sp" />
+    </FrameLayout>
+
     <include layout="@layout/view_search" />
 
     <LinearLayout
