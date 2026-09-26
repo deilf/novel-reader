@@ -533,18 +533,12 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
     }
 
     private fun upFastScrollerBar() {
-        if (useComposeBookshelf) {
-            binding.rvBookshelf.setFastScrollEnabled(false)
-            return
-        }
-        val showBookshelfFastScroller = AppConfig.showBookshelfFastScroller
-        binding.rvBookshelf.setFastScrollEnabled(showBookshelfFastScroller)
-        if (showBookshelfFastScroller) {
-            binding.rvBookshelf.scrollBarSize = 0
-        } else {
-            binding.rvBookshelf.scrollBarSize =
-                ViewConfiguration.get(requireContext()).scaledScrollBarSize
-        }
+        // Metro：全局强制关闭书架滚动条，无视 AppConfig.showBookshelfFastScroller
+        binding.rvBookshelf.setFastScrollEnabled(false)
+        binding.rvBookshelf.scrollBarSize = 0
+        binding.rvBookshelf.isVerticalScrollBarEnabled = false
+        binding.rvBookshelf.isHorizontalScrollBarEnabled = false
+        binding.rvBookshelf.overScrollMode = View.OVER_SCROLL_NEVER
     }
 
     fun upBookSort(sort: Int) {
