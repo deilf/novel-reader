@@ -276,7 +276,7 @@ class ExploreFragment() : VMBaseFragment<ExploreViewModel>(R.layout.fragment_exp
             }
         }
         binding.topBar.setMode(io.legado.app.ui.widget.MainTopBarView.Mode.DISCOVERY)
-        binding.topBar.setSearchEntryVisible(true)
+        binding.topBar.setSearchEntryVisible(false) // Metro：搜索统一到右上角放大镜
         binding.topBar.applyStatusBarPadding(withInitialPadding = true)
         binding.topBar.doOnLayout {
             updateModernTopBarOverlay()
