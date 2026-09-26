@@ -5,14 +5,16 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- 旧 TitleBar 保留引用但隐藏，避免与 Metro 大标题重复 -->
     <io.legado.app.ui.widget.TitleBar
         android:id="@+id/title_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:visibility="gone"
         app:attachToActivity="false"
         app:title="@string/my" />
 
-    <!-- Metro 大标题 + 浅灰英文水印（与书架同款） -->
+    <!-- Metro 大标题 + 浅灰英文水印（全宽，与书架同款） -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
