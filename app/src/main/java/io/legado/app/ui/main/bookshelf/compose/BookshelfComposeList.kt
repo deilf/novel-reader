@@ -403,55 +403,17 @@ private fun BookshelfBookMeta(
     introMaxLines: Int
 ) {
     val book = item.display
-    if (compact) {
-        Text(
-            text = listOf(book.author, book.durChapterTitle)
-                .filter { !it.isNullOrBlank() }
-                .joinToString(" • "),
-            color = palette.secondaryText,
-            fontSize = 13.sp,
-            fontFamily = palette.bodyFontFamily,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    } else {
-        BookshelfMetaLine(
-            iconRes = R.drawable.ic_author,
-            text = book.author,
-            palette = palette
-        )
-        BookshelfMetaLine(
-            iconRes = R.drawable.ic_history,
-            text = book.durChapterTitle,
-            palette = palette
-        )
-    }
+    // Metro：列表行只留 作者 + 最新章节，去掉阅读进度行/简介/标签
+    BookshelfMetaLine(
+        iconRes = R.drawable.ic_author,
+        text = book.author,
+        palette = palette
+    )
     BookshelfMetaLine(
         iconRes = R.drawable.ic_book_last,
         text = book.latestChapterTitle,
         palette = palette
     )
-    if (showIntro && introMaxLines > 0) {
-        BookIntroUtils.listIntro(book.getDisplayIntro())?.let { intro ->
-            Text(
-                text = intro,
-                color = palette.secondaryText,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-                fontFamily = palette.bodyFontFamily,
-                maxLines = introMaxLines,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = if (compact) 3.dp else 4.dp)
-            )
-        }
-    }
-    if (showTags && item.tags.isNotEmpty()) {
-        BookshelfTagChips(
-            tags = item.tags,
-            palette = palette,
-            modifier = Modifier.padding(top = 6.dp)
-        )
-    }
 }
 
 @Composable
