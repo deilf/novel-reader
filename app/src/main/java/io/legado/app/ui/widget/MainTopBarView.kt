@@ -416,7 +416,7 @@ class MainTopBarView @JvmOverloads constructor(
         updateTitleRowControlHeight(resources.getDimensionPixelSize(R.dimen.top_bar_regular_action_size))
         titleSelect.isVisible = !searchEntryRequested
         searchEntry.isVisible = searchEntryRequested
-        titleSpacer.isVisible = !searchEntryRequested
+        titleSpacer.isVisible = false // Metro：搜索框隐藏后不再留占位空白
         titleSelect.background = null
         // Metro 无边框搜索：仅底部 1px 线，去掉灰色圆角胶囊
         searchEntry.background = ContextCompat.getDrawable(context, R.drawable.bg_metro_underline_search)
