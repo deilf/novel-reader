@@ -258,15 +258,17 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
                         }
                     }
                 } else {
+                    // Metro：列表行左右留 16dp 呼吸边距，首行留 topExtra
+                    val listSide = 16.dpToPx()
                     when (position) {
                         0 -> {
-                            outRect.set(0, bookshelfMargin + topExtra, 0, bookshelfMargin)
+                            outRect.set(listSide, bookshelfMargin + topExtra, listSide, bookshelfMargin)
                         }
                         itemCount - 1 -> {
-                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
+                            outRect.set(listSide, bookshelfMargin, listSide, bookshelfMargin + 48.dpToPx())
                         }
                         else -> {
-                            outRect.set(0, bookshelfMargin, 0, bookshelfMargin)
+                            outRect.set(listSide, bookshelfMargin, listSide, bookshelfMargin)
                         }
                     }
                 }
