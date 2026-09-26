@@ -179,6 +179,10 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
     private fun initRecyclerView() {
         binding.rvBookshelf.setEdgeEffectColor(primaryColor)
         binding.rvBookshelf.clipToPadding = false
+        // Metro：关闭右侧粗快速滚动条，全局无竖条
+        binding.rvBookshelf.setFastScrollEnabled(false)
+        binding.rvBookshelf.isVerticalScrollBarEnabled = false
+        binding.rvBookshelf.isHorizontalScrollBarEnabled = false
         binding.rvBookshelf.applyMainBottomBarPadding()
         upFastScrollerBar()
         binding.refreshLayout.setColorSchemeColors(accentColor)
