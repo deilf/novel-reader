@@ -81,6 +81,7 @@
                         android:layout_height="match_parent"
                         android:clipToPadding="false"
                         android:paddingBottom="14dp"
+                        android:scrollbars="none"
                         tools:listitem="@layout/item_search_waterfall" />
 
                     <androidx.compose.ui.platform.ComposeView
@@ -121,6 +122,7 @@
                 android:id="@+id/rv_find"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
+                android:scrollbars="none"
                 tools:listitem="@layout/item_find_book" />
 
             <androidx.compose.ui.platform.ComposeView
