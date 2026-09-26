@@ -847,7 +847,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         val standardMode = isStandardBottomMode()
         viewPagerMain.swipeEnabled = !sidebarMode
         // Metro：底栏永久隐藏，纯横滑切页
-        bottomControls.isGone = true
+        bottomControls.visibility = android.view.View.GONE
         sideNavigationPanel.isVisible = sidebarMode
         applyBottomNavigationShape(standardMode)
         updateAiFloatingBall()
