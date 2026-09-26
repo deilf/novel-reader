@@ -429,6 +429,10 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
         LaunchedEffect(canScrollBackward) {
             composeCanScrollBackward = canScrollBackward
         }
+        LaunchedEffect(Unit) {
+            // Metro：进入列表模式时强制回到第 0 项，避免初始滚动残留导致首本被吞
+            listState.scrollToItem(0)
+        }
         LaunchedEffect(composeImmediateScrollToTopTick) {
             if (composeImmediateScrollToTopTick > 0) {
                 listState.scrollToItem(0)
