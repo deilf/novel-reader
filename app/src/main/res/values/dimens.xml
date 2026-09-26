@@ -87,7 +87,7 @@
     <dimen name="bookshelf_action_button_margin_end">16dp</dimen>
     <dimen name="bookshelf_action_button_padding">8dp</dimen>
     <dimen name="bookshelf_title_row_margin_start">16dp</dimen>
-    <dimen name="bookshelf_title_row_margin_top">8dp</dimen>
+    <dimen name="bookshelf_title_row_margin_top">2dp</dimen>
     <dimen name="bookshelf_title_row_margin_end">10dp</dimen>
     <dimen name="bookshelf_title_select_height">42dp</dimen>
     <dimen name="bookshelf_title_arrow_size">18dp</dimen>
@@ -95,7 +95,7 @@
     <dimen name="bookshelf_tag_bar_height">38dp</dimen>
     <dimen name="top_bar_immersive_action_size">36dp</dimen>
     <dimen name="bookshelf_tag_bar_margin_horizontal">16dp</dimen>
-    <dimen name="bookshelf_tag_bar_margin_top">8dp</dimen>
+    <dimen name="bookshelf_tag_bar_margin_top">4dp</dimen>
     <dimen name="bookshelf_tag_bar_radius">10dp</dimen>
     <dimen name="bookshelf_tag_bar_padding_horizontal">3dp</dimen>
     <dimen name="bookshelf_tag_bar_padding_vertical">1dp</dimen>
