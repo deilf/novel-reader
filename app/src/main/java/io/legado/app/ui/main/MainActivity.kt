@@ -480,7 +480,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     }
 
     private fun updateMetroHeader(position: Int) = binding.run {
-        when (realPositions.getOrElse(position) { idBookshelf }) {
+        when (realPositions.getOrElse(position % bottomMenuCount) { idBookshelf }) {
             idExplore -> {
                 metroTitle.text = "发现"
                 metroWatermark.text = "EXPLORE"
@@ -524,7 +524,9 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     }
 
     private fun initView() = binding.run {
-        val initialPage = resolveHomePagePosition()
+        // Metro 无限循环：初始页定位到大数中段，且落在书架（bottomMenuCount 的倍数）附近
+        val homeIdx = resolveHomePagePosition()
+        val initialPage = bottomMenuCount * 1000 + homeIdx
         pagePosition = initialPage
         viewPagerMain.setEdgeEffectColor(primaryColor)
         viewPagerMain.offscreenPageLimit = (bottomMenuCount - 1).coerceAtLeast(1)
@@ -844,7 +846,8 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         val sidebarMode = isSidebarMode()
         val standardMode = isStandardBottomMode()
         viewPagerMain.swipeEnabled = !sidebarMode
-        bottomControls.isVisible = !sidebarMode
+        // Metro：底栏永久隐藏，纯横滑切页
+        bottomControls.isGone = true
         sideNavigationPanel.isVisible = sidebarMode
         applyBottomNavigationShape(standardMode)
         updateAiFloatingBall()
@@ -2124,7 +2127,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     }
 
     private fun getBottomNavigationItemId(position: Int): Int {
-        return when (realPositions[position]) {
+        return when (realPositions[position % bottomMenuCount]) {
             idBookshelf -> R.id.menu_bookshelf
             idExplore -> R.id.menu_discovery
             idRss -> if (isDiscoveryRssMerged()) {
@@ -2466,7 +2469,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     }
 
     private fun getFragmentId(position: Int): Int {
-        val id = realPositions[position]
+        val id = realPositions[position % bottomMenuCount]
         if (id == idBookshelf) {
             return if (AppConfig.bookGroupStyle == 1) idBookshelf2 else idBookshelf1
         }
@@ -2522,7 +2525,8 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
 
         override fun getCount(): Int {
-            return bottomMenuCount
+            // Metro 无限循环：返回 bottomMenuCount 的整数倍大数，position % count 映射真实页
+            return bottomMenuCount * 2000
         }
 
         override fun instantiateItem(container: ViewGroup, position: Int): Any {
