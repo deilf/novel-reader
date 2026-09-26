@@ -177,7 +177,7 @@ class MainTopBarView @JvmOverloads constructor(
         filterButton.isVisible = mode == Mode.DISCOVERY
         starButton.isVisible = mode == Mode.RSS
         refreshButton.isVisible = mode == Mode.RSS
-        loginButton.isVisible = mode == Mode.DISCOVERY || mode == Mode.RSS
+        loginButton.isVisible = false // Metro：顶栏不显示登录人物按钮
         titleText.textSize = if (mode == Mode.BOOKSHELF) 24f else 20f
         titleText.applyUiTitleTypeface(context)
         applyTopBarStyle(force = true)
