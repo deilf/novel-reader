@@ -355,7 +355,8 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
                     start = 8.dp,
                     top = contentTopPadding,
                     end = 8.dp,
-                    bottom = marginDp + bottomBarPadding + 12.dp
+                    // Metro：底栏已隐藏，固定留足底部空间，最后一行磁贴完整可见
+                    bottom = marginDp + 48.dp
                 )
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
