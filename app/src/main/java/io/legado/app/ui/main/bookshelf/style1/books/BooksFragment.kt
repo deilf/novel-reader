@@ -385,7 +385,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
             }
             ComposeLazyGridFastScroller(
                 state = gridState,
-                enabled = AppConfig.showBookshelfFastScroller,
+                enabled = false, // Metro：全局关闭滚动条
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
@@ -475,7 +475,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
             }
             ComposeLazyListFastScroller(
                 state = listState,
-                enabled = AppConfig.showBookshelfFastScroller,
+                enabled = false, // Metro：全局关闭滚动条
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
