@@ -194,7 +194,7 @@ class RssFragment() : VMBaseFragment<RssViewModel>(R.layout.fragment_rss), MainF
         }
         view?.findViewById<android.view.View>(R.id.metro_settings)?.let {
             it.setOnClickListener {
-                startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
+                (activity as? io.legado.app.ui.main.MainActivity)?.metroGoToMy()
             }
         }
         if (usingModernRss) {

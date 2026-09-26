@@ -96,13 +96,15 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
         binding.topBar.searchEntry.setOnClickListener {
             startActivity(android.content.Intent(requireContext(), SearchActivity::class.java))
         }
-        // Metro：标题行右侧 搜索/设置 图标，复用现有路由
+        // Metro：标题行右侧 搜索/头像 图标
         binding.metroSearch.setOnClickListener {
             startActivity(android.content.Intent(requireContext(), SearchActivity::class.java))
         }
         binding.metroSettings.setOnClickListener {
-            startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
+            (activity as? io.legado.app.ui.main.MainActivity)?.metroGoToMy()
         }
+        // Metro：搜索入口统一到右上角放大镜，隐藏顶栏搜索框
+        binding.topBar.searchEntry.visibility = android.view.View.GONE
         binding.topBar.setOnHeightChangedListener {
             updateTopBarOverlay()
         }

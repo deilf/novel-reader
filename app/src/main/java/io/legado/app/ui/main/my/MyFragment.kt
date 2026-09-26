@@ -95,11 +95,10 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
                 startActivity(android.content.Intent(requireContext(), io.legado.app.ui.book.search.SearchActivity::class.java))
             }
         }
-        view?.findViewById<android.view.View>(R.id.metro_settings)?.let {
-            it.setOnClickListener {
-                startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
-            }
-        }
+        // Metro：我的页只留放大镜，头像在自己页无意义，隐藏
+        view?.findViewById<android.view.View>(R.id.metro_settings)?.visibility = android.view.View.GONE
+        // Metro：搜索入口统一到右上角放大镜，隐藏顶栏搜索框
+        view?.findViewById<android.view.View>(R.id.search_view)?.visibility = android.view.View.GONE
     }
 
     override fun observeLiveBus() {

@@ -66,7 +66,7 @@
                 android:background="?selectableItemBackgroundBorderless"
                 android:padding="10dp"
                 android:contentDescription="设置"
-                android:src="@drawable/ic_settings"
+                android:src="@drawable/ic_bottom_person"
                 app:tint="#666666" />
         </LinearLayout>
     </FrameLayout>
