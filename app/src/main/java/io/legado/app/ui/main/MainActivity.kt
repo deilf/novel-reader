@@ -491,7 +491,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             }
             idMy -> {
                 metroTitle.text = "我的"
-                metroWatermark.text = "ME"
+                metroWatermark.text = "MY"
             }
             else -> {
                 metroTitle.text = "书架"
