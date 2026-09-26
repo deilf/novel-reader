@@ -89,6 +89,13 @@ class MyFragment() : BaseFragment(R.layout.fragment_my_config),
         applySearchBarStyle()
         installComposeContent()
         updateSettingsState()
+        // Metro：标题行右侧 搜索/设置 图标
+        view.findViewById<android.view.View>(R.id.metro_search)?.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), io.legado.app.ui.book.search.SearchActivity::class.java))
+        }
+        view.findViewById<android.view.View>(R.id.metro_settings)?.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
+        }
     }
 
     override fun observeLiveBus() {

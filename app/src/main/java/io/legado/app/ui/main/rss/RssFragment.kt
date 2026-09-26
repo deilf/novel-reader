@@ -186,6 +186,13 @@ class RssFragment() : VMBaseFragment<RssViewModel>(R.layout.fragment_rss), MainF
         binding.recyclerView.isGone = usingModernRss
         binding.pbRssLoading.gone()
         binding.tvEmptyMsg.gone()
+        // Metro：标题行右侧 搜索/设置 图标
+        view.findViewById<android.view.View>(R.id.metro_search)?.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), io.legado.app.ui.book.search.SearchActivity::class.java))
+        }
+        view.findViewById<android.view.View>(R.id.metro_settings)?.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), io.legado.app.ui.config.ConfigActivity::class.java))
+        }
         if (usingModernRss) {
             initModernRssView()
             observeRssSources()
