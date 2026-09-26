@@ -460,7 +460,7 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
                 modifier = lazyModifier,
                 contentPadding = PaddingValues(
                     start = 8.dp,
-                    top = contentTopPadding + 24.dp, // Metro：列表首行下推到 tab 下方，不被裁
+                    top = contentTopPadding + 120.dp, // Metro：列表首行整体下推到 tab 下方完整可见
                     end = 8.dp,
                     bottom = marginDp + bottomBarPadding + 12.dp
                 )
