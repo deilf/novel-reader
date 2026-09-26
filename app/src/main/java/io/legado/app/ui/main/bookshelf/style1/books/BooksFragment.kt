@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -429,12 +430,15 @@ class BooksFragment() : BaseFragment(R.layout.fragment_books) {
         LaunchedEffect(canScrollBackward) {
             composeCanScrollBackward = canScrollBackward
         }
-        LaunchedEffect(composeItems.size, composeItems.firstOrNull()?.key) {
-            // Metro：数据真正就绪（首项 key 确定）后再归位到第 0 项，
-            // 避免首帧列表为空/旧数据时 scrollToItem(0) 被忽略导致首本不渲染
-            if (composeItems.isNotEmpty()) {
-                listState.scrollToItem(0)
-            }
+        LaunchedEffect(composeItems.firstOrNull()?.key) {
+            // Metro：暴力兜底——观测首索引，只要不是 0（残留/恢复偏移）就强制拉回第 0 项
+            // 对异步数据时机、state 用错、恢复覆盖都免疫
+            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+                .collect { (idx, off) ->
+                    if (composeItems.isNotEmpty() && (idx > 0 || off > 0)) {
+                        listState.scrollToItem(0, 0)
+                    }
+                }
         }
         LaunchedEffect(composeImmediateScrollToTopTick) {
             if (composeImmediateScrollToTopTick > 0) {
