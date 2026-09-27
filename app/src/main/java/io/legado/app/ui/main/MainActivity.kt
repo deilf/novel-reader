@@ -189,7 +189,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         ViewConfiguration.get(this).scaledTouchSlop
     }
     private val fragmentMap = hashMapOf<Int, Fragment>()
-    private var bottomMenuCount = MainBottomNavConfig.visibleItems().size
+    private var bottomMenuCount = 2 // Metro：横滑循环只留书架+发现两页
     private val EXIT_INTERVAL = 2000L
     private val realPositions = arrayOf(idBookshelf, idExplore, idRss, idReadRecord, idMy)
     private val adapter by lazy {
