@@ -367,6 +367,7 @@ class MainTopBarView @JvmOverloads constructor(
         titleSelect.isVisible = true
         titleSpacer.isVisible = true
         if (mode == Mode.BOOKSHELF) {
+            moreButton.isVisible = false // Metro：三点移到右上角，原左侧位不留
             searchButton.isVisible = showSearch
         }
         titleSelect.background = ContextCompat.getDrawable(context, R.drawable.bg_discover_embedded_action)
