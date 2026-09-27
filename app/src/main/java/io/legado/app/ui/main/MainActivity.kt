@@ -473,14 +473,18 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             ?.let { binding.viewPagerMain.setCurrentItem(it, smoothScroll) }
     }
 
-    // Metro：顶栏头像点击切到「我的」页
+    // Metro：顶栏头像点击打开独立「我的」覆盖页
     fun metroGoToMy() {
-        val idx = realPositions.take(bottomMenuCount).indexOf(idMy)
-        if (idx >= 0) {
-            val cur = binding.viewPagerMain.currentItem
-            val base = (cur / bottomMenuCount) * bottomMenuCount
-            binding.viewPagerMain.setCurrentItem(base + idx, true)
+        val tag = "metro_my_overlay"
+        val existing = supportFragmentManager.findFragmentByTag(tag)
+        val tx = supportFragmentManager.beginTransaction()
+        if (existing == null) {
+            tx.add(R.id.content_container, MyFragment(), tag)
+        } else {
+            tx.show(existing)
         }
+        tx.addToBackStack(tag)
+        tx.commit()
     }
 
     private fun bookshelfPosition(): Int {
